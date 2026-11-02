@@ -66,7 +66,7 @@ export const HOST_LABEL_MAXIMUM_LENGTH = 64;
 // What a hostname may not keep to become a label: it becomes a dash.
 export const HOST_LABEL_DISALLOWED = /[^A-Za-z0-9._-]/g;
 export const HOST_LABEL_REPLACEMENT = "-";
-// Set by the Dockerfile from the CI build; a local build keeps this placeholder.
+// Set by the Dockerfile from the release build; a local build keeps this placeholder.
 export const DEFAULT_AUTOHEAL_IMAGE = "ghcr.io/aiulian25/autoheal:1";
 export const MINIMUM_BACKUP_PASSPHRASE_LENGTH = 32;
 export const LIST_SEPARATOR = ",";

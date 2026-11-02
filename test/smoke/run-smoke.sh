@@ -2,7 +2,7 @@
 # Container smoke test: runs the image the way production does (non-root, read-only root,
 # no capabilities) and checks it starts, reports healthy and refuses bad configuration.
 # Everything it starts carries one label and is removed on exit, with the state its runners keep on
-# the engine. So it runs only on an engine that keeps none, such as CI's or a sandbox: never next to a real runner.
+# the engine. So it runs only on an engine that keeps none, such as a sandbox: never next to a real runner.
 set -euo pipefail
 # Checks read with grep -c, not -q: -q stops at the first match, and under pipefail the writer it
 # leaves behind (docker logs, curl) would fail the check with SIGPIPE.

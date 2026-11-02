@@ -20,6 +20,9 @@ export function createServer({ tls, isTrustedProxy, bodyLimit }: ServerOptions):
     trustProxy: isTrustedProxy ?? false,
     genReqId: () => randomUUID(),
     bodyLimit,
+    // By default close() waits for a connection that never sent a request: a browser's spare one, or the one Node 24's
+    // keep-alive agent pools when a request is aborted while connecting. Shutdown would then run out its deadline.
+    forceCloseConnections: true,
   };
   // One cast: Fastify types an HTTPS instance differently, the routes do not care which it is.
   return (tls === null ? Fastify(options) : Fastify({ ...options, https: tls })) as unknown as FastifyInstance;

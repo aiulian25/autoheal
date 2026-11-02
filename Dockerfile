@@ -66,7 +66,7 @@ RUN rm -rf node_modules/better-sqlite3/deps node_modules/better-sqlite3/src node
 
 # Same Debian release (glibc) as the builder, so the native modules installed above load here.
 FROM ${RUNTIME_IMAGE}
-# What the dashboard's "Add a host" tells new runners to run: CI passes this image's own name.
+# What the dashboard's "Add a host" tells new runners to run: the release build passes this image's own name.
 ARG AUTOHEAL_IMAGE=ghcr.io/aiulian25/autoheal:1
 WORKDIR /app
 # Owned by root and not writable by the app user: the app cannot modify its own code.

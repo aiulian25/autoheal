@@ -64,7 +64,7 @@ Preserve and export the guard volumes before investigating a failure. Repair sto
       Ollama          Home Assistant (optional)
 ```
 
-One image, `ghcr.io/aiulian25/autoheal`, runs as `control-plane` or `runner`. The control plane looks after the machine it runs on itself, and Linux hosts [over SSH](#hosts-over-ssh); a runner is for the others, such as a Synology. It is distroless, runs as UID 65532 with a read-only root filesystem and no capabilities, and is scanned by Trivy in CI before it is published. The control plane makes its own TLS certificate; each runner knows it by the public key in its join code, so no certificate authority is needed.
+One image, `ghcr.io/aiulian25/autoheal`, runs as `control-plane` or `runner`, on amd64 only: there is no arm64 build. The control plane looks after the machine it runs on itself, and Linux hosts [over SSH](#hosts-over-ssh); a runner is for the others, such as a Synology. It is distroless, runs as UID 65532 with a read-only root filesystem and no capabilities, and is scanned by Trivy before it is published. The control plane makes its own TLS certificate; each runner knows it by the public key in its join code, so no certificate authority is needed.
 
 The dashboard has a menu on the left, with what it leans on (Ollama, your notification channels, Home Assistant) at its foot on the home page:
 
