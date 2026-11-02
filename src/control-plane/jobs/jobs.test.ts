@@ -9,6 +9,7 @@ import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/supp
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
+  JOB_QUERY,
   apiPath,
   type EnrolledHostView,
   type JobView,
@@ -321,7 +322,8 @@ describe("container actions", () => {
     const silent = (await ask("paperless", { action: "stop" })).json<JobView>();
     await takeWork();
     controlPlane.clock.now += JOB_ANSWER_MILLISECONDS + 1;
-    await takeWork();
+    // Its runner is gone and collects nothing: the host's list says so all the same.
+    await admin.get(`${API_ROUTES.jobs}?${new URLSearchParams({ [JOB_QUERY.hostId]: silent.hostId })}`);
     const failed = (await admin.get(apiPath(API_ROUTES.job, { jobId: silent.id }))).json<JobView>();
     expect(failed).toMatchObject({ status: "failed", outcome: expect.stringContaining("never said how it went") });
   });

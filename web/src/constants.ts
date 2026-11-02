@@ -2328,6 +2328,19 @@ export const TEXT = {
     notChecked: "not checked yet",
     unknown: "could not check",
     updateReady: "update ready",
+    updateBox: {
+      icon: (name: string) => `Update ${name}`,
+      title: (name: string) => `Update ${name}?`,
+      versionsUnknown: "A new image is out.",
+      checking: "Asking its host what this touches…",
+      restarts: "It restarts for a moment.",
+      alsoHeld: (names: string) => `Held until it is done: ${names}.`,
+      noCheckpoint: "If its data cannot be copied first it still goes ahead, with no way back to the old image.",
+      expired: "This check has run out.",
+      checkAgain: "Check again",
+      cancel: "Cancel",
+      confirm: "Update",
+    },
     soon: "updating shortly",
     held: "held for you",
     updatesOff: "updates off",
@@ -2404,6 +2417,8 @@ export const TEXT = {
   // An update or a recreate under its row, as the host's runner reports it.
   updateStream: {
     label: (name: string) => `How the update of ${name} goes`,
+    showDetails: "Show details",
+    hideDetails: "Hide details",
     phases: {
       waiting: "waiting for other work on this host",
       working: "running the requested action",

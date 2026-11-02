@@ -888,6 +888,7 @@ describe("a host's containers and what each does", () => {
     for (const fact of ["10 MB/s", "50 MB of 100 MB", "5 seconds left", "1 of 2 layers"]) {
       expect(within(stream).getByText(fact)).toBeTruthy();
     }
+    fireEvent.click(within(stream).getByRole("button", { name: "Show details" }));
     const layers = within(stream).getAllByRole("listitem");
     expect(layers.slice(0, 2).map((layer) => layer.textContent)).toEqual([
       "4f4fb700ef54100 MBdownloading 50%",
@@ -1016,4 +1017,115 @@ it("shows only a delegated container terminal and closes its panel when the gran
   await client.invalidateQueries({ queryKey: ["resource-permissions"] });
   await waitFor(() => expect(screen.queryByRole("button", { name: "Close the shell in attic" })).toBeNull());
   client.clear();
+});
+
+describe("a row's update icon", () => {
+  const BOX = TEXT.hostContainers.updateBox;
+  const ICON = BOX.icon("BentoPDF");
+  const reviewPath = apiPath(API_ROUTES.operationPreview, { hostId: "h1", containerName: "BentoPDF" });
+  const review = (answer: object) => ({
+    id: "review-update",
+    hostId: "h1",
+    containerName: "BentoPDF",
+    action: "update",
+    expiresAt: Date.now() + 60_000,
+    answer: { ok: true, fingerprint: "a".repeat(64), members: [], resources: [], refusals: [], ...answer },
+  });
+  const members = (...names: string[]) => names.map((name) => ({ name, protected: false }));
+
+  it("shows beside the name only where there is an update, and nothing goes out before the box's Update", async () => {
+    const fetch = serve({
+      [API_ROUTES.containers]: CONTAINERS,
+      [`POST ${reviewPath}`]: review({ members: members("BentoPDF", "attic") }),
+      [`POST ${apiPath(API_ROUTES.containerUpdates, { hostId: "h1" })}`]: null,
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    const icon = await screen.findByRole("button", { name: ICON });
+    expect(icon.closest(".name-cell")).toBeTruthy();
+    for (const other of ["attic", "attic-postgres", "autoheal"]) {
+      expect(screen.queryByRole("button", { name: BOX.icon(other) })).toBeNull();
+    }
+
+    fireEvent.click(icon);
+    const box = await screen.findByRole("dialog", { name: BOX.title("BentoPDF") });
+    expect(await within(box).findByText(BOX.alsoHeld("attic"))).toBeTruthy();
+    const updates = apiPath(API_ROUTES.containerUpdates, { hostId: "h1" });
+    expect(fetch).not.toHaveBeenCalledWith(updates, expect.objectContaining({ method: "POST" }));
+
+    fireEvent.click(within(box).getByRole("button", { name: BOX.confirm }));
+    await sent(fetch, updates, "POST", {
+      names: ["BentoPDF"],
+      previews: { BentoPDF: "review-update" },
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps Update off while the host checks, and says why it refuses", async () => {
+    serve({
+      [API_ROUTES.containers]: CONTAINERS,
+      [`POST ${reviewPath}`]: review({ refusals: ["BentoPDF is kept hands-off."] }),
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    fireEvent.click(await screen.findByRole("button", { name: ICON }));
+    const box = await screen.findByRole("dialog");
+    const update = within(box).getByRole("button", { name: BOX.confirm }) as HTMLButtonElement;
+    expect(update.disabled).toBe(true);
+    expect(await within(box).findByText("BentoPDF is kept hands-off.")).toBeTruthy();
+    expect(update.disabled).toBe(true);
+  });
+
+  it.each([
+    ["Cancel", () => fireEvent.click(screen.getByRole("button", { name: BOX.cancel }))],
+    ["Escape", () => fireEvent.keyDown(document, { key: "Escape" })],
+    ["a click elsewhere", () => fireEvent.mouseDown(document.body)],
+  ])("closes on %s, sending nothing", async (_how, close) => {
+    const fetch = serve({
+      [API_ROUTES.containers]: CONTAINERS,
+      [`POST ${reviewPath}`]: review({ members: members("BentoPDF") }),
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    fireEvent.click(await screen.findByRole("button", { name: ICON }));
+    await screen.findByRole("dialog");
+    close();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(fetch).not.toHaveBeenCalledWith(
+      apiPath(API_ROUTES.containerUpdates, { hostId: "h1" }),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("is not there for a container Autoheal may not touch", async () => {
+    serve({
+      [API_ROUTES.containers]: [
+        container({
+          name: "kept",
+          handsOff: "protected",
+          update: { status: "available", checkedAt: 1, policy: "ask", remote: null, reason: null },
+        }),
+      ],
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    await screen.findByRole("button", { name: "kept" });
+    expect(screen.queryByRole("button", { name: BOX.icon("kept") })).toBeNull();
+  });
+
+  it("names the versions in the status column when the images say them", async () => {
+    serve({
+      [API_ROUTES.containers]: [
+        container({
+          name: "BentoPDF",
+          version: "1.7.0",
+          update: {
+            status: "available",
+            checkedAt: 1,
+            policy: "ask",
+            remote: { version: "1.8.0" } as never,
+            reason: null,
+          },
+        }),
+      ],
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    expect(await screen.findByRole("link", { name: "1.7.0 → 1.8.0" })).toBeTruthy();
+  });
 });

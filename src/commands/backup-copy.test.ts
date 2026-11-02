@@ -140,6 +140,32 @@ describe("the helper's copying", () => {
     await expect(stat(data("new"))).rejects.toThrow();
   });
 
+  it("is not failed by tar leaving at its end-of-archive mark with padding still on its way", async () => {
+    await writeFile(data("a.txt"), "hello");
+    const made = spawnSync("tar", ["-cf", "-", "-C", join(roots.data, "0"), "."], { maxBuffer: 1 << 24 });
+    expect(made.status).toBe(0);
+    const padded = Buffer.concat([made.stdout, Buffer.alloc(1 << 24)]);
+    await store(roots, FOLDER, "data-0.tar.age", recipient, Readable.from([padded]));
+    await rm(data("a.txt"));
+    await restore(roots, { folder: FOLDER, file: "data-0.tar.age", index: 0, identity, singleFile: false });
+    expect(await readFile(data("a.txt"), "utf8")).toBe("hello");
+  });
+
+  it("still fails when what feeds tar fails, as with the wrong key", async () => {
+    await captured();
+    const wrong = await restore(roots, {
+      folder: FOLDER,
+      file: "data-0.tar.age",
+      index: 0,
+      identity: "AGE-SECRET-KEY-1".padEnd(74, "Q"),
+      singleFile: false,
+    }).then(
+      () => "restored",
+      () => "refused",
+    );
+    expect(wrong).toBe("refused");
+  });
+
   it("keeps a file mounted alone as that same file, as Docker holds it open", async () => {
     await rm(join(roots.data, "0"), { recursive: true });
     await writeFile(join(roots.data, "0"), "the config");

@@ -118,21 +118,8 @@ function DependencyGraph({ host }: { host: HostView }) {
   );
 }
 
-/** A fresh, session-bound review. No action is submitted until its complete scope is confirmed. */
-export function OperationImpactReview({
-  hostId,
-  action,
-  names,
-  onConfirm,
-  onCancel,
-}: {
-  hostId: string;
-  action: PreviewAction;
-  names: readonly string[];
-  onConfirm: (previews: Record<string, string>) => void;
-  onCancel: () => void;
-}) {
-  const id = useId();
+/** A fresh, session-bound review, asked for at once. No action is submitted until its complete scope is confirmed. */
+export function useOperationReview(hostId: string, action: PreviewAction, names: readonly string[]) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -182,6 +169,28 @@ export function OperationImpactReview({
   const canConfirm =
     views?.length === names.length &&
     views.every((view) => view.answer.ok && view.answer.refusals.length === 0 && view.expiresAt > now);
+  return { preview, request, views, canConfirm };
+}
+
+export const previewIdsOf = (views: readonly OperationImpactView[]) =>
+  Object.fromEntries(views.map((view) => [view.containerName, view.id]));
+
+/** The whole review as a card: for several containers, and for an action that puts data back. */
+export function OperationImpactReview({
+  hostId,
+  action,
+  names,
+  onConfirm,
+  onCancel,
+}: {
+  hostId: string;
+  action: PreviewAction;
+  names: readonly string[];
+  onConfirm: (previews: Record<string, string>) => void;
+  onCancel: () => void;
+}) {
+  const id = useId();
+  const { preview, request, views, canConfirm } = useOperationReview(hostId, action, names);
   return (
     <section className="card notice warning" aria-labelledby={`${id}-title`}>
       <h3 id={`${id}-title`}>Review {TEXT.actions.names[action].toLowerCase()} impact</h3>
@@ -224,7 +233,7 @@ export function OperationImpactReview({
           type="button"
           className="primary"
           disabled={!canConfirm || preview.isPending}
-          onClick={() => views && onConfirm(Object.fromEntries(views.map((view) => [view.containerName, view.id])))}
+          onClick={() => views && onConfirm(previewIdsOf(views))}
         >
           Confirm reviewed operation
         </button>

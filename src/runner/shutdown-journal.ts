@@ -25,6 +25,8 @@ const schema = z.object({
 export type ShutdownRecord = z.infer<typeof schema>;
 // A reboot's leftover helper container is removed with its record, where the store can remove containers.
 type Store = Pick<DockerClient, "volumes" | "createVolume" | "removeVolume"> & Partial<Pick<DockerClient, "remove">>;
+const UNTOUCHED_OPERATION = /^job:[^:]+:(start|stop|restart|pause|unpause|update)$/;
+
 const mutations = new Set([
   "restart",
   "start",
@@ -72,6 +74,20 @@ export class ShutdownJournal {
       if (!before || before.step < record.step) latest.set(record.id, record);
     }
     return [...latest.values()].filter((record) => record.phase !== "finished");
+  }
+
+  /**
+   * Stopped at the door: every change these actions make goes through docker() below, which notes it first, so at
+   * step 0 none was asked of Docker and nothing needs a person. Others also change a host in ways no note here sees.
+   */
+  async settleUntouched() {
+    const untouched = (await this.pending()).filter(
+      (record) => record.step === 0 && record.phase === "admitted" && UNTOUCHED_OPERATION.test(record.operation),
+    );
+    for (const record of untouched) {
+      await this.finish(record);
+      log(RUNNER_MESSAGES.untouchedSettled(record.operation, record.target));
+    }
   }
 
   /**

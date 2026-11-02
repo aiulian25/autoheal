@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { UpdateProgress } from "../../../src/shared/protocol.js";
 import { UpdateStream, phaseWords } from "./update-stream.js";
@@ -34,6 +34,7 @@ describe("an update under its row", () => {
       "10 MB/s",
       "50 MB downloaded",
       "0 of 2 layers",
+      "Show details",
     ]);
   });
 
@@ -53,6 +54,7 @@ describe("an update under its row", () => {
       "50 MB of 100 MB",
       "5 seconds left",
       "0 of 2 layers",
+      "Show details",
     ]);
   });
 
@@ -77,13 +79,49 @@ describe("an update under its row", () => {
       "jellyfin/jellyfin:10.11",
       "100 MB of 100 MB",
       "2 of 2 layers",
+      "Show details",
     ]);
   });
 
-  it("turns red while the old container is put back", () => {
+  it("turns amber while the old container is put back", () => {
     render(<UpdateStream name="jellyfin" image="jellyfin/jellyfin:10.11" progress={pulling({ phase: "undoing" })} />);
     const region = screen.getByRole("region", { name: "How the update of jellyfin goes" });
     expect(region.className).toBe("update-stream undoing");
     expect(within(region).getByRole("status").textContent).toBe("putting the old one back");
+  });
+
+  it("stays one line until asked, and opens and closes from anywhere on that line", () => {
+    const withLog = pulling({ log: ["4f4fb700ef54: Downloading"] });
+    render(<UpdateStream name="jellyfin" image="jellyfin/jellyfin:10.11" progress={withLog} />);
+    expect(screen.queryByText("4f4fb700ef54")).toBeNull();
+    expect(screen.queryByText("4f4fb700ef54: Downloading")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    expect(screen.getByText("4f4fb700ef54")).toBeTruthy();
+    expect(screen.getByText("4f4fb700ef54: Downloading")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("jellyfin/jellyfin:10.11"));
+    expect(screen.queryByText("4f4fb700ef54")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show details" })).toBeTruthy();
+  });
+
+  it("stays open as the update moves on to its next step", () => {
+    const { rerender } = render(<UpdateStream name="jellyfin" image="jellyfin/jellyfin:10.11" progress={pulling()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show details" }));
+    rerender(
+      <UpdateStream name="jellyfin" image="jellyfin/jellyfin:10.11" progress={pulling({ phase: "stopping" })} />,
+    );
+    expect(screen.getByText("4f4fb700ef54")).toBeTruthy();
+  });
+
+  it("offers no details where there are none", () => {
+    render(
+      <UpdateStream
+        name="jellyfin"
+        image="jellyfin/jellyfin:10.11"
+        progress={pulling({ phase: "working", layers: [], log: [] })}
+      />,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

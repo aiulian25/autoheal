@@ -154,6 +154,9 @@ export function portsIn(exposed: Record<string, unknown> | null | undefined): nu
   return keys.map((key) => Number(key.split("/")[0])).filter((port) => Number.isInteger(port) && port > 0);
 }
 
+/** What an image says it is, and its configuration's digest: Docker's id for it, on the classic image store. */
+export type RemoteImage = ImageLabels & { configDigest?: string };
+
 export class RegistryClient {
   constructor(private readonly fetchImplementation: typeof fetch = fetch) {}
 
@@ -167,9 +170,9 @@ export class RegistryClient {
    * manifest GET counts as one pull on Docker Hub (with the platform's manifest an index points to); the
    * configuration does not. One anonymous token serves every request.
    */
-  async labels(reference: ImageReference, digest: string): Promise<ImageLabels> {
+  async labels(reference: ImageReference, digest: string): Promise<RemoteImage> {
     const configuration = await this.configuration(reference, digest);
-    return imageLabelsOf(configuration.config?.Labels ?? {});
+    return { ...imageLabelsOf(configuration.config?.Labels ?? {}), configDigest: configuration.digest };
   }
 
   /** What an image's build says it needs, without pulling it: for a machine of this architecture, if it runs there. */
@@ -193,7 +196,7 @@ export class RegistryClient {
     reference: ImageReference,
     digest: string,
     architecture: string | null = null,
-  ): Promise<RegistryDocument> {
+  ): Promise<RegistryDocument & { digest: string }> {
     const first = await this.authorized(this.manifestUrl(reference, digest), "GET", reference, null);
     const manifest = await this.platformManifest(
       reference,
@@ -209,7 +212,7 @@ export class RegistryClient {
     const configuration = await this.documentOf(
       (await this.authorized(blobUrl, "GET", reference, first.token)).response,
     );
-    return configuration;
+    return { ...configuration, digest: configDigest };
   }
 
   // An index lists one manifest per platform: this machine's is the one it would run.

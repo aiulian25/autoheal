@@ -420,6 +420,7 @@ export async function createRuntime(
       checkpoints,
       journal,
       checkpoints === null ? JOB_OUTCOMES.noDataCopyHere : JOB_OUTCOMES.checkpointUnavailable,
+      (imageId, reference) => updates.confirmCurrent(imageId, reference),
     ),
     // An edit job's settings come from the control plane; a runner on its own gets no jobs at all.
     settingsOf: (jobId) =>
@@ -825,6 +826,7 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
   await runtime.applicationBackups.flush();
   await runtime.approvedWork?.flush().catch((error: unknown) => log(describeError(error)));
   await runtime.shutdownJournal.settleReboots();
+  await runtime.shutdownJournal.settleUntouched();
   await runtime.shutdownJournal.assertClean();
   log(
     RUNNER_MESSAGES.watching(

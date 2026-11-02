@@ -3,6 +3,7 @@ import { ComposePanel } from "../components/compose-panel.js";
 import { HostNetworks, LeftBehindOffer, NetworksChip, NetworksHeading } from "./host-networks.js";
 import { HostVolumes, VolumesChip, VolumesHeading, VolumesLeftOffer } from "./host-volumes.js";
 import { OperationImpactReview } from "../components/dependency-map.js";
+import { UpdateConfirm } from "../components/update-confirm.js";
 import { actionPermission, type ResourceAction } from "../../../src/shared/resource-permissions.js";
 import { useResourcePermissions } from "../session.js";
 import { MaintenanceBadge, MaintenanceDialog } from "../components/maintenance-dialog.js";
@@ -13,6 +14,7 @@ import {
   API_ROUTES,
   apiPath,
   hasUpdate,
+  updateVersions,
   type ContainerControlChange,
   type ContainerControlView,
   type ContainerView,
@@ -414,7 +416,12 @@ function ImageCell({ container, held }: { container: ContainerView; held: TaskSu
   if (byAutoheal) {
     return <span className="muted">{text.soon}</span>;
   }
-  return <a href={`#${HOST_SECTIONS.updates}`}>{text.updateReady}</a>;
+  const versions = updateVersions(container);
+  return (
+    <a href={`#${HOST_SECTIONS.updates}`}>
+      {versions === null ? text.updateReady : TEXT.updates.versions(versions.from, versions.to)}
+    </a>
+  );
 }
 
 // Protected or kept aside, nothing may be set: one line across both choices says why.
@@ -581,7 +588,6 @@ function rowActionsOf(container: ContainerView): { action: BulkAction | typeof J
     { action: JOB_ACTION.restart, icon: "rotateCw" },
     paused ? { action: JOB_ACTION.unpause, icon: "play" } : { action: JOB_ACTION.pause, icon: "pause" },
     isStopped(container) ? { action: JOB_ACTION.start, icon: "play" } : { action: JOB_ACTION.stop, icon: "square" },
-    { action: JOB_ACTION.update, icon: "circleArrowUp" },
     { action: JOB_ACTION.remove, icon: "trash" },
   ];
 }
@@ -1079,6 +1085,14 @@ export function HostContainers({
     action: typeof JOB_ACTION.update | typeof JOB_ACTION.rollBack;
     target: ContainerView;
   } | null>(null);
+  // The update asked for by a row's icon, and the icon its small box opens from.
+  const [updateAsked, setUpdateAsked] = useState<{ target: ContainerView; anchor: HTMLElement } | null>(null);
+  const canUpdate = (container: ContainerView) => {
+    const permission = actionPermission(JOB_ACTION.update);
+    return (
+      permission !== null && allowed(permission, container) && targetsOf(JOB_ACTION.update, [container]).length > 0
+    );
+  };
   const operatorAction = useMutation({
     mutationFn: ({ action, target, previewId }: { action: RowAction; target: ContainerView; previewId?: string }) =>
       api<JobView>("POST", apiPath(API_ROUTES.containerActions, { hostId: host.id, containerName: target.name }), {
@@ -1104,6 +1118,11 @@ export function HostContainers({
       if (action === JOB_ACTION.update || action === JOB_ACTION.rollBack) setOperatorReview({ action, target });
       else operatorAction.mutate({ action, target });
     }
+  };
+  const updateConfirmed = (target: ContainerView, previews: Record<string, string>) => {
+    setUpdateAsked(null);
+    if (admin) bulk.run.mutate({ action: JOB_ACTION.update, targets: [target], previews });
+    else operatorAction.mutate({ action: JOB_ACTION.update, target, previewId: previews[target.name] });
   };
   const choose = useMutation({
     mutationFn: (change: ContainerControlChange) =>
@@ -1369,6 +1388,21 @@ export function HostContainers({
                                 >
                                   <span className="name-text">{container.name}</span>
                                 </button>
+                                {job === null && canUpdate(container) && (
+                                  <button
+                                    type="button"
+                                    className="icon-button update-ready"
+                                    title={TEXT.hostContainers.updateBox.icon(container.name)}
+                                    aria-label={TEXT.hostContainers.updateBox.icon(container.name)}
+                                    aria-expanded={updateAsked?.target.name === container.name}
+                                    disabled={bulk.run.isPending || operatorAction.isPending}
+                                    onClick={(event) =>
+                                      setUpdateAsked({ target: container, anchor: event.currentTarget })
+                                    }
+                                  >
+                                    <Icon name="circleArrowUp" />
+                                  </button>
+                                )}
                                 <MaintenanceBadge hostId={container.hostId} containerName={container.name} />
                                 <WebLink container={container} />
                               </span>
@@ -1469,6 +1503,16 @@ export function HostContainers({
           </div>
         )}
         {bulk.impact}
+        {updateAsked && (
+          <UpdateConfirm
+            key={updateAsked.target.name}
+            hostId={host.id}
+            container={updateAsked.target}
+            anchor={updateAsked.anchor}
+            onCancel={() => setUpdateAsked(null)}
+            onConfirm={(previews) => updateConfirmed(updateAsked.target, previews)}
+          />
+        )}
         {operatorReview && (
           <OperationImpactReview
             hostId={host.id}

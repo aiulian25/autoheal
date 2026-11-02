@@ -12,7 +12,7 @@ import {
 import { describeError } from "../shared/errors.js";
 import type { ImageLabels } from "../shared/protocol.js";
 import type { ContainerSummary, DockerClient } from "./docker-client.js";
-import { parseImageReference, type ImageReference, type RegistryClient } from "./registry-client.js";
+import { parseImageReference, type ImageReference, type RegistryClient, type RemoteImage } from "./registry-client.js";
 
 export interface UpdateCheck {
   status: UpdateStatus;
@@ -27,7 +27,7 @@ export interface UpdateCheck {
 // What one check may still read from Docker Hub, where a manifest GET counts as a pull.
 interface LabelBudget {
   dockerHub: number;
-  reads: Map<string, Promise<ImageLabels | null>>;
+  reads: Map<string, Promise<RemoteImage | null>>;
   ancestry: Map<string, Promise<boolean>>;
 }
 
@@ -55,7 +55,7 @@ const labelKey = (reference: ImageReference, digest: string) =>
 export class ImageUpdateChecker {
   private readonly results = new Map<string, UpdateCheck>();
   // A newer image's labels, by its digest: read once, whichever containers wait for it.
-  private readonly labels = new Map<string, ImageLabels>();
+  private readonly labels = new Map<string, RemoteImage>();
   private checking: Promise<UpdateSummary> | null = null;
 
   constructor(
@@ -70,6 +70,15 @@ export class ImageUpdateChecker {
     return imageId === undefined || reference === null
       ? null
       : (this.results.get(resultKey(imageId, reference)) ?? null);
+  }
+
+  /** A pull of this reference brought this very image: nothing newer waits, whatever the last check made of its tag. */
+  confirmCurrent(imageId: string, configuredReference: string) {
+    const reference = parseImageReference(configuredReference);
+    const key = reference === null ? null : resultKey(imageId, reference);
+    const known = key === null ? undefined : this.results.get(key);
+    if (key === null || known === undefined) return;
+    this.results.set(key, { ...known, status: UPDATE_STATUS.current, remote: null, reason: null });
   }
 
   /** One check at a time: the scheduled one and one asked for from the dashboard share a run. */
@@ -100,7 +109,7 @@ export class ImageUpdateChecker {
             digests = this.localDigests(imageId).catch(() => []);
             local.set(imageId, digests);
           }
-          return this.checkOne(key, reference, budget, digests);
+          return this.checkOne(key, imageId, reference, budget, digests);
         }),
       );
     }
@@ -194,7 +203,13 @@ export class ImageUpdateChecker {
     return request;
   }
 
-  private async checkOne(key: string, reference: ImageReference, budget: LabelBudget, digests: Promise<string[]>) {
+  private async checkOne(
+    key: string,
+    imageId: string,
+    reference: ImageReference,
+    budget: LabelBudget,
+    digests: Promise<string[]>,
+  ) {
     // Docker not answering says nothing new: the last answer stays.
     const local = await digests;
     if (local.length === 0) {
@@ -204,12 +219,16 @@ export class ImageUpdateChecker {
     try {
       const remoteDigest = await this.registry.digest(reference);
       const status = await this.statusOf(local, remoteDigest, reference, budget);
-      const available = status === UPDATE_STATUS.available;
+      const remoteImage =
+        status === UPDATE_STATUS.available ? await this.remoteLabels(reference, remoteDigest, budget) : null;
+      // A tag's digest covers every platform, so a rebuild for another one moves it with nothing new for this machine.
+      const sameImage = remoteImage?.configDigest === imageId;
+      const { configDigest: _configDigest, ...remote } = remoteImage ?? {};
       this.results.set(key, {
-        status,
+        status: sameImage ? UPDATE_STATUS.current : status,
         checkedAt,
         remoteDigest,
-        remote: available ? await this.remoteLabels(reference, remoteDigest, budget) : null,
+        remote: remoteImage === null || sameImage ? null : (remote as ImageLabels),
         reason: status === UPDATE_STATUS.unknown ? REGISTRY_MESSAGES.unknownImage : null,
       });
     } catch (error) {

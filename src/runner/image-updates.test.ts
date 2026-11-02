@@ -308,3 +308,44 @@ it("shares concurrent label reads for two tags resolving to one repository diges
   await checker.checkAll();
   expect(reads).toBe(1);
 });
+
+describe("a tag whose digest moved with nothing new for this machine", () => {
+  const id = imageId("a");
+  const reference = "redis:latest";
+  const checkerWith = (configDigest: string | undefined) =>
+    new ImageUpdateChecker(
+      {
+        containerSummaries: async () => [summary("cache", reference, id)],
+        inspect: async () => null,
+        inspectImage: async () => ({ Id: id, RepoDigests: [`redis@${digest("1")}`] }),
+      },
+      {
+        digest: async ({ tag }) => (tag === "latest" ? digest("2") : tag),
+        labels: async () => ({ ...labelled("8.2"), configDigest }),
+      },
+    );
+
+  it("is no update when this platform's image is the one it runs", async () => {
+    const checker = checkerWith(id);
+    expect((await checker.checkAll()).available).toBe(0);
+    expect(checker.resultFor(id, reference)).toMatchObject({ status: "current", remote: null });
+  });
+
+  it("is one when this platform's image differs, and what it reports carries no digest of the registry's", async () => {
+    const checker = checkerWith(imageId("b"));
+    await checker.checkAll();
+    const result = checker.resultFor(id, reference);
+    expect(result?.status).toBe("available");
+    expect(result?.remote).not.toHaveProperty("configDigest");
+  });
+
+  it("stays one while the registry has not said what its image is, until a pull finds the same image", async () => {
+    const checker = checkerWith(undefined);
+    await checker.checkAll();
+    expect(checker.resultFor(id, reference)?.status).toBe("available");
+    checker.confirmCurrent(imageId("c"), reference);
+    expect(checker.resultFor(id, reference)?.status).toBe("available");
+    checker.confirmCurrent(id, reference);
+    expect(checker.resultFor(id, reference)).toMatchObject({ status: "current", remote: null, reason: null });
+  });
+});

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   BYTES_PER_KILOBYTE,
   LAYER_STATE,
@@ -101,35 +102,50 @@ function LayerCard({ layer }: { layer: Layer }) {
 }
 
 /**
- * Under an updating container's row: the step its update is at, and while the new image comes down each of its
- * layers, the speed, how much is left, and Docker's own lines. All of it as the host's runner reports it.
+ * Under an updating container's row, one line: the step its update is at, how far the pull is, and its figures. Its
+ * layers and Docker's own lines open from it, and stay open while this update runs. All as the host's runner reports.
  */
 export function UpdateStream({ name, image, progress }: { name: string; image: string; progress: UpdateProgress }) {
+  const [open, setOpen] = useState(false);
   const undoing = progress.phase === UPDATE_PHASE.undoing;
   const pulling = progress.phase === UPDATE_PHASE.pulling;
   const whole = wholeSize(progress);
+  const hasDetails = progress.layers.length > 0 || progress.log.length > 0;
+  const toggle = () => {
+    if (hasDetails) setOpen((wasOpen) => !wasOpen);
+  };
   return (
     <section className={undoing ? "update-stream undoing" : "update-stream"} aria-label={STREAM_TEXT.label(name)}>
-      <header className="update-stream-head">
+      <header className={hasDetails ? "update-stream-head opens" : "update-stream-head"} onClick={toggle}>
         <Icon name={undoing ? "alert" : "download"} className={pulling ? "pulse" : undefined} />
         {/* Only the step is read out as it changes: the figures beside it move twice a second. */}
         <strong role="status">{STREAM_TEXT.phases[progress.phase]}</strong>
         <span className="mono">{image}</span>
+        <span className="update-stream-bar">
+          {pulling && whole !== null && (
+            <Bar fraction={percentOf(progress.downloaded, whole) / PERCENT} tone="violet" />
+          )}
+        </span>
         {pullFacts(progress).map((fact) => (
           <span key={fact} className="muted">
             {fact}
           </span>
         ))}
+        {hasDetails && (
+          <button type="button" className="link update-stream-toggle" aria-expanded={open}>
+            {open ? STREAM_TEXT.hideDetails : STREAM_TEXT.showDetails}
+            <Icon name={open ? "chevronUp" : "chevronDown"} />
+          </button>
+        )}
       </header>
-      {pulling && whole !== null && <Bar fraction={percentOf(progress.downloaded, whole) / PERCENT} tone="violet" />}
-      {progress.layers.length > 0 && (
+      {open && progress.layers.length > 0 && (
         <ul className="layer-cards">
           {progress.layers.map((layer) => (
             <LayerCard key={layer.id} layer={layer} />
           ))}
         </ul>
       )}
-      {progress.log.length > 0 && (
+      {open && progress.log.length > 0 && (
         <ol className="pull-log" aria-label={STREAM_TEXT.log}>
           {progress.log.map((line, index) => (
             <li key={index}>{line}</li>

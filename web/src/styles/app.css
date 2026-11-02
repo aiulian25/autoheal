@@ -1551,6 +1551,46 @@ button.container-name {
 }
 
 /* A long name keeps to its column, cut short: the whole of it shows on hover, and opens under the row. */
+.icon-button.update-ready {
+  flex: none;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.icon-button.update-ready[aria-expanded="true"] {
+  box-shadow: 0 0 0 3px var(--action-bar-border);
+}
+
+.update-confirm {
+  position: fixed;
+  z-index: 50;
+  width: 19rem;
+  padding: 12px 13px;
+  border: var(--border-width) solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 45%);
+  font-size: var(--text-body);
+}
+
+.update-confirm h3 {
+  margin: 0 0 3px;
+  font-size: var(--text-large);
+  overflow-wrap: anywhere;
+}
+
+.update-confirm p {
+  margin: 0 0 6px;
+}
+
+.update-confirm .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
 .host-containers .name-cell {
   display: flex;
   align-items: center;
@@ -1914,11 +1954,11 @@ tr.update-stream-row > td {
 }
 
 .update-stream.undoing {
-  border-color: var(--danger-border);
+  border-color: var(--warning-border);
 }
 
 .update-stream.undoing::before {
-  background-image: linear-gradient(90deg, transparent, var(--danger), transparent);
+  background-image: linear-gradient(90deg, transparent, var(--warning), transparent);
 }
 
 .update-stream-head {
@@ -1940,8 +1980,25 @@ tr.update-stream-row > td {
   font-weight: var(--weight-strong);
 }
 
-.update-stream.undoing .update-stream-head :is(.icon, strong) {
-  color: var(--danger);
+.update-stream.undoing .update-stream-head :is(.icon, strong, .update-stream-toggle) {
+  color: var(--warning);
+}
+
+.update-stream-head.opens {
+  cursor: pointer;
+}
+
+/* Takes the room between the image and the figures, whether or not there is a share to show yet. */
+.update-stream-bar {
+  flex: 1 1 8rem;
+  min-width: 8rem;
+}
+
+.update-stream-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .layer-cards {

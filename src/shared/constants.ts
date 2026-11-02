@@ -571,6 +571,8 @@ export const RUNNER_MESSAGES = {
   // A host without Docker: its system is watched, there are no containers to look after.
   systemOnly: (host: string) => `${host}: no Docker there, so its system alone is watched`,
   systemOnlyFailed: (host: string, problem: string) => `${host}: its system could not be reported: ${problem}`,
+  untouchedSettled: (operation: string, target: string) =>
+    `${operation} on ${target} was interrupted before it changed anything: cleared, and it will not run again.`,
   rebootSettled: (operation: string) =>
     `${operation}: the host has booted again since its reboot was started, so that reboot is done and its record is cleared.`,
   watching: (dryRun: boolean, model: string, protectedContainers: readonly string[], controlPlane: string) =>

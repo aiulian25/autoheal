@@ -776,6 +776,22 @@ describe("ContainerUpdater", () => {
     expect(docker.calls).toEqual([`pull ${REFERENCE}`]);
   });
 
+  it("says so to the update check, whose offer was wrong, when the newest image is the one it runs", async () => {
+    const confirmed: [string, string][] = [];
+    const telling = new ContainerUpdater(
+      docker,
+      async () => undefined,
+      () => 0,
+      undefined,
+      undefined,
+      undefined,
+      (imageId, reference) => confirmed.push([imageId, reference]),
+    );
+    docker.pulledImage = OLD_IMAGE;
+    await telling.update("app");
+    expect(confirmed).toEqual([[OLD_IMAGE, REFERENCE]]);
+  });
+
   it("refuses containers labelled off, or pinned to a digest", async () => {
     const labelled = appContainer();
     labelled.Config.Labels = { "autoheal.update": "off" };

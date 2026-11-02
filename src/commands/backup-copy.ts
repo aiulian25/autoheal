@@ -67,6 +67,20 @@ function finished(process: ChildProcess, allowed: readonly number[] = [0]): Prom
   });
 }
 
+// How tar stopping early looks from the side that still writes to it.
+const TAR_LEFT_EARLY: ReadonlySet<string | undefined> = new Set(["EPIPE", "ERR_STREAM_PREMATURE_CLOSE"]);
+
+/**
+ * An archive fed to tar, however that goes by tar's own exit. It may leave at the end-of-archive mark with padding
+ * still on its way, which is no failure; a source that fails, such as a sealed file that does not open, still is.
+ */
+async function feedTar(source: Readable, tar: ChildProcess, ended: Promise<void>) {
+  await pipeline(source, tar.stdin!).catch((error: NodeJS.ErrnoException) => {
+    if (!TAR_LEFT_EARLY.has(error.code)) throw error;
+  });
+  await ended;
+}
+
 function counting(onChunk: (chunk: Buffer) => void) {
   return new Transform({
     transform(chunk: Buffer, _encoding, done) {
@@ -193,9 +207,7 @@ export async function verify(roots: BackupCopyRoots, raw: unknown) {
     if (isTar) {
       const tar = tarProcess(roots, ["-tf", "-"], "pipe");
       tar.stdout!.resume();
-      const ended = finished(tar);
-      await pipeline(plain, tar.stdin!);
-      await ended;
+      await feedTar(plain, tar, finished(tar));
     } else {
       plain.resume();
       await new Promise((resolve, reject) => plain.once("end", resolve).once("error", reject));
@@ -338,9 +350,7 @@ async function metadataOfOnlyFile(roots: BackupCopyRoots, archive: Readable): Pr
   tar.stdout!.on("data", (chunk: Buffer) => {
     listed += chunk.toString();
   });
-  const ended = finished(tar);
-  await pipeline(archive, tar.stdin!);
-  await ended;
+  await feedTar(archive, tar, finished(tar));
   const lines = listed.split("\n").filter((line) => line !== "");
   const entries = lines.filter((line) => !line.startsWith(" "));
   const [entry = ""] = entries;
@@ -365,9 +375,7 @@ async function restoreSingleFile(roots: BackupCopyRoots, sealed: string, secret:
   const flags = ["--overwrite", "--numeric-owner", "--same-owner", "--acls", `--transform=s,.*,${name},`];
   const tar = tarProcess(roots, ["-xpf", "-", ...flags, "-C", roots.data], "pipe");
   tar.stdout!.resume();
-  const ended = finished(tar);
-  await pipeline(await decrypted(sealed, secret), tar.stdin!);
-  await ended;
+  await feedTar(await decrypted(sealed, secret), tar, finished(tar));
   const reading = tarProcess(roots, ["-cf", "-", ...CAPTURE_FLAGS, "-C", roots.data, name], "ignore");
   const read = finished(reading, [0, TAR_CHANGED_WHILE_READING]);
   const restored = await metadataOfOnlyFile(roots, reading.stdout!);
@@ -390,9 +398,7 @@ export async function restore(roots: BackupCopyRoots, raw: unknown) {
   await empty(roots, { indexes: [input.index] });
   const tar = tarProcess(roots, ["-xpf", "-", "--numeric-owner", "--acls", "--xattrs", "-C", root], "pipe");
   tar.stdout!.resume();
-  const ended = finished(tar);
-  await pipeline(plain, tar.stdin!);
-  await ended;
+  await feedTar(plain, tar, finished(tar));
   return {};
 }
 

@@ -167,4 +167,40 @@ describe("shutdown write-ahead records", () => {
     await nextBoot.settleReboots();
     await expect(nextBoot.assertClean()).rejects.toThrow("operator recovery");
   });
+
+  describe("an action interrupted before it changed anything", () => {
+    const interrupted = (storage: ReturnType<typeof store>, operation: string) => {
+      void new ShutdownJournal(storage).run(operation, "app", () => new Promise(() => undefined));
+    };
+    const settled = async (storage: ReturnType<typeof store>) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      const next = new ShutdownJournal(storage);
+      await next.settleUntouched();
+      return next;
+    };
+
+    it.each(["start", "stop", "restart", "pause", "unpause", "update"])("clears a %s by itself", async (action) => {
+      const storage = store();
+      interrupted(storage, `job:job-1:${action}`);
+      await (await settled(storage)).assertClean();
+      expect(await storage.volumes()).toEqual([]);
+    });
+
+    it.each(["job:job-1:edit", "job:job-1:deploy", "job:job-1:stack_up", "host:job-1", "healing:restart", "file:r"])(
+      "leaves %s for a person, as it may change a host where no note sees it",
+      async (operation) => {
+        const storage = store();
+        interrupted(storage, operation);
+        await expect((await settled(storage)).assertClean()).rejects.toThrow("operator recovery");
+      },
+    );
+
+    it("leaves one that had already asked Docker for a change", async () => {
+      const storage = store();
+      const journal = new ShutdownJournal(storage);
+      const docker = journal.docker({ pull: (_image: string) => new Promise(() => undefined) });
+      void journal.run("job:job-1:update", "app", () => docker.pull!("redis"));
+      await expect((await settled(storage)).assertClean()).rejects.toThrow("operator recovery");
+    });
+  });
 });

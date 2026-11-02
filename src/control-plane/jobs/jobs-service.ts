@@ -554,6 +554,8 @@ export class JobsService {
   }
 
   list(hostId: string, containerName: string | undefined): JobView[] {
+    // A host whose runner is gone collects nothing: what it would have expired must not read as still at work.
+    this.expireStale();
     const forContainer = containerName === undefined ? undefined : eq(jobs.containerName, containerName);
     return jobViews(this.databaseHandle, and(eq(jobs.hostId, hostId), forContainer), JOB_LIST_LIMIT).map((view) =>
       this.withProgress(view),

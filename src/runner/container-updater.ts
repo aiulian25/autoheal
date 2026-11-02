@@ -323,6 +323,8 @@ export class ContainerUpdater {
     private readonly journal = new OperationJournal(docker),
     // Why no data is kept where there are no checkpoints: a host whose helper image is not there yet says so.
     private readonly withoutCheckpoints: string = JOB_OUTCOMES.checkpointUnavailable,
+    // The pull found the image it already runs: the offer of an update is told it was wrong.
+    private readonly confirmCurrent: (imageId: string, reference: string) => void = () => undefined,
   ) {}
 
   /**
@@ -415,6 +417,7 @@ export class ContainerUpdater {
     if (rollout && newImage?.Id === details.Image)
       return failed("The reviewed image is already running; no rollout replacement was made.");
     if (newImage === null || newImage.Id === details.Image) {
+      if (details.Image !== undefined) this.confirmCurrent(details.Image, reference);
       return { succeeded: true, outcome: JOB_OUTCOMES.alreadyCurrent(name) };
     }
     if (rollout && Object.keys(newImage?.Config?.Volumes ?? {}).length > 0)

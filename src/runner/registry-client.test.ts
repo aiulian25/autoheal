@@ -219,6 +219,7 @@ describe("RegistryClient.labels", () => {
       revision: "4b3c2a1",
       source: "https://github.com/immich-app/immich",
       createdAt: Date.UTC(2026, 9, 20, 8, 15),
+      configDigest: CONFIG,
     });
     expect(requests).toEqual([
       `GET /v2/team/app/manifests/${INDEX}`,
@@ -261,6 +262,7 @@ describe("RegistryClient.labels", () => {
       revision: null,
       source: null,
       createdAt: null,
+      configDigest: CONFIG,
     });
   });
 });
