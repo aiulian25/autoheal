@@ -5,7 +5,7 @@ import { API_ROUTES, apiPath, type HostView } from "../../../src/shared/api.js";
 import type { OperationImpactView, TopologyView } from "../../../src/shared/topology.js";
 import { MemoryRouter } from "react-router";
 import { HOST_SECTIONS } from "../../../src/shared/constants.js";
-import { DEPENDENCY_MAP_TEXT } from "../constants.js";
+import { DEPENDENCY_MAP_TEXT, TEXT } from "../constants.js";
 import { DependencyMap, OperationImpactReview } from "./dependency-map.js";
 
 const host: HostView = {
@@ -121,6 +121,7 @@ it("submits only a read-only preflight until the reviewed scope is explicitly co
   );
   await screen.findByText("db");
   expect(screen.getByRole("dialog", { name: /^Review update .*impact$/ })).toBeTruthy();
+  expect(screen.getByText(TEXT.hostContainers.updateBox.noCheckpoint)).toBeTruthy();
   expect(confirm).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledExactlyOnceWith(
     apiPath(API_ROUTES.operationPreview, { hostId: "host", containerName: "app" }),

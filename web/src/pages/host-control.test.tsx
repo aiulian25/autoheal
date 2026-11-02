@@ -19,6 +19,7 @@ import { stackRestartQuery } from "../components/stack-head.js";
 import { timeOfDay } from "../format.js";
 import { ASK_FIRST_ON, ASK_FIRST_STORAGE_KEY, PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { HostContainers, HostControl } from "./host-control.js";
+import { HostUpdates } from "./host-updates.js";
 
 // The terminal draws on a canvas jsdom lacks: in its place, what the row shows of it and its close button.
 vi.mock("../components/shell-terminal.js", () => ({
@@ -574,6 +575,41 @@ describe("a host's containers and what each does", () => {
     expect(within(bento).getByRole("link", { name: "update ready" }).getAttribute("href")).toBe("#updates");
   });
 
+  it("says why a new image cannot be applied on a host that only watches, and offers no way that fails", async () => {
+    const waiting = container({
+      name: "BentoPDF",
+      handsOff: "dry_run",
+      update: { status: "available", checkedAt: 1, policy: "ask", remote: null, reason: null },
+    });
+    serve({ [API_ROUTES.containers]: [waiting] });
+    show(<HostContainers host={alder(true)} admin />);
+
+    const bento = (await screen.findByRole("button", { name: "BentoPDF" })).closest("tr")!;
+    expect(within(bento).getByText("update ready")).toBeTruthy();
+    expect(within(bento).getByText("host only watches")).toBeTruthy();
+    expect(within(bento).queryByRole("link", { name: "update ready" })).toBeNull();
+    expect(within(bento).queryByRole("button", { name: "Update BentoPDF" })).toBeNull();
+  });
+
+  it("does not call images up to date in Updates when a host that only watches has a new one", async () => {
+    const waiting = container({
+      name: "BentoPDF",
+      handsOff: "dry_run",
+      update: { status: "available", checkedAt: 1, policy: "ask", remote: null, reason: null },
+    });
+    serve({ [API_ROUTES.containers]: [waiting] });
+    // No packages reported: this is about the images card alone.
+    show(<HostUpdates host={{ ...alder(true), health: {} as HostView["health"] }} admin />);
+
+    expect(await screen.findByRole("heading", { name: "Container images" })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "1 new image is out, but this host only watches. Set DRY_RUN=0 on it to update from here.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Every image here is up to date.")).toBeNull();
+  });
+
   it("says a new image Autoheal applies comes shortly, unless it waits for a person: then it leads to that task", async () => {
     const available = {
       status: "available" as const,
@@ -702,7 +738,7 @@ describe("a host's containers and what each does", () => {
     show(<HostContainers host={alder(false)} admin />);
 
     const bar = await screen.findByRole("group", { name: "Act on the ticked containers" });
-    expect(await screen.findByText(TEXT.actions.checkpointWarning)).toBeTruthy();
+    expect(screen.queryByText(TEXT.actions.checkpointWarning)).toBeNull();
     const hint = "Tick containers to restart, stop, update or remove several at once.";
     expect(within(bar).getByText(hint)).toBeTruthy();
     // What its host keeps to itself has no tick.

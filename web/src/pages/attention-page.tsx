@@ -60,6 +60,7 @@ import {
 } from "../agent-dispatch.js";
 import { FLEET_STATE, answeringFor, fleetOf, serversFor, type Fleet, type FleetState } from "../ollama-fleet.js";
 import { api } from "../api-client.js";
+import { SnoozeChoices } from "../components/snooze-choices.js";
 import { isIncident, isTask, isUpdateTask, whatNeedsYou } from "../board.js";
 import { Bar, ErrorNotice, Loading, PageHeader, TimeAgo } from "../components/common.js";
 import { ImageVersions } from "../components/container-actions.js";
@@ -584,14 +585,7 @@ function FixCard({
         )}
         {admin && (
           <>
-            <button
-              type="button"
-              className="quiet"
-              disabled={change.isPending}
-              onClick={() => change.mutate({ snoozed: true })}
-            >
-              {TEXT.attention.snooze}
-            </button>
+            <SnoozeChoices disabled={change.isPending} onChoose={(snoozed) => change.mutate({ snoozed })} />
             <button
               type="button"
               className="quiet"

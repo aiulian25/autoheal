@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useState, useRef } from "react";
 import { API_ROUTES, apiPath, type HostView } from "../../../src/shared/api.js";
-import { HOST_KIND, HOST_SECTIONS } from "../../../src/shared/constants.js";
+import { HOST_KIND, HOST_SECTIONS, JOB_ACTION } from "../../../src/shared/constants.js";
 import { useLocation } from "react-router";
 import {
   TOPOLOGY_EDGE_KINDS,
@@ -203,6 +203,7 @@ export function OperationImpactReview({
           The runner inspected and locked the same resource set used for execution. Shared-data writers and namespace
           providers can be locked even when they are not replaced. A changed set will refuse the job.
         </p>
+        {action === JOB_ACTION.update && <p className="small muted">{TEXT.hostContainers.updateBox.noCheckpoint}</p>}
         {preview.isPending && <Loading />}
         {views?.map((view) => (
           <div key={view.containerName}>

@@ -98,6 +98,8 @@ import {
   SSH_STATE,
   type HostPackagesSetting,
   type SshState,
+  TASK_SNOOZE,
+  type TaskSnooze,
 } from "../../src/shared/constants.js";
 import type { BulkAction } from "./container-bulk.js";
 import type { WorkingAction } from "./container-motion.js";
@@ -1324,7 +1326,6 @@ export const TEXT = {
     stopWatching: "Stop watching this container",
     seeWhy: "See why",
     open: (where: string) => `Open ${where}`,
-    snooze: "Snooze a day",
     done: "Done",
     diskOn: (host: string) => `Disk on ${host}`,
     yoursSince: (since: string) => `yours since ${since}`,
@@ -1563,6 +1564,7 @@ export const TEXT = {
     empty: "No hosts enrolled yet.",
     back: "All hosts",
     openHere: "Open on this host",
+    snoozedUntil: (when: string) => `snoozed until ${when}`,
     nothingOpen: "Nothing open here.",
     recentIncidents: "Recent incidents",
     noIncidents: "No incidents on this host yet.",
@@ -2329,6 +2331,7 @@ export const TEXT = {
     notChecked: "not checked yet",
     unknown: "could not check",
     updateReady: "update ready",
+    updateWatching: "host only watches",
     updateBox: {
       icon: (name: string) => `Update ${name}`,
       title: (name: string) => `Update ${name}?`,
@@ -2607,6 +2610,8 @@ export const TEXT = {
     line: (hours: number) =>
       `Checked every ${hours} hours. Applied by recreating the container with its settings and volumes.`,
     allCurrent: "Every image here is up to date.",
+    watching: (count: number) =>
+      `${count} new ${count === 1 ? "image is" : "images are"} out, but this host only watches. Set ${ENV_DRY_RUN}=0 on it to update from here.`,
     selectOne: (name: string) => `Update ${name}`,
     update: (count: number) => `Update ${count} ${count === 1 ? "container" : "containers"}`,
     states: {
@@ -2647,6 +2652,16 @@ export const TEXT = {
     title: "Tasks",
     snoozedUntil: (when: string) => `Snoozed until ${when}: it waits among what was noticed until then.`,
     wake: "Wake it now",
+    snooze: {
+      label: "Snooze",
+      choice: (length: string) => `Snooze ${length}`,
+      lengths: {
+        [TASK_SNOOZE.day]: "a day",
+        [TASK_SNOOZE.oneMonth]: "1 month",
+        [TASK_SNOOZE.threeMonths]: "3 months",
+        [TASK_SNOOZE.sixMonths]: "6 months",
+      } satisfies Record<TaskSnooze, string>,
+    },
     newTitle: "New task",
     newPlaceholder: "What needs doing?",
     add: "Add",
@@ -2715,7 +2730,10 @@ export const TEXT = {
         data.decision === null
           ? `could not ask Ollama (${String(data.reason)})`
           : `asked Ollama: ${String(data.decision)}`,
-      snoozed: (data: Record<string, unknown>) => (data.until === null ? "woke it up again" : "snoozed it for a day"),
+      snoozed: (data: Record<string, unknown>) =>
+        data.until === null
+          ? "woke it up again"
+          : `snoozed it until ${new Date(Number(data.until)).toLocaleDateString()}`,
       checked_out: () => "started working on it",
       released: () => "let go of it",
       dispatched: () => "handed it to the Ollama agent",

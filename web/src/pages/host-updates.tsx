@@ -31,6 +31,7 @@ function ContainerImages({
   const waiting = (containers.data ?? []).filter(
     (container: ContainerView) => hasUpdate(container) && container.handsOff === null,
   );
+  const newImages = (containers.data ?? []).filter(hasUpdate).length;
   const selected = waiting.map(({ name }) => name).filter((name) => !unticked.has(name));
   const toggle = (name: string) =>
     setUnticked(
@@ -41,7 +42,8 @@ function ContainerImages({
       <div className="update-card-body">
         <h3 id="container-images-title">{text.title}</h3>
         <p className="update-card-line">{text.line(UPDATE_CHECK_INTERVAL_MILLISECONDS / MILLISECONDS_PER_HOUR)}</p>
-        {waiting.length === 0 && containers.data !== undefined && <p className="muted">{text.allCurrent}</p>}
+        {newImages === 0 && containers.data !== undefined && <p className="muted">{text.allCurrent}</p>}
+        {newImages > 0 && host.dryRun === true && <p className="muted">{text.watching(newImages)}</p>}
         {waiting.length > 0 && (
           <ul className="update-rows">
             {waiting.map((container) => {

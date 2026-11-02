@@ -94,7 +94,9 @@ export class DetectorService {
         continue;
       }
       const { task, outcome } = tasks.openOrJoin(problem);
-      if (outcome === "created" || outcome === "reopened") {
+      // Back while still snoozed (a disk going either side of its limit): its person asked for quiet.
+      const snoozed = task.snoozedUntil !== null && task.snoozedUntil > now;
+      if (outcome === "created" || (outcome === "reopened" && !snoozed)) {
         await notifier.taskOpened(task, outcome === "reopened").catch(logAlertNotQueued);
       }
     }

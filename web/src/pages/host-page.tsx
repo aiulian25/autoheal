@@ -7,7 +7,6 @@ import {
   API_ROUTES,
   INCIDENT_QUERY,
   apiPath,
-  type HostHealthView,
   type HostPackagesView,
   type HostView,
   type IncidentSummaryView,
@@ -21,6 +20,8 @@ import {
   HOST_SECTIONS,
   HOST_STATE,
   JOB_ACTION,
+  TASK_RESOURCE,
+  type TaskSnooze,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
 import { Badge, ErrorNotice, Loading, TimeAgo } from "../components/common.js";
@@ -28,8 +29,9 @@ import { Icon } from "../components/icons.js";
 import { isWaiting } from "../components/container-actions.js";
 import { incidentLink } from "../components/incident-parts.js";
 import { JOB_REFRESH_MILLISECONDS, PATHS, RECENT_INCIDENTS, REFRESH_MILLISECONDS, TEXT } from "../constants.js";
-import { countInWords, duration, listSeparator, percent, timeAgo } from "../format.js";
-import { hostContainersQuery, hostPackagesQuery, hostTasksQuery, hostsQuery } from "../queries.js";
+import { countInWords, dateTime, duration, listSeparator, percent, timeAgo } from "../format.js";
+import { boardQuery, hostContainersQuery, hostPackagesQuery, hostTasksQuery, hostsQuery } from "../queries.js";
+import { SnoozeChoices } from "../components/snooze-choices.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { RecoveryHoldBadge, StateBadge, waitingUpdates } from "./fleet-page.js";
 import { HostChanges } from "./host-changes.js";
@@ -207,14 +209,31 @@ function InPlaceWaiting({ host }: { host: HostView }) {
 }
 
 /** The disks the tasks count as almost full, fullest first, in one sentence above everything else. */
-function DiskWarning({ health }: { health: HostHealthView | null }) {
-  const full = (health?.disks ?? [])
+function DiskWarning({ host, admin }: { host: HostView; admin: boolean }) {
+  const queryClient = useQueryClient();
+  const tasks = useQuery(hostTasksQuery(host.id));
+  const taskOf = (path: string) =>
+    tasks.data?.find((task) => task.resource?.kind === TASK_RESOURCE.disk && task.resource.id === path);
+  const full = (host.health?.disks ?? [])
     .map((disk) => ({ path: disk.path, used: diskUsedPercent(disk) }))
-    .filter((disk) => disk.used >= DETECTOR_THRESHOLDS.diskPercent)
+    .filter((disk) => disk.used >= DETECTOR_THRESHOLDS.diskPercent && !taskOf(disk.path)?.snoozedUntil)
     .sort((first, second) => second.used - first.used);
+  const snooze = useMutation({
+    mutationFn: (snoozed: TaskSnooze) =>
+      Promise.all(
+        full
+          .flatMap((disk) => taskOf(disk.path) ?? [])
+          .map((task) => api("PATCH", apiPath(API_ROUTES.task, { taskId: task.id }), { snoozed })),
+      ),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      void queryClient.invalidateQueries({ queryKey: boardQuery.queryKey });
+    },
+  });
   if (full.length === 0) {
     return null;
   }
+  const canSnooze = admin && full.every((disk) => taskOf(disk.path) !== undefined);
   return (
     <div className="banner danger" role="status">
       <Icon name="alert" />
@@ -229,7 +248,9 @@ function DiskWarning({ health }: { health: HostHealthView | null }) {
         ))}
         {TEXT.sentenceEnd}
       </p>
+      {canSnooze && <SnoozeChoices disabled={snooze.isPending} onChoose={(length) => snooze.mutate(length)} />}
       <a href={`#${HOST_SECTIONS.overview}`}>{TEXT.hosts.seeDisks}</a>
+      <ErrorNotice error={snooze.error} />
     </div>
   );
 }
@@ -324,6 +345,9 @@ function HostTasks({ hostId }: { hostId: string }) {
             <Badge value={task.priority} />
             <Link to={taskLink(task.id)}>{task.title}</Link>
             <TimeAgo timestamp={task.updatedAt} />
+            {task.snoozedUntil !== null && (
+              <span className="small muted">{TEXT.hosts.snoozedUntil(dateTime(task.snoozedUntil))}</span>
+            )}
           </li>
         ))}
       </ul>
@@ -501,7 +525,7 @@ export function HostPage() {
         </Suspense>
       )}
       <PowerStrip host={host} />
-      <DiskWarning health={host.health} />
+      <DiskWarning host={host} admin={admin} />
       <RebootWarning hostId={host.id} hostLabel={host.label} admin={admin} />
       <InPlaceWaiting host={host} />
       {isRunnerHost(host) && <RunnerBehind host={host} />}

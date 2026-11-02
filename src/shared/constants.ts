@@ -1516,8 +1516,24 @@ export type TaskActivityKind = (typeof TASK_ACTIVITY)[keyof typeof TASK_ACTIVITY
 export const TASK_CHECKOUT_MILLISECONDS = 30 * 60 * 1000;
 // A problem that comes back within a day reopens its task instead of opening another.
 export const TASK_REOPEN_WINDOW_MILLISECONDS = 24 * 60 * 60 * 1000;
-// "Snooze a day": a task waits among what was noticed this long before it needs its person again.
-export const TASK_SNOOZE_MILLISECONDS = 24 * 60 * 60 * 1000;
+// Snoozed, a task waits among what was noticed this long before it needs its person again.
+const SNOOZE_DAY_MILLISECONDS = 24 * 60 * 60 * 1000;
+const DAYS_IN_SNOOZE_MONTH = 30;
+const SNOOZE_MONTH_MILLISECONDS = DAYS_IN_SNOOZE_MONTH * SNOOZE_DAY_MILLISECONDS;
+export const TASK_SNOOZE = { day: "day", oneMonth: "1_month", threeMonths: "3_months", sixMonths: "6_months" } as const;
+export type TaskSnooze = (typeof TASK_SNOOZE)[keyof typeof TASK_SNOOZE];
+export const TASK_SNOOZES = [
+  TASK_SNOOZE.day,
+  TASK_SNOOZE.oneMonth,
+  TASK_SNOOZE.threeMonths,
+  TASK_SNOOZE.sixMonths,
+] as const;
+export const TASK_SNOOZE_MILLISECONDS: Record<TaskSnooze, number> = {
+  [TASK_SNOOZE.day]: SNOOZE_DAY_MILLISECONDS,
+  [TASK_SNOOZE.oneMonth]: SNOOZE_MONTH_MILLISECONDS,
+  [TASK_SNOOZE.threeMonths]: 3 * SNOOZE_MONTH_MILLISECONDS,
+  [TASK_SNOOZE.sixMonths]: 6 * SNOOZE_MONTH_MILLISECONDS,
+};
 
 // --- the board: every open problem in the column of who has it now ------------------------------
 

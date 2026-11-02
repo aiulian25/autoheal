@@ -28,6 +28,7 @@ import {
   HOST_SILENT_AFTER_MILLISECONDS,
   METRICS_INTERVAL_MILLISECONDS,
   NOTIFY_TEXT,
+  TASK_SNOOZE,
 } from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
@@ -350,6 +351,37 @@ describe("detectors", () => {
       });
       expect(response.statusCode).toBe(200);
     };
+
+    it("stays quiet when a snoozed disk goes under its limit and back, and the task stays snoozed", async () => {
+      await reportFullDisk();
+      await detector.run();
+      expect(opened).toHaveLength(1);
+      const [task] = await tasks();
+      await admin.request({
+        method: "PATCH",
+        url: apiPath(API_ROUTES.task, { taskId: task!.id }),
+        payload: { snoozed: TASK_SNOOZE.oneMonth },
+      });
+
+      await controlPlane.runnerApp.inject({
+        method: "POST",
+        url: RUNNER_ROUTES.heartbeat,
+        payload: heartbeatWith({
+          dryRun: false,
+          host: hostHealth({
+            disks: [{ ...disk, usedBytes: 50 * BYTES_PER_GIBIBYTE, availableBytes: 50 * BYTES_PER_GIBIBYTE }],
+          }),
+        }),
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+
+      await reportFullDisk();
+      await detector.run();
+      expect(opened).toHaveLength(1);
+      expect((await tasks())[0]?.snoozedUntil).not.toBeNull();
+    });
 
     it("opens a task about that disk on its host", async () => {
       await reportFullDisk();

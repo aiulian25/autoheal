@@ -14,6 +14,7 @@ import {
   UPDATE_POLICY,
   UPDATE_STATUS,
   type ActorKind,
+  type TaskSnooze,
   type AgentKey,
   type AllowedAction,
   type ApprovalChoice,
@@ -1560,8 +1561,8 @@ export interface TaskChangeRequest {
   assignee?: AssigneeChoice | null;
   labels?: string[];
   parentId?: string | null;
-  // A day from now, or awake again at once.
-  snoozed?: boolean;
+  // For that long from now, or false: awake again at once.
+  snoozed?: TaskSnooze | false;
 }
 
 export interface AssignableView {

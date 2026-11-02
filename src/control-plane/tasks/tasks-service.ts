@@ -213,7 +213,7 @@ export class TasksService {
       activities.push([TASK_ACTIVITY.statusChanged, { from: task.status, to: change.status }]);
     }
     if (change.snoozed !== undefined) {
-      fields.snoozedUntil = change.snoozed ? now + TASK_SNOOZE_MILLISECONDS : null;
+      fields.snoozedUntil = change.snoozed === false ? null : now + TASK_SNOOZE_MILLISECONDS[change.snoozed];
       activities.push([TASK_ACTIVITY.snoozed, { until: fields.snoozedUntil }]);
     }
     this.database.update(tasks).set(fields).where(eq(tasks.id, taskId)).run();

@@ -391,7 +391,7 @@ describe("updates on the attention page", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Snooze a day" }));
     await waitFor(() =>
-      expect(sent("PATCH", apiPath(API_ROUTES.task, { taskId: "task-disk" }))).toEqual(['{"snoozed":true}']),
+      expect(sent("PATCH", apiPath(API_ROUTES.task, { taskId: "task-disk" }))).toEqual(['{"snoozed":"day"}']),
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Stop watching this container" }));

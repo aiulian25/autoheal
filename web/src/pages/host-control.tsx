@@ -31,6 +31,7 @@ import {
   MILLISECONDS_PER_SECOND,
   CONTAINER_STATE_RUNNING,
   CONTROL_LOCK,
+  HANDS_OFF,
   HOST_RESTART_CHOICES,
   HOST_SECTIONS,
   HOST_UPDATE_CHOICES,
@@ -417,11 +418,18 @@ function ImageCell({ container, held }: { container: ContainerView; held: TaskSu
     return <span className="muted">{text.soon}</span>;
   }
   const versions = updateVersions(container);
-  return (
-    <a href={`#${HOST_SECTIONS.updates}`}>
-      {versions === null ? text.updateReady : TEXT.updates.versions(versions.from, versions.to)}
-    </a>
-  );
+  const label = versions === null ? text.updateReady : TEXT.updates.versions(versions.from, versions.to);
+  if (container.handsOff === HANDS_OFF.dryRun) {
+    return (
+      <>
+        <span className="muted">{label}</span>
+        <div className="check-reason muted" title={TEXT.actions.handsOff.dry_run(container.hostLabel)}>
+          {text.updateWatching}
+        </div>
+      </>
+    );
+  }
+  return <a href={`#${HOST_SECTIONS.updates}`}>{label}</a>;
 }
 
 // Protected or kept aside, nothing may be set: one line across both choices says why.
@@ -1274,7 +1282,6 @@ export function HostContainers({
             onLookAtVolumes={() => openPanel(HOST_PANEL.volumes)}
           />
         )}
-        {admin && list?.some(hasUpdate) && <p className="notice warning small">{TEXT.actions.checkpointWarning}</p>}
         {list === undefined && (containers.error ? <ErrorNotice error={containers.error} /> : <Loading />)}
         {list !== undefined && (
           <div className="table-wrap container-table">

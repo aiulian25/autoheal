@@ -4342,6 +4342,22 @@ dialog.connect-host > h2 {
   margin-left: auto;
 }
 
+.banner.danger .snooze-choices {
+  margin-left: auto;
+}
+
+.banner.danger .snooze-choices button,
+.banner.danger .snooze-choices + a {
+  margin-left: 0;
+}
+
+.snooze-choices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
 /* The words sit a little low, as in buttons; the icon stays centred. */
 .banner.danger p,
 .banner.danger a {
@@ -6906,13 +6922,18 @@ label.host-tick {
   color: var(--danger);
 }
 
+/* Room under the end of every page, so the button can never sit on what is last there. */
+.main {
+  padding-bottom: calc(var(--scroll-to-top-size) + 2 * var(--space-5));
+}
+
 .icon-button.scroll-to-top {
   position: fixed;
   right: var(--space-5);
   bottom: var(--space-5);
   z-index: 30;
-  width: 40px;
-  min-height: 40px;
+  width: var(--scroll-to-top-size);
+  min-height: var(--scroll-to-top-size);
   border: var(--border-width) solid var(--control-border);
   border-radius: var(--radius-pill);
   background: var(--surface);

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { BrowserRouter, createMemoryRouter, Link, Route, RouterProvider, Routes } from "react-router";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_ROUTES,
   apiPath,
@@ -118,6 +118,9 @@ const sshDetails: SshHostDetailsView = {
 const AUTOHEAL_VERSION = "2.0.0";
 // The host Autoheal itself runs on.
 let localHostId: string | null = "h0";
+// What the host's open tasks are, and the changes asked of them.
+let openTasks: Record<string, unknown>[] = [];
+let taskChanges: [string, string][] = [];
 function show(packages = packageView, browserHash?: string, shownHost = host) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(SESSION_QUERY_KEY, session);
@@ -133,6 +136,11 @@ function show(packages = packageView, browserHash?: string, shownHost = host) {
       return json(accepted);
     }
     if (url.startsWith("/api/jobs/")) return json(records.get(url.split("/").at(-1)!));
+    if (init?.method === "PATCH" && url.startsWith(`${API_ROUTES.tasks}/`)) {
+      taskChanges.push([url.split("/").at(-1)!, String(init.body)]);
+      return json({});
+    }
+    if (url.startsWith(`${API_ROUTES.tasks}?`)) return json(openTasks);
     if (url === API_ROUTES.hosts) return json([shownHost]);
     if (url === apiPath(API_ROUTES.hostPackages, { hostId: host.id })) return json(packages);
     if (url === apiPath(API_ROUTES.hostControl, { hostId: host.id }))
@@ -539,4 +547,70 @@ it("puts a host's old images in its containers' section, right after the contain
   const containers = images.closest(`#${HOST_SECTIONS.containers}`)!;
   expect(containers).not.toBeNull();
   expect(images.previousElementSibling).toBe(containers.querySelector(".host-containers"));
+});
+
+describe("the almost-full disks banner", () => {
+  const BYTES = 1_000_000_000;
+  const diskAt = (path: string, used: number) => ({
+    path,
+    totalBytes: 100 * BYTES,
+    usedBytes: used * BYTES,
+    availableBytes: (100 - used) * BYTES,
+  });
+  const fullHost = {
+    ...host,
+    health: { ...hostHealthWithout, disks: [diskAt("/mnt/storage", 99), diskAt("/mnt/fast", 96)] },
+  };
+  const taskOn = (path: string, snoozedUntil: number | null = null) => ({
+    id: `task-${path.split("/").at(-1)}`,
+    title: `${path} is full`,
+    priority: "high",
+    labels: ["disk"],
+    updatedAt: 1,
+    snoozedUntil,
+    resource: { kind: "disk", id: path, label: path },
+  });
+  beforeEach(() => {
+    taskChanges = [];
+  });
+  afterEach(() => {
+    openTasks = [];
+  });
+
+  it("snoozes every disk it names at one press", async () => {
+    openTasks = [taskOn("/mnt/storage"), taskOn("/mnt/fast")];
+    show(undefined, undefined, fullHost);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Snooze 3 months" }));
+
+    await waitFor(() => expect(taskChanges).toHaveLength(2));
+    expect(taskChanges).toEqual(
+      expect.arrayContaining([
+        ["task-storage", '{"snoozed":"3_months"}'],
+        ["task-fast", '{"snoozed":"3_months"}'],
+      ]),
+    );
+  });
+
+  it("leaves out a snoozed disk, and goes once all are", async () => {
+    const later = Date.now() + 1_000_000;
+    openTasks = [taskOn("/mnt/storage", later), taskOn("/mnt/fast")];
+    show(undefined, undefined, fullHost);
+    const banner = (await screen.findByRole("button", { name: "Snooze 1 month" })).closest(".banner")!;
+    expect(banner.textContent).toContain("/mnt/fast");
+    expect(banner.textContent).not.toContain("/mnt/storage");
+    cleanup();
+
+    openTasks = [taskOn("/mnt/storage", later), taskOn("/mnt/fast", later)];
+    show(undefined, undefined, fullHost);
+    await waitFor(() => expect(client.getQueryData(["tasks", "host", host.id])).toHaveLength(2));
+    await waitFor(() => expect(document.querySelector(".banner.danger")).toBeNull());
+  });
+
+  it("offers no snooze before its disks have tasks, and still warns", async () => {
+    show(undefined, undefined, fullHost);
+    await waitFor(() => expect(client.getQueryData(["tasks", "host", host.id])).toEqual([]));
+    expect(document.querySelector(".banner.danger")?.textContent).toContain("/mnt/storage");
+    expect(screen.queryByRole("button", { name: "Snooze 1 month" })).toBeNull();
+  });
 });

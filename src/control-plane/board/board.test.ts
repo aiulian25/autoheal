@@ -13,6 +13,7 @@ import {
 import {
   AGENT_AUTOHEAL,
   BOARD_DONE_WINDOW_MILLISECONDS,
+  TASK_SNOOZE,
   TASK_SNOOZE_MILLISECONDS,
   type IncidentStatus,
 } from "../../shared/constants.js";
@@ -163,6 +164,7 @@ describe("the board", () => {
   });
 
   it("puts off a task its person snoozes for a day: noticed until then, then theirs again", async () => {
+    const dayLater = TASK_SNOOZE_MILLISECONDS[TASK_SNOOZE.day];
     const { id } = await task({
       title: "/mnt/storage/disk1 is 99% full",
       priority: "high",
@@ -173,18 +175,32 @@ describe("the board", () => {
     const snoozed = await admin.request({
       method: "PATCH",
       url: apiPath(API_ROUTES.task, { taskId: id }),
-      payload: { snoozed: true },
+      payload: { snoozed: TASK_SNOOZE.day },
     });
-    expect(snoozed.json<TaskDetailView>().snoozedUntil).toBe(controlPlane.clock.now + TASK_SNOOZE_MILLISECONDS);
+    expect(snoozed.json<TaskDetailView>().snoozedUntil).toBe(controlPlane.clock.now + dayLater);
     expect(await columns()).toMatchObject({ needsYou: [], noticed: ["/mnt/storage/disk1 is 99% full"] });
 
     // A day later the admin's session has long expired: read what the page would show directly.
-    controlPlane.clock.now += TASK_SNOOZE_MILLISECONDS + 1;
+    controlPlane.clock.now += dayLater + 1;
     expect(controlPlane.services.boardService.board(adminId).needsYou.map(nameOf)).toEqual([
       "/mnt/storage/disk1 is 99% full",
     ]);
     const view = controlPlane.services.tasksService.detail(id);
     expect(view.snoozedUntil).toBeNull();
     expect(view.activity.map((entry) => entry.kind)).toContain("snoozed");
+  });
+
+  it("snoozes a task for months and refuses a length not on offer", async () => {
+    const { id } = await task({ title: "/mnt/storage/disk2 is 96% full", priority: "high" });
+    const url = apiPath(API_ROUTES.task, { taskId: id });
+    const months = await admin.request({ method: "PATCH", url, payload: { snoozed: TASK_SNOOZE.sixMonths } });
+    expect(months.json<TaskDetailView>().snoozedUntil).toBe(
+      controlPlane.clock.now + TASK_SNOOZE_MILLISECONDS[TASK_SNOOZE.sixMonths],
+    );
+    const refused = await admin.request({ method: "PATCH", url, payload: { snoozed: "forever" } });
+    expect(refused.statusCode).toBe(400);
+
+    controlPlane.clock.now += TASK_SNOOZE_MILLISECONDS[TASK_SNOOZE.threeMonths];
+    expect(controlPlane.services.tasksService.detail(id).snoozedUntil).not.toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import {
   TASK_LABEL_PATTERN,
   TASK_LIMITS,
   TASK_PRIORITIES,
+  TASK_SNOOZES,
   TASK_STATUSES,
 } from "../../shared/constants.js";
 import { parseBody } from "../http/errors.js";
@@ -43,7 +44,7 @@ const changeBody = z.object({
   assignee: assignee.optional(),
   labels: labels.optional(),
   parentId: z.uuid().nullable().optional(),
-  snoozed: z.boolean().optional(),
+  snoozed: z.union([z.literal(false), z.enum(TASK_SNOOZES)]).optional(),
 });
 const commentBody = z.object({ body: z.string().trim().min(1).max(TASK_LIMITS.commentCharacters) });
 const blockerBody = z.object({ blockedById: z.uuid() });
