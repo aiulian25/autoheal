@@ -191,44 +191,50 @@ export function OperationImpactReview({
 }) {
   const id = useId();
   const { preview, request, views, canConfirm } = useOperationReview(hostId, action, names);
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    dialog.current?.showModal();
+  }, []);
   return (
-    <section className="card notice warning" aria-labelledby={`${id}-title`}>
-      <h3 id={`${id}-title`}>Review {TEXT.actions.names[action].toLowerCase()} impact</h3>
-      <p>
-        The runner inspected and locked the same resource set used for execution. Shared-data writers and namespace
-        providers can be locked even when they are not replaced. A changed set will refuse the job.
-      </p>
-      {preview.isPending && <Loading />}
-      {views?.map((view) => (
-        <div key={view.containerName}>
-          <strong>{view.containerName}</strong>
-          {view.answer.ok ? (
-            <>
-              <ul>
-                {view.answer.members.map((member) => (
-                  <li key={member.name}>
-                    <span className="mono">{member.name}</span>
-                    {member.protected ? " · protected" : ""}
-                  </li>
-                ))}
-              </ul>
-              <p className="small muted">
-                {view.answer.resources.length} coordinator resources · review expires{" "}
-                {new Date(view.expiresAt).toLocaleTimeString()}
-              </p>
-              {view.answer.refusals.map((refusal) => (
-                <p className="notice error" key={refusal}>
-                  {refusal}
+    <dialog ref={dialog} className="connect-host impact-review" aria-labelledby={`${id}-title`} onClose={onCancel}>
+      <h2 id={`${id}-title`}>Review {TEXT.actions.names[action].toLowerCase()} impact</h2>
+      <div className="connect-host-body">
+        <p>
+          The runner inspected and locked the same resource set used for execution. Shared-data writers and namespace
+          providers can be locked even when they are not replaced. A changed set will refuse the job.
+        </p>
+        {preview.isPending && <Loading />}
+        {views?.map((view) => (
+          <div key={view.containerName}>
+            <strong>{view.containerName}</strong>
+            {view.answer.ok ? (
+              <>
+                <ul>
+                  {view.answer.members.map((member) => (
+                    <li key={member.name}>
+                      <span className="mono">{member.name}</span>
+                      {member.protected ? " · protected" : ""}
+                    </li>
+                  ))}
+                </ul>
+                <p className="small muted">
+                  {view.answer.resources.length} coordinator resources · review expires{" "}
+                  {new Date(view.expiresAt).toLocaleTimeString()}
                 </p>
-              ))}
-            </>
-          ) : (
-            <p className="notice error">{view.answer.reason}</p>
-          )}
-        </div>
-      ))}
-      <ErrorNotice error={preview.error} />
-      <div className="row">
+                {view.answer.refusals.map((refusal) => (
+                  <p className="notice error" key={refusal}>
+                    {refusal}
+                  </p>
+                ))}
+              </>
+            ) : (
+              <p className="notice error">{view.answer.reason}</p>
+            )}
+          </div>
+        ))}
+        <ErrorNotice error={preview.error} />
+      </div>
+      <div className="row impact-review-actions">
         <button
           type="button"
           className="primary"
@@ -244,6 +250,6 @@ export function OperationImpactReview({
           Cancel
         </button>
       </div>
-    </section>
+    </dialog>
   );
 }

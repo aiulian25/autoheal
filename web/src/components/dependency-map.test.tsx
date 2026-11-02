@@ -120,6 +120,7 @@ it("submits only a read-only preflight until the reviewed scope is explicitly co
     view,
   );
   await screen.findByText("db");
+  expect(screen.getByRole("dialog", { name: /^Review update .*impact$/ })).toBeTruthy();
   expect(confirm).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledExactlyOnceWith(
     apiPath(API_ROUTES.operationPreview, { hostId: "host", containerName: "app" }),

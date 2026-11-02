@@ -571,7 +571,7 @@ test.describe("Autoheal, end to end on the real image", () => {
       const group = admin.locator("details.update-group", { has: tick });
       await tickOnly(group, `Update ${E2E_APP}`);
       await group.getByRole("button", { name: "Update 1 container now" }).click();
-      const impact = admin.getByRole("region", { name: /^Review update .*impact$/ });
+      const impact = admin.getByRole("dialog", { name: /^Review update .*impact$/ });
       const confirm = impact.getByRole("button", { name: "Confirm reviewed operation", exact: true });
       await expect(confirm).toBeEnabled({ timeout: SLOW });
       await confirm.click();

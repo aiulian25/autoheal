@@ -38,7 +38,14 @@ describe("Autoheal updating itself, from the dashboard", () => {
 
   beforeEach(async () => {
     engine = await FakeDockerEngine.start();
-    engine.add(runningContainer(NAME, { Id: containerIdOf(NAME), Image: OLD_IMAGE, Mounts: [SOCKET, DATA] }));
+    engine.add(
+      runningContainer(NAME, {
+        Id: containerIdOf(NAME),
+        Image: OLD_IMAGE,
+        Mounts: [SOCKET, DATA],
+        Config: { Image: OLD_IMAGE, Tty: false, Env: [] },
+      }),
+    );
     engine.imageIds.set(REFERENCE, NEW_IMAGE);
     engine.imageLabels.set(NEW_IMAGE, {});
     controlPlane = await startTestControlPlane();
@@ -96,6 +103,34 @@ describe("Autoheal updating itself, from the dashboard", () => {
       socketGroup: () => SOCKET_GROUP,
     });
   const audit = async () => JSON.stringify((await admin.get(API_ROUTES.audit)).json());
+
+  describe("which image an update looks for", () => {
+    const COMPOSE_TAG = "ghcr.io/example/autoheal:latest";
+    const running = (config: object) => {
+      engine.containers.get(NAME)!.Config = { Image: OLD_IMAGE, Tty: false, Env: [], ...config } as never;
+    };
+
+    it("is the tag its compose file names, so that tag does not stay behind on the old image", async () => {
+      running({ Image: COMPOSE_TAG });
+      engine.imageIds.set(COMPOSE_TAG, NEW_IMAGE);
+      const view = await service().start(actor);
+      expect(engine.pulls).toContain(COMPOSE_TAG);
+      expect(engine.pulls).not.toContain(REFERENCE);
+      expect(view.reference).toBe(COMPOSE_TAG);
+      const helper = engine.creations.find(({ name }) => name === SELF_UPDATE.helperName)!.specification;
+      expect(helper).toMatchObject({ Cmd: ["self-update", containerIdOf(NAME), NEW_IMAGE, COMPOSE_TAG] });
+    });
+
+    it("is the name the last update noted, where that update left it running by image id", async () => {
+      running({ Labels: { [SELF_UPDATE.referenceLabel]: COMPOSE_TAG } });
+      engine.imageIds.set(COMPOSE_TAG, NEW_IMAGE);
+      expect((await service().view()).reference).toBe(COMPOSE_TAG);
+    });
+
+    it("is AUTOHEAL_IMAGE where the container says nothing", async () => {
+      expect((await service().view()).reference).toBe(REFERENCE);
+    });
+  });
 
   it("starts a helper of the new image with the socket and the data volume alone, and says it is updating", async () => {
     const view = await service().start(actor);

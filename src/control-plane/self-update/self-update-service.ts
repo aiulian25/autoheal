@@ -9,6 +9,7 @@ import {
   COMMAND_SELF_UPDATE,
   DEFAULT_DATA_DIRECTORY,
   DEFAULT_DOCKER_SOCKET_PATH,
+  IMAGE_ID_PREFIX,
   SELF_UPDATE,
   SELF_UPDATE_CLEARABLE_HELPER,
   SELF_UPDATE_FINAL,
@@ -27,7 +28,8 @@ type SelfUpdateDocker = Pick<DockerClient, "inspect" | "inspectImage" | "pull" |
 export interface SelfUpdateDependencies {
   // Null where the control plane's container has no Docker socket.
   docker: SelfUpdateDocker | null;
-  // AUTOHEAL_IMAGE: the image an update runs, pulled first where it comes from a registry.
+  // AUTOHEAL_IMAGE: the image an update runs where its own container does not say, pulled first where it comes from a
+  // registry.
   reference: string;
   outcomes: SelfUpdateOutcomeFile;
   auditLog: AuditLog;
@@ -66,12 +68,12 @@ export class SelfUpdateService {
   }
 
   async view(): Promise<SelfUpdateView> {
-    const { docker, reference } = this.dependencies;
+    const { docker } = this.dependencies;
     const own = docker === null ? null : await docker.inspect(this.ownContainer);
     return {
       unavailable: this.unavailable(docker, own),
       runningImage: own?.Image ?? null,
-      reference,
+      reference: this.referenceOf(own),
       last: await this.lastSeen(docker),
     };
   }
@@ -89,11 +91,12 @@ export class SelfUpdateService {
   }
 
   private async admit(actor: Actor): Promise<SelfUpdateView> {
-    const { docker, reference, outcomes, auditLog, clock } = this.dependencies;
+    const { docker, outcomes, auditLog, clock } = this.dependencies;
     const own = docker === null ? null : await docker.inspect(this.ownContainer);
     if (docker === null || own === null || this.unavailable(docker, own) !== null) {
       throw new DomainError(API_ERRORS.selfUpdateUnavailable);
     }
+    const reference = this.referenceOf(own);
     await this.refuseActiveHelper(docker);
     const unfinished = outcomes.read();
     const recovery = unfinishedRecovery(unfinished);
@@ -138,6 +141,14 @@ export class SelfUpdateService {
       { reference, from: own.Image, to: image.Id },
     );
     return this.view();
+  }
+
+  // The tag this install was asked to run, as its compose file named it, or the name the last update noted: anything
+  // else would leave that tag behind on the old image, for the next "docker compose up" to go back to.
+  private referenceOf(own: ContainerDetails | null): string {
+    const configured = own?.Config.Image;
+    if (configured !== undefined && !configured.startsWith(IMAGE_ID_PREFIX)) return configured;
+    return own?.Config.Labels?.[SELF_UPDATE.referenceLabel] ?? this.dependencies.reference;
   }
 
   // An update that stopped partway: a new helper takes it up by what was recorded, whichever container this is now.

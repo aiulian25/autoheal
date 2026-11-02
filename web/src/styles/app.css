@@ -4060,6 +4060,15 @@ dialog.connect-host {
   box-shadow: 0 24px 60px rgb(0 0 0 / 55%);
 }
 
+.impact-review ul {
+  margin: 6px 0;
+}
+
+.impact-review-actions {
+  justify-content: flex-end;
+  padding: 16px 20px 18px;
+}
+
 dialog.connect-host::backdrop {
   background: rgb(0 0 0 / 55%);
 }

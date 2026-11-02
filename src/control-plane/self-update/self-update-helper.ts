@@ -167,6 +167,10 @@ export async function selfUpdate(
     (await docker.inspectImage(current.Image ?? ""))?.Config ?? {},
     request.image,
   );
+  specification.create.Labels = {
+    ...(specification.create.Labels as Record<string, string> | undefined),
+    [SELF_UPDATE.referenceLabel]: request.reference,
+  };
   try {
     await stopped(name);
     snapshot = await database.snapshot();

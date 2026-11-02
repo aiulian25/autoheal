@@ -138,7 +138,7 @@ describe("Autoheal's update helper", () => {
     expect(made).toMatchObject({
       Image: NEW_IMAGE,
       Env: ["PUBLIC_BASE_URL=https://autoheal.example.org"],
-      Labels: { "com.docker.compose.service": "control-plane" },
+      Labels: { "com.docker.compose.service": "control-plane", [SELF_UPDATE.referenceLabel]: "autoheal:local" },
       HostConfig: { Binds: ["/var/run/docker.sock:/var/run/docker.sock"], RestartPolicy: { Name: "unless-stopped" } },
     });
     expect(engine.containers.has(PREVIOUS)).toBe(false);

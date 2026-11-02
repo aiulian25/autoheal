@@ -4988,6 +4988,8 @@ export const SELF_UPDATE = {
   // The container it replaced, kept to roll back to until the new one has held.
   previousSuffix: "-autoheal-previous",
   label: "autoheal.self-update",
+  // On the container an update makes, which runs by image id: the name to look for the next update under.
+  referenceLabel: "autoheal.self-update.reference",
   // In the data volume, which the helper mounts too: the new control plane reads how it went.
   outcomeFile: "self-update.json",
   // The database as it was before the new version could touch it, kept until the new one has held.

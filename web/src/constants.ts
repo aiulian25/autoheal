@@ -324,6 +324,7 @@ export const AGENT_DRAG_TYPE = "application/x-autoheal-hand-over";
 export const HAND_OVER_SEPARATOR = ":";
 // While an action is on its way to a runner, its result is looked for this often.
 export const JOB_REFRESH_MILLISECONDS = 2_000;
+export const NEW_VERSION_CHECK_MILLISECONDS = 5 * 60 * 1000;
 // The host list, while a host is being rebooted or shut down.
 export const POWER_REFRESH_MILLISECONDS = 2_000;
 // Ticked containers' jobs are followed every second: each ends in seconds, and the rows follow at once.
@@ -2415,6 +2416,10 @@ export const TEXT = {
     },
   },
   // An update or a recreate under its row, as the host's runner reports it.
+  newVersion: {
+    line: "Autoheal was updated. This page is still the old version.",
+    reload: "Reload",
+  },
   updateStream: {
     label: (name: string) => `How the update of ${name} goes`,
     showDetails: "Show details",

@@ -17,6 +17,7 @@ import {
   overviewQuery,
   routerSettingsQuery,
 } from "../queries.js";
+import { NewVersionNotice } from "./new-version-notice.js";
 import { ScrollToTop } from "./scroll-to-top.js";
 import { Icon, type IconName } from "./icons.js";
 import { useLiveUpdates } from "../live.js";
@@ -219,6 +220,7 @@ export function Layout({ session }: { session: SessionView }) {
         <ErrorNotice error={signOut.isError ? new ReadableError(TEXT.signOutFailed) : null} />
       </aside>
       <main className="main">
+        <NewVersionNotice />
         <Outlet />
       </main>
       <ScrollToTop />
