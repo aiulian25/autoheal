@@ -1,0 +1,12 @@
+{
+  "name": "Autoheal",
+  "short_name": "Autoheal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#15181c",
+  "theme_color": "#15181c",
+  "icons": [
+    { "src": "/brand/autoheal-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/autoheal-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

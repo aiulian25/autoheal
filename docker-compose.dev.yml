@@ -1,0 +1,44 @@
+# Autoheal for development: built from this folder. Values come from .env, which is gitignored.
+#   docker compose -f docker-compose.dev.yml up -d --build
+# It takes over this machine like the real thing, so never run it beside another Autoheal on the same Docker.
+services:
+  control-plane:
+    build: .
+    image: ${DEV_IMAGE:-autoheal:dev-latest}
+    command: control-plane
+    container_name: ${DEV_CONTAINER_NAME:-autoheal-dev-control-plane}
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      AUTOHEAL_IMAGE: ${DEV_IMAGE:-autoheal:dev-latest}
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env: stat -c %g /var/run/docker.sock}"]
+    ports:
+      - "${LAN_ADDRESS:-0.0.0.0}:8443:8443"
+      - "${LAN_ADDRESS:-0.0.0.0}:9443:9443"
+    volumes:
+      - data:/data
+      - join:/join
+      - ${DEV_CERTS_DIRECTORY:-./certs}:/certs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/host/root:ro
+      - ${HOME_ASSISTANT_CONFIG_PATH:-/dev/null}:/ha-config:ro,rslave
+    tmpfs: [/tmp:size=64m]
+    mem_limit: 704m
+    cpus: 1.5
+    pids_limit: 320
+    logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }
+
+networks:
+  default:
+    name: ${DEV_NETWORK:-autoheal-dev}
+
+volumes:
+  data:
+    name: ${DEV_DATA_VOLUME:-autoheal-dev-data}
+  join:
+    name: ${DEV_JOIN_VOLUME:-autoheal-dev-join}

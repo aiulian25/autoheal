@@ -1,0 +1,10 @@
+*
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.build.json
+!vite.config.ts
+!src/
+!web/
+**/*.test.ts
+**/*.test.tsx

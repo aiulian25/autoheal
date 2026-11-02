@@ -1,0 +1,28 @@
+# Autoheal's runner for one more host. The dashboard's Hosts > Add a host writes this file, and an
+# .env next to it with AUTOHEAL_JOIN (from there) and DOCKER_GID (stat -c %g /var/run/docker.sock).
+# Optional settings go in that .env too: see the README.
+# Runner safety budgets use runtime-managed autoheal-guard-* Docker volumes; retain them across upgrades.
+services:
+  runner:
+    image: ghcr.io/aiulian25/autoheal:1
+    command: runner
+    container_name: autoheal
+    restart: unless-stopped
+    # Longer than it takes to finish what it is doing, or Docker kills it part way.
+    stop_grace_period: 40s
+    env_file: .env
+    user: "65532:65532"
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env: stat -c %g /var/run/docker.sock}"]
+    read_only: true
+    tmpfs: [/tmp:size=8m]
+    volumes:
+      # Root-equivalent. ":ro" would not make the API read-only, so it is not pretended here.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The host's own files, read-only: its name, disk usage, and whether a reboot or updates wait.
+      - /:/host/root:ro
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    cpus: 0.5
+    pids_limit: 64
+    logging: { driver: json-file, options: { max-size: 10m, max-file: "5" } }

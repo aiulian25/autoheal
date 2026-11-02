@@ -1,0 +1,32 @@
+import { maintenanceGuardReason } from "../shared/recovery-policy-simulator.js";
+import { maintenancePolicySchema, type MaintenancePolicy } from "../shared/maintenance.js";
+
+/** A short policy lease: offline/restarted runners cannot assume no maintenance was requested. */
+export class MaintenanceGate {
+  private valid = false;
+  private policy: MaintenancePolicy | null = null;
+  private receivedAt = 0;
+  private wallAt = 0;
+  constructor(
+    private readonly wall = Date.now,
+    private readonly monotonic = () => performance.now(),
+  ) {}
+  get generation() {
+    return this.policy?.generation ?? 0;
+  }
+  apply(value: unknown) {
+    this.valid = false;
+    const policy = maintenancePolicySchema.parse(value);
+    if (policy.generation < this.generation || Math.abs(policy.observedAt - this.wall()) > 60_000) {
+      throw new Error("Maintenance policy generation or clock is invalid; automatic actions remain paused.");
+    }
+    this.policy = policy;
+    this.valid = true;
+    this.receivedAt = this.monotonic();
+    this.wallAt = this.wall();
+  }
+  held(name: string) {
+    const elapsed = this.monotonic() - this.receivedAt;
+    return maintenanceGuardReason(this.policy, this.valid, elapsed, this.wall() - this.wallAt - elapsed, name) !== null;
+  }
+}

@@ -1,0 +1,51 @@
+# Autoheal on its main host: the dashboard, which also looks after this machine itself, from inside its container.
+# Needs a .env next to this file: copy .env.example and fill it in. Other hosts: Fleet > Add a host in the dashboard.
+# Runner safety budgets use runtime-managed autoheal-guard-* Docker volumes; retain them across upgrades.
+x-autoheal: &autoheal
+  image: ghcr.io/aiulian25/autoheal:1
+  restart: unless-stopped
+  # Longer than it takes to finish what it is doing, or Docker kills it part way.
+  stop_grace_period: 40s
+  env_file: .env
+  user: "65532:65532"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  # The audit trail is written here too; keep enough of it.
+  logging: { driver: json-file, options: { max-size: 10m, max-file: "10" } }
+
+services:
+  control-plane:
+    <<: *autoheal
+    command: control-plane
+    # Autoheal never acts on its own container, which it finds by the hostname Docker gives it.
+    container_name: autoheal-control-plane
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env: stat -c %g /var/run/docker.sock}"]
+    ports:
+      # The dashboard, and the runner API your other hosts report to. LAN_ADDRESS keeps both to one address.
+      - "${LAN_ADDRESS:-0.0.0.0}:8443:8443"
+      - "${LAN_ADDRESS:-0.0.0.0}:9443:9443"
+      # The router's log export, for firewall evidence and who talks to whom. Off unless ROUTER_LOG_PORT is set too.
+      # - "${LAN_ADDRESS:-0.0.0.0}:5514:5514/udp"
+    volumes:
+      - data:/data
+      # Where an older install's runner joined from: this machine's host, with its history, is taken over from it.
+      - join:/join
+      # This machine, looked after in place. Root-equivalent: ":ro" would not make the API read-only, so it is not
+      # pretended here. Without it, the dashboard runs alone and this machine needs a runner of its own.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The host's own files, read-only: its name, disk usage, and whether a reboot or updates wait.
+      - /:/host/root:ro
+      # Any folder of the host can be mounted here the same way. This one lets Ollama read Home Assistant's
+      # configuration, to explain errors and suggest automations and clean-ups: set HOME_ASSISTANT_CONFIG_PATH in
+      # .env. Read-only: Autoheal only suggests. "rslave" follows a network share that mounts after this starts.
+      - ${HOME_ASSISTANT_CONFIG_PATH:-/dev/null}:/ha-config:ro,rslave
+    tmpfs: [/tmp:size=64m]
+    # The dashboard's, and this machine's runner's, which runs inside it.
+    mem_limit: 704m
+    cpus: 1.5
+    pids_limit: 320
+
+volumes:
+  data:
+  join:

@@ -1,0 +1,24 @@
+# The SSH sandbox's disposable engine (run.sh starts and removes it). Everything the browser project starts runs in it,
+# never on the engine this file is run with: its Docker API is reached on loopback over TLS, with its own client keys.
+name: autoheal-ssh-sandbox
+services:
+  engine:
+    image: docker:29.9.0-dind
+    container_name: autoheal-ssh-sandbox
+    privileged: true
+    labels: ["com.autoheal.ssh-sandbox=1"]
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    dns: ["${SANDBOX_DNS:-1.1.1.1}"]
+    # Its own containers and builds too: Docker's embedded resolver, which the sandbox itself uses, is not theirs.
+    command: ["--dns", "${SANDBOX_DNS:-1.1.1.1}"]
+    volumes:
+      - store:/var/lib/docker
+    ports:
+      # Its Docker API, with TLS and client certificates.
+      - 127.0.0.1:${SANDBOX_DOCKER_PORT:-23760}:2376
+      # The dashboard the browser project signs in to.
+      - 127.0.0.1:18443:18443
+volumes:
+  store:
+    labels: ["com.autoheal.ssh-sandbox=1"]

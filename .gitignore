@@ -1,0 +1,31 @@
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+data/
+test/fixtures/tls/*.pem
+test/fixtures/tls/*.srl
+local-test/
+discovery/
+
+# Private files kept next to the project; never part of the repository.
+backup/
+# The release runbook: local paths and hosts, never published.
+build and push.md
+# Review archives made from this folder.
+/autoheal-review-*.tar.gz
+# The retired Python watcher, kept on this machine only.
+/autoheal-python-watcher-*.tar.gz
+# certs/ holds only its README: the CA, keys and certificates it describes stay on your machine.
+certs/*
+!certs/README.md
+# Folders that coding tools make next to the project; .aws/ would hold credentials.
+.agents/
+.aws/
+.codex/
