@@ -859,7 +859,7 @@ export const WORK_ITEM_STATUSES = Object.values(WORK_ITEM_STATUS);
 export type WorkItemStatus = (typeof WORK_ITEM_STATUS)[keyof typeof WORK_ITEM_STATUS];
 
 // Moves with package.json's version, which a test holds it to: the dashboard must not name an older release.
-export const APP_VERSION = "1.3.3";
+export const APP_VERSION = "1.3.4";
 export const BUILD_ID_FILE = "build-id";
 export const BUILD_ID_LENGTH = 12;
 export const RUNNER_TOKEN_BYTES = 32;
