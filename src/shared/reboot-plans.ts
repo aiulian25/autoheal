@@ -30,6 +30,9 @@ export const REBOOT_PLAN = {
   freshMilliseconds: 60_000,
   tickMilliseconds: 15_000,
 } as const;
+/** The status kept beside a plan whose saved form this version cannot read: never one a plan itself may have. */
+export const REBOOT_PLAN_UNREADABLE = "unreadable";
+
 export const REBOOT_PLAN_ROUTES = {
   plans: "/api/reboot-plans",
   preview: "/api/reboot-plans/preview",
@@ -106,8 +109,16 @@ export const REBOOT_PLAN_TEXT = {
   rebooting: (host: string) => `${host} is being rebooted or shut down.`,
   tooFew: (healthy: number, minimum: number, host: string) =>
     `Rebooting ${host} would leave ${healthy} healthy, and this plan needs ${minimum}.`,
+  // A saved plan this version cannot read. Its own contents are never repeated: only that it is there, and that
+  // whether a reboot is going on under it cannot be told, so nothing new may start beside it.
+  unreadable: (count: number) =>
+    `${count} saved reboot ${count === 1 ? "plan" : "plans"} cannot be read by this version of Autoheal, so whether a reboot is still going on under ${count === 1 ? "it" : "them"} is unknown. No new plan starts until that is resolved; the ${count === 1 ? "record is" : "records are"} kept.`,
+  // Only that this row is unreadable, never a word of what is in it.
+  unreadableRow: (id: string) => `Reboot plan ${id} could not be read; it is kept as it is and nothing acts on it.`,
   checkGone: "A check this plan requires no longer exists.",
   checkDown: (name: string) => `${name} is not answering.`,
+  // Nothing shows it either way: a check made from a host whose runner has not reported it.
+  checkUnknown: (name: string) => `Nothing shows whether ${name} is answering.`,
   checkHeld: (name: string) => `${name} is under maintenance, so nothing shows it is answering.`,
   checkStale: (name: string) => `${name} has not been checked recently.`,
   windowOver: "Its time to start reboots has passed.",

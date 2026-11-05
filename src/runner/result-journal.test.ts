@@ -413,3 +413,41 @@ it("blocks a new action ID from bypassing an interrupted action on the same cont
   await expect(restarted.reserve("handled", randomUUID(), "app")).rejects.toThrow("cannot bypass");
   await expect(restarted.reserve("job", "other-job", "other-app")).resolves.toBe(true);
 });
+
+it("closes jobs an earlier runner never finished once asked, so their containers take new jobs, never running them again", async () => {
+  const f = guardStateFixture();
+  const before = await ResultJournal.open(f.store);
+  await before.reserve("job", "start-redis", "redis");
+  const journal = await ResultJournal.open(f.store);
+  await expect(journal.reserve("job", "start-again", "redis")).rejects.toThrow("requires reconciliation");
+
+  await journal.settleInterrupted();
+
+  expect(await journal.reserve("job", "start-redis", "redis")).toBe(false);
+  expect(await journal.reserve("job", "start-again", "redis")).toBe(true);
+  const sent: ResultReport[] = [];
+  await journal.flush(["job"], async (report) => void sent.push(report));
+  expect(sent).toEqual([
+    {
+      kind: "job",
+      id: "start-redis",
+      result: { succeeded: false, outcome: JOB_OUTCOMES.interruptedByRestart, output: null },
+    },
+  ]);
+});
+
+it("keeps taking actions when an old snapshot is in use for a moment, and removes it at the next change", async () => {
+  const f = guardStateFixture();
+  const journal = await ResultJournal.open(f.store);
+  const remove = f.store.removeVolume;
+  f.store.removeVolume = async () => {
+    throw new Error("volume is in use");
+  };
+  expect(await journal.reserve("job", "first", "app")).toBe(true);
+  expect(f.volumes.size).toBe(2);
+
+  f.store.removeVolume = remove;
+  expect(await journal.reserve("job", "second", "other")).toBe(true);
+  expect(f.volumes.size).toBe(1);
+  expect((await ResultJournal.open(f.store)).count(["job"])).toBe(2);
+});

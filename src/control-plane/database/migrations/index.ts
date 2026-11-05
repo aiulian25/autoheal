@@ -30,6 +30,11 @@ import { viewPreferencesMigration } from "./0056-view-preferences.js";
 import { probeCertificatesMigration } from "./0057-probe-certificates.js";
 import { installRetryMigration } from "./0058-install-retry.js";
 import { revokedHostNamesMigration } from "./0059-revoked-host-names.js";
+import { rebootPlanRetentionMigration } from "./0060-reboot-plan-retention.js";
+import { registryCredentialsMigration } from "./0061-registry-credentials.js";
+import { imageTrustMigration } from "./0062-image-trust.js";
+import { probeVantagesMigration } from "./0063-probe-vantages.js";
+import { availabilityGroupsMigration } from "./0064-availability-groups.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -126,6 +131,11 @@ export const MIGRATIONS: readonly Migration[] = [
   probeCertificatesMigration,
   installRetryMigration,
   revokedHostNamesMigration,
+  rebootPlanRetentionMigration,
+  registryCredentialsMigration,
+  imageTrustMigration,
+  probeVantagesMigration,
+  availabilityGroupsMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

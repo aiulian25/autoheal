@@ -18,6 +18,9 @@ const RECORD = "autoheal.guard.record";
 const PREFIX = "autoheal-guard-";
 const MAX_ENTRIES = 4096;
 const MAX_BYTES = 1024 * 1024;
+// Snapshots on the engine at once, the newest with old ones Docker would not let go of yet; reaching this many,
+// something keeps refusing, and recovery stops while a restart can still read them.
+const MAX_RETAINED_RECORDS = 32;
 const timestamp = z.number().finite().nonnegative();
 const schema = z
   .object({
@@ -99,7 +102,7 @@ export class GuardState {
     try {
       const state = new GuardState(store, time);
       const volumes = await store.volumes(LABEL);
-      if (volumes.length > 32) throw new Error("Too many retained guard records.");
+      if (volumes.length > MAX_RETAINED_RECORDS) throw new Error("Too many retained guard records.");
       let latest: Record | null = null;
       for (const volume of volumes) {
         const text = volume.Labels?.[RECORD] ?? "";
@@ -267,9 +270,13 @@ export class GuardState {
       throw new Error("Guard state publication could not be verified.");
     }
     this.revision = record.revision;
-    const before = this.names;
-    this.names = [name];
-    // Publish first; only then remove older snapshots. A cleanup failure blocks further recovery, not safety reads.
-    for (const previous of before) await this.store.removeVolume(previous);
+    // Publish first; only then remove older snapshots. One Docker will not remove now (another container mounted
+    // every volume for a moment) is tried again at the next save: the newest record is read first anyway.
+    const kept: string[] = [];
+    for (const previous of this.names) {
+      await this.store.removeVolume(previous).catch(() => kept.push(previous));
+    }
+    this.names = [name, ...kept];
+    if (this.names.length >= MAX_RETAINED_RECORDS) throw new Error("Too many retained guard records.");
   }
 }

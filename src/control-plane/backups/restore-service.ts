@@ -1,35 +1,30 @@
 import { RestoreJournal, type RestoreRecord } from "./restore-journal.js";
+import { settleDispatchedWork } from "./settle-dispatched-work.js";
 import { describeError } from "../../shared/errors.js";
 import { log } from "../../shared/log.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { API_ERRORS, type RestorePreviewView, type RestoreResultView } from "../../shared/api.js";
-import { APPLICATION_BACKUP_FAILURE } from "../../shared/application-backups.js";
 import {
   ACTOR_SYSTEM,
   AUDIT_ACTIONS,
   BACKUP_ORIGIN,
   HOST_STATUS_ACTIVE,
-  INCIDENT_STATUS,
   INTEGRITY_OK,
   JOB_CANCELLED_BY_RESTORE,
-  STACK_RESTART_INTERRUPTED,
   JOB_STATUS,
   RESTORE_MESSAGES,
   RESTORE_PENDING_MILLISECONDS,
   RESTORE_REQUIRED_TABLES,
   RESTORE_SOURCE,
-  REPLAY_FINISHED,
-  REPLAY_RUNNING,
   RESTORE_SUFFIX,
   ROLLBACK_SUFFIX,
   SQLITE_SIDE_FILES,
   SYSTEM_ACTOR_LABEL,
   TARGET_BACKUP,
-  TRACE,
   USER_STATUS_ACTIVE,
   USER_STATUS_DEACTIVATED,
   WORK_ITEM_STATUS,
@@ -38,17 +33,7 @@ import {
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import { openReadOnly, type DatabaseHandle } from "../database/connection.js";
 import { LATEST_SCHEMA_VERSION } from "../database/migrations/index.js";
-import {
-  incidentEvents,
-  incidents,
-  jobs,
-  replayRuns,
-  sessions,
-  tasks,
-  workItems,
-  stackRestarts,
-  updateRuns,
-} from "../database/schema.js";
+import { jobs, sessions, workItems, stackRestarts } from "../database/schema.js";
 import { SecretBox } from "../database/secret-box.js";
 import { sealStoredSecrets, unreadableSecrets } from "../database/stored-secrets.js";
 import { DomainError } from "../domain-error.js";
@@ -62,10 +47,6 @@ interface PendingRestore {
   snapshotPath: string;
   preparedBy: string;
 }
-
-const STALE_INCIDENT_STATUSES = [INCIDENT_STATUS.deciding, INCIDENT_STATUS.awaitingApproval, INCIDENT_STATUS.approved];
-const OPEN_WORK = [WORK_ITEM_STATUS.pending, WORK_ITEM_STATUS.delivered];
-const OPEN_JOBS = [JOB_STATUS.pending, JOB_STATUS.delivered];
 
 /** Decrypt and check a backup; refuse anything that is not a healthy Autoheal database we can run. */
 async function validatedSnapshot(
@@ -133,97 +114,15 @@ function applicationWorkInFlight(handle: DatabaseHandle) {
 function settleAfterRestore(databaseHandle: DatabaseHandle, secretBox: SecretBox, now: number): number {
   // An older backup brings its secrets back in plain text: they are sealed before anything reads them.
   sealStoredSecrets(databaseHandle.sqlite, secretBox);
-  const database = databaseHandle.database;
-  database
-    .update(workItems)
-    .set({ status: WORK_ITEM_STATUS.cancelled })
-    .where(inArray(workItems.status, OPEN_WORK))
-    .run();
-  database
-    .update(jobs)
-    .set({ status: JOB_STATUS.expired, completedAt: now, outcome: JOB_CANCELLED_BY_RESTORE })
-    .where(inArray(jobs.status, OPEN_JOBS))
-    .run();
-  database.update(jobs).set({ installPayload: null }).run();
-  // Restored approvals/schedules describe an older world. Never replay them into live volumes.
-  const sqlite = databaseHandle.sqlite;
-  const reconciliation = JSON.stringify({
-    restoreReconciliationRequired: true,
-    message:
-      "Database restored. Review live Docker state and retained application artifacts before requesting fresh work.",
-  });
-  // Files may be newer than this database snapshot. Pin artifacts for uncertain work before cancellation,
-  // so the normal failed-upload cleanup cannot destroy their independently retained recovery keys.
-  sqlite
-    .prepare(
-      "UPDATE application_backup_artifacts AS artifact SET retained_by_run_id=COALESCE(retained_by_run_id,(SELECT work.id FROM application_backup_runs work WHERE work.status IN ('queued','running','recovery-required') AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id) ORDER BY work.created_at LIMIT 1)) WHERE EXISTS (SELECT 1 FROM application_backup_runs work WHERE work.status IN ('queued','running','recovery-required') AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id))",
-    )
-    .run();
-  sqlite
-    .prepare(
-      "UPDATE application_backup_runs SET status='failed',failure=?,finished_at=?,progress_json=? WHERE status='queued'",
-    )
-    .run(APPLICATION_BACKUP_FAILURE.databaseRestored, now, reconciliation);
-  sqlite
-    .prepare("UPDATE application_backup_runs SET status='recovery-required',progress_json=? WHERE status='running'")
-    .run(reconciliation);
-  sqlite
+  const cancelledIncidents = settleDispatchedWork(databaseHandle, now, JOB_CANCELLED_BY_RESTORE);
+  // A backup is from another day: its schedules and everyone's sessions belong to that day, not this one.
+  databaseHandle.sqlite
     .prepare(
       "UPDATE application_backup_plans SET enabled=0,next_due_at=NULL,revision=revision+1,updated_at=? WHERE enabled<>0 OR next_due_at IS NOT NULL",
     )
     .run(now);
-  sqlite
-    .prepare(
-      "UPDATE rollouts SET state_json=json_set(state_json,'$.status','held','$.reason',?,'$.updatedAt',?),updated_at=? WHERE json_valid(state_json) AND json_extract(state_json,'$.status') IN ('updating','observing','ready')",
-    )
-    .run(
-      "Database restored. Hold retained rollout state until a fresh plan is reviewed; no later cohort may run.",
-      now,
-      now,
-    );
-  database.update(tasks).set({ checkedOutBy: null, checkedOutAt: null }).run();
-  database
-    .update(updateRuns)
-    .set({ status: UPDATE_RUN_STATUS.stopped, updatedAt: now })
-    .where(eq(updateRuns.status, UPDATE_RUN_STATUS.running))
-    .run();
-  // Its jobs were just cancelled, and what it asked of the host may have happened or not. Never carried on.
-  database
-    .update(stackRestarts)
-    .set({
-      status: UPDATE_RUN_STATUS.stopped,
-      failed: sql`${stackRestarts.current}`,
-      current: null,
-      currentJobId: null,
-      outcome: STACK_RESTART_INTERRUPTED,
-      updatedAt: now,
-    })
-    .where(eq(stackRestarts.status, UPDATE_RUN_STATUS.running))
-    .run();
-  database
-    .update(replayRuns)
-    .set({ status: REPLAY_FINISHED, finishedAt: now })
-    .where(eq(replayRuns.status, REPLAY_RUNNING))
-    .run();
-  const stale = database
-    .select({ id: incidents.id })
-    .from(incidents)
-    .where(inArray(incidents.status, STALE_INCIDENT_STATUSES))
-    .all();
-  if (stale.length > 0) {
-    const ids = stale.map((incident) => incident.id);
-    database
-      .update(incidents)
-      .set({ status: INCIDENT_STATUS.cancelled, updatedAt: now })
-      .where(inArray(incidents.id, ids))
-      .run();
-    database
-      .insert(incidentEvents)
-      .values(ids.map((incidentId) => ({ incidentId, kind: TRACE.cancelledByRestore, createdAt: now })))
-      .run();
-  }
-  database.delete(sessions).run();
-  return stale.length;
+  databaseHandle.database.delete(sessions).run();
+  return cancelledIncidents;
 }
 
 /**

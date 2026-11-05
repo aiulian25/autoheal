@@ -16,6 +16,7 @@ import {
   sizeText,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
+import type { HelperImage } from "./application-backups.js";
 import type { DockerClient, DockerVolume } from "./docker-client.js";
 import type { ContainerDetails } from "./incident-report.js";
 
@@ -33,8 +34,8 @@ export interface VolumeCheckpointsDependencies {
     | "removeVolume"
     | "volumes"
   >;
-  // The runner's own container: the helper runs its image.
-  selfContainerName: string;
+  // Autoheal's image, which the helper runs: the runner's own container's, or the one pulled onto an SSH host.
+  helperImage: HelperImage;
   // How much one checkpoint may hold; 0 turns them off.
   limitBytes: number;
   now?: () => number;
@@ -335,7 +336,7 @@ export class VolumeCheckpoints {
   }
 
   /**
-   * The helper: this runner's own image as root, with only the capabilities copying files needs, no network,
+   * The helper: Autoheal's image as root, with only the capabilities copying files needs, no network,
    * and each pair of mounts under /from and /to; read-only where it copies from.
    */
   private async copy(
@@ -345,11 +346,8 @@ export class VolumeCheckpoints {
     beforeStart?: () => Promise<unknown>,
     restoreOwner?: string,
   ): Promise<VolumeCopyReport> {
-    const { docker, selfContainerName } = this.dependencies;
-    const self = await docker.inspect(selfContainerName);
-    if (self?.Image === undefined) {
-      throw new Error(VOLUME_COPY_MESSAGES.selfMissing(selfContainerName));
-    }
+    const { docker, helperImage } = this.dependencies;
+    const image = await helperImage();
     const mountOf = (mount: HelperMount, target: string, readOnly: boolean) => ({
       Type: mount.type,
       Source: mount.source,
@@ -360,7 +358,7 @@ export class VolumeCheckpoints {
     });
     const helper = `${HOST_HELPER.containerPrefix}${CHECKPOINT.helperPrefix}${randomUUID()}`;
     await docker.create(helper, {
-      Image: self.Image,
+      Image: image,
       Cmd: [COMMAND_VOLUME_COPY, verb, ...commandArguments],
       User: HOST_HELPER.user,
       Labels: {

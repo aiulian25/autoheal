@@ -8,11 +8,15 @@ import { runningContainer } from "../../../test/support/embedded-ssh-host.js";
 import { DockerClient } from "../../runner/docker-client.js";
 import {
   DATABASE_FILE_NAME,
+  EXIT_FAILURE,
+  EXIT_USAGE,
   SELF_UPDATE,
   SELF_UPDATE_PHASE,
   SELF_UPDATE_STATUS,
   SELF_UPDATE_TEXT,
+  SELF_UPDATE_UNREADABLE,
 } from "../../shared/constants.js";
+import { runSelfUpdate } from "../../commands/self-update.js";
 import { SelfUpdateDatabaseFiles, type SelfUpdateDatabase } from "./self-update-database.js";
 import { selfUpdate, type SelfUpdateTiming } from "./self-update-helper.js";
 import type { JournalledOutcome } from "./self-update-outcome.js";
@@ -105,6 +109,7 @@ describe("Autoheal's update helper", () => {
         events.push("snapshot");
         return files.snapshot();
       },
+      needsRestore: (snapshot) => files.needsRestore(snapshot),
       restoreIfNeeded: (snapshot) => {
         events.push("restore?");
         return files.restoreIfNeeded(snapshot);
@@ -142,6 +147,76 @@ describe("Autoheal's update helper", () => {
       HostConfig: { Binds: ["/var/run/docker.sock:/var/run/docker.sock"], RestartPolicy: { Name: "unless-stopped" } },
     });
     expect(engine.containers.has(PREVIOUS)).toBe(false);
+  });
+
+  describe("when Docker will not park the original under its kept name", () => {
+    // Only the rename that parks the original is troublesome; putting it back afterwards still works.
+    const parking = (to: string) => to === PREVIOUS;
+    // Refuses before it does anything, as a name conflict does.
+    class RefusingRename extends WatchedDocker {
+      override async rename(from: string, to: string) {
+        if (!parking(to)) return super.rename(from, to);
+        events.push(`rename refused ${from}`);
+        throw new Error(`conflict: a container named ${to} is already in use`);
+      }
+    }
+    // Renames, then loses the answer: Docker did it, the helper only hears that it failed.
+    class LostRenameAnswer extends WatchedDocker {
+      override async rename(from: string, to: string) {
+        await super.rename(from, to);
+        if (!parking(to)) return;
+        events.push(`rename done, answer lost ${from}`);
+        throw new Error("socket hang up");
+      }
+    }
+
+    it("puts the original back and says the update failed, rather than leaving it stopped", async () => {
+      const outcome = await update(new RefusingRename(engine.socketPath));
+
+      expect(outcome).toMatchObject({ status: SELF_UPDATE_STATUS.failed, from: OLD_IMAGE, to: NEW_IMAGE });
+      expect(outcome.message).toContain("already in use");
+      expect(engine.containers.get(NAME)).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+      // Its data was never touched, so nothing is put back and nothing says it was.
+      expect(outcome.message).not.toContain(SELF_UPDATE_TEXT.dataRestored);
+      expect(schema()).toBe(OLD_SCHEMA);
+      // The original holds the name it always held: it is never removed to make room.
+      expect(engine.removals).not.toContain(NAME);
+      expect(engine.containers.has(PREVIOUS)).toBe(false);
+      expect(lastStep()).toMatchObject({ status: SELF_UPDATE_STATUS.failed, recovery: null });
+    });
+
+    it("tells a rename Docker carried out from one it refused, and brings that original back under its name", async () => {
+      const outcome = await update(new LostRenameAnswer(engine.socketPath));
+
+      expect(outcome.status).toBe(SELF_UPDATE_STATUS.failed);
+      expect(engine.containers.get(NAME)).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+      expect(engine.containers.get(NAME)!.Id).toBe(containerIdOf(NAME));
+      expect(engine.containers.has(PREVIOUS)).toBe(false);
+      expect(engine.removals).not.toContain(NAME);
+    });
+
+    it("says it is blocked, keeping the copy, when the original cannot be brought back", async () => {
+      // Start is accepted and the container still does not run: the case a bare start() would call a success.
+      class RefusingRestart extends RefusingRename {
+        override async start(reference: string) {
+          if (engine.containers.get(reference)?.Image === OLD_IMAGE) {
+            events.push("start ignored");
+            return;
+          }
+          return super.start(reference);
+        }
+      }
+
+      const outcome = await update(new RefusingRestart(engine.socketPath));
+
+      expect(outcome.status).toBe(SELF_UPDATE_STATUS.blocked);
+      expect(outcome.message).toContain("did not start");
+      expect(outcome.finishedAt).toBeNull();
+      // Blocked is not an ending: the copy and what a later helper needs to take it up are both kept.
+      expect(existsSync(snapshotFile())).toBe(true);
+      expect(lastStep().recovery).toMatchObject({ phase: SELF_UPDATE_PHASE.rollingBack, name: NAME });
+      expect(engine.containers.get(NAME)).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+    });
   });
 
   it("starts the old one again when the new one never becomes healthy", async () => {
@@ -204,6 +279,63 @@ describe("Autoheal's update helper", () => {
       expect(engine.containers.get(NAME)).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
       expect(existsSync(snapshotFile())).toBe(true);
       expect(engine.removals).toContain(NAME);
+    });
+
+    it("says the database went back before the file moves, so the old version settles what it dispatched", async () => {
+      const marked: string[] = [];
+      const docker = migrating();
+      const files = new SelfUpdateDatabaseFiles(data);
+      const watching: SelfUpdateDatabase = {
+        snapshot: () => files.snapshot(),
+        needsRestore: (snapshot) => files.needsRestore(snapshot),
+        restoreIfNeeded: (snapshot) => {
+          // What the record already said by the time the file is about to move.
+          marked.push(`restoring, dataRestored=${String(steps.at(-1)!.dataRestored)}`);
+          return files.restoreIfNeeded(snapshot);
+        },
+        discard: (snapshot) => files.discard(snapshot),
+      };
+
+      const outcome = await update(docker, null, watching);
+
+      expect(outcome.status).toBe(SELF_UPDATE_STATUS.rolledBack);
+      expect(marked).toEqual(["restoring, dataRestored=true"]);
+      // And it is still said on the record the old control plane reads when it comes up.
+      expect(steps.at(-1)).toMatchObject({ dataRestored: true, recovery: null });
+      // The old container is only started after that promise is on disk.
+      expect(events.indexOf(`start ${OLD_IMAGE} on ${OLD_SCHEMA}`)).toBeGreaterThan(
+        events.indexOf("stop " + NEW_IMAGE),
+      );
+    });
+
+    it("says nothing of the sort when the schema did not move and the file was kept", async () => {
+      engine.failingImages.add(NEW_IMAGE);
+      const outcome = await update();
+      expect(outcome.status).toBe(SELF_UPDATE_STATUS.rolledBack);
+      expect(steps.at(-1)!.dataRestored).toBe(false);
+    });
+
+    it("keeps its promise across a helper that died mid-restore, which would find nothing left to put back", async () => {
+      const files = new SelfUpdateDatabaseFiles(data);
+      const died: SelfUpdateDatabase = {
+        snapshot: () => files.snapshot(),
+        needsRestore: (snapshot) => files.needsRestore(snapshot),
+        restoreIfNeeded: (snapshot) => {
+          files.restoreIfNeeded(snapshot);
+          throw new Error("helper died");
+        },
+        discard: (snapshot) => files.discard(snapshot),
+      };
+      const stopped = await update(migrating(), null, died);
+      expect(stopped.status).toBe(SELF_UPDATE_STATUS.blocked);
+      const interrupted = steps.at(-1)!;
+      expect(interrupted.dataRestored).toBe(true);
+
+      // The next helper finds the file already on the old schema, so it has nothing to restore; the promise stands.
+      steps.length = 0;
+      const resumed = await update(new WatchedDocker(engine.socketPath), interrupted);
+      expect(steps.at(-1)!.dataRestored).toBe(true);
+      expect(resumed.status).not.toBe(SELF_UPDATE_STATUS.updating);
     });
 
     it("leaves none of the new version's journal files beside the file it put back", async () => {
@@ -408,6 +540,40 @@ describe("Autoheal's update helper", () => {
       await expect(
         update(new WatchedDocker(engine.socketPath), { ...earlier, to: OLD_IMAGE, recovery: { ...earlier.recovery } }),
       ).rejects.toThrow("is unfinished");
+    });
+  });
+
+  // The helper runs with the Docker socket, so the block that stops the control plane has to stop it too.
+  describe("the command the helper container runs", () => {
+    const SECRET = "a-passphrase-nobody-should-see";
+    const ARGUMENTS = [containerIdOf(NAME), NEW_IMAGE, "autoheal:local"];
+    const said: string[] = [];
+    const output = { log: (line: string) => said.push(line), error: (line: string) => said.push(line) };
+
+    beforeEach(() => {
+      said.length = 0;
+    });
+
+    it.each([
+      ["bytes that are not JSON", `{ ${SECRET}`, SELF_UPDATE_UNREADABLE.notJson],
+      ["JSON that is not a record", JSON.stringify({ kept: SECRET }), SELF_UPDATE_UNREADABLE.notTheShape],
+    ])("stops before it touches Docker where the record cannot be read: %s", async (_case, body, reason) => {
+      writeFileSync(join(data, SELF_UPDATE.outcomeFile), body);
+      const creationsBefore = engine.creations.length;
+
+      const code = await runSelfUpdate(ARGUMENTS, output, data);
+
+      expect(code).toBe(EXIT_FAILURE);
+      expect(said).toEqual([SELF_UPDATE_TEXT.recoveryBlocked(reason)]);
+      expect(said.join("")).not.toContain(SECRET);
+      // Nothing was replaced, and the record it could not read is still there for a person.
+      expect(engine.creations.length).toBe(creationsBefore);
+      expect(engine.containers.has(PREVIOUS)).toBe(false);
+      expect(readFileSync(join(data, SELF_UPDATE.outcomeFile), "utf8")).toBe(body);
+    });
+
+    it("refuses the arguments it cannot use, as before", async () => {
+      expect(await runSelfUpdate([], output, data)).toBe(EXIT_USAGE);
     });
   });
 });

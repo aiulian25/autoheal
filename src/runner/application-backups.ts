@@ -38,14 +38,33 @@ export type HelperImage = () => Promise<string>;
 /** Autoheal's image is not on the host: a reason the person is told whole, as it says what to do. */
 export class HelperImageMissing extends Error {}
 
-/** Autoheal's image as the control plane names it, on a host with no Autoheal container of its own. */
-export const imageOnHost =
-  (docker: Pick<DockerClient, "inspectImage">, reference: string): HelperImage =>
-  async () => {
+/**
+ * Autoheal's image as the control plane names it, on a host with no Autoheal container of its own: pulled there the
+ * first time a helper needs it, one pull at a time.
+ * ponytail: once there it is kept as it is, so a host can run an older helper than the control plane; a helper
+ * that answers in a way the runner does not read fails its copy, and the update waits. Pull again per release if that bites.
+ */
+export function imageOnHost(docker: Pick<DockerClient, "inspectImage" | "pull">, reference: string): HelperImage {
+  let pulling: Promise<void> | null = null;
+  return async () => {
     const found = await docker.inspectImage(reference);
-    if (found === null) throw new HelperImageMissing(APPLICATION_HELPER_ERRORS.imageMissing(reference));
-    return found.Id;
+    if (found !== null) return found.Id;
+    pulling ??= docker.pull(reference).finally(() => {
+      pulling = null;
+    });
+    const failure = await pulling.then(
+      () => null,
+      (error: unknown) => describeError(error),
+    );
+    const pulled = await docker.inspectImage(reference);
+    if (pulled === null) {
+      throw new HelperImageMissing(
+        APPLICATION_HELPER_ERRORS.imageMissing(reference, failure ?? APPLICATION_HELPER_ERRORS.notKeptAfterPull),
+      );
+    }
+    return pulled.Id;
   };
+}
 
 export interface ApplicationBackupsDependencies {
   docker: DockerClient;

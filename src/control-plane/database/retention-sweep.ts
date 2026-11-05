@@ -16,6 +16,7 @@ import {
   WORK_ITEM_STATUS,
 } from "../../shared/constants.js";
 import { DATA_KIND, type DataKind, type DataView } from "../../shared/api.js";
+import { REBOOT_PLAN_STATUS } from "../../shared/reboot-plans.js";
 import type { AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "./connection.js";
 
@@ -26,6 +27,7 @@ const FINISHED_UPDATE_RUNS = listed([UPDATE_RUN_STATUS.finished, UPDATE_RUN_STAT
 const OPEN_WORK = listed([WORK_ITEM_STATUS.pending, WORK_ITEM_STATUS.delivered]);
 const CLOSED_TASKS = listed(CLOSED_TASK_STATUSES);
 const FINISHED_BACKUP_RUNS = listed(FINISHED_APPLICATION_BACKUP_RUN_STATUSES);
+const SETTLED_REBOOT_PLANS = listed([REBOOT_PLAN_STATUS.completed, REBOOT_PLAN_STATUS.cancelled]);
 // A JSON array parameter read as a set of values.
 const EACH = "(SELECT value FROM json_each(?))";
 
@@ -149,6 +151,22 @@ const EXPIRIES: readonly Expiry[] = [
       LIMIT ?`,
     parameters: (cutoff) => [cutoff, FINISHED_BACKUP_RUNS],
     deletes: [`DELETE FROM application_backup_runs WHERE id IN ${EACH}`],
+  },
+  {
+    name: DATA_KIND.rebootPlans,
+    table: "reboot_plans",
+    window: RETENTION_MILLISECONDS.rebootPlans,
+    // Only plans that are over. One still running or paused stays, and so does one whose saved form cannot be read,
+    // which may be a reboot nobody has accounted for; a plan whose job is still here keeps its own record too.
+    select: `SELECT id FROM reboot_plans
+      WHERE updated_at < ? AND status IN ${EACH}
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs, json_each(json_extract(reboot_plans.state_json, '$.steps'))
+          WHERE jobs.id = json_extract(json_each.value, '$.jobId')
+        )
+      LIMIT ?`,
+    parameters: (cutoff) => [cutoff, SETTLED_REBOOT_PLANS],
+    deletes: [`DELETE FROM reboot_plans WHERE id IN ${EACH}`],
   },
 ];
 

@@ -243,6 +243,29 @@ describe("a host's own packages", () => {
     expect(await takeWork()).toEqual([expect.objectContaining({ action: "check_packages", requestedBy: "Autoheal" })]);
   });
 
+  it("drops what an upgrade installed as it ends, before the check after it answers", async () => {
+    await checked();
+    const before = (await view()).packages.map(({ name }) => name);
+    expect(before).toContain("curl");
+    const upgrade = (await ask({ action: "upgrade_packages", packages: ["curl"] })).json<JobView>();
+    await takeWork();
+
+    await answer(upgrade.id, { succeeded: true, outcome: "Upgraded curl.", output: null });
+
+    expect((await view()).packages.map(({ name }) => name)).toEqual(before.filter((name) => name !== "curl"));
+  });
+
+  it("keeps the list as it was when an upgrade fails", async () => {
+    await checked();
+    const before = (await view()).packages.map(({ name }) => name);
+    const upgrade = (await ask({ action: "upgrade_packages", packages: ["curl"] })).json<JobView>();
+    await takeWork();
+
+    await answer(upgrade.id, { succeeded: false, outcome: "Could not upgrade curl.", output: null });
+
+    expect((await view()).packages.map(({ name }) => name)).toEqual(before);
+  });
+
   it("lists what nothing needs any more, removes it when asked, and checks again", async () => {
     await checked({ ...CHECK, removable: [OLD_KERNEL] });
     expect((await view()).removable).toEqual([OLD_KERNEL]);
@@ -256,6 +279,7 @@ describe("a host's own packages", () => {
       output: null,
     });
 
+    expect((await view()).removable).toEqual([]);
     expect(await takeWork()).toEqual([expect.objectContaining({ action: "check_packages", requestedBy: "Autoheal" })]);
   });
 

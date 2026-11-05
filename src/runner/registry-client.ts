@@ -11,12 +11,16 @@ import {
   NODE_TO_OCI_ARCHITECTURE,
   OCI_LABELS,
   REGISTRY,
+  IMAGE_PROVENANCE,
+  REGISTRY_CREDENTIALS,
   REGISTRY_MESSAGES,
   URL_PROTOCOL_SUFFIX,
 } from "../shared/constants.js";
 import { splitTag } from "../shared/image-reference.js";
 import type { ImageFacts } from "../shared/install.js";
 import type { ImageLabels } from "../shared/protocol.js";
+import { signatureTagOf } from "../shared/image-provenance.js";
+import { accessForImage, type RegistryAccess } from "../shared/registry-credentials.js";
 import { webLinkOf } from "../shared/urls.js";
 
 export interface ImageReference {
@@ -59,6 +63,20 @@ const schemeOf = (host: string) => (isLoopback(host) ? REGISTRY.plainScheme : RE
 
 const CHALLENGE_PARAMETER = /(\w+)="([^"]*)"/g;
 
+/** What a registry is told to prove a credential: the user name and the password, as HTTP basic authentication. */
+const basicHeader = ({ username, password }: RegistryAccess) =>
+  `${REGISTRY_CREDENTIALS.basicScheme}${Buffer.from(`${username}:${password}`).toString("base64")}`;
+
+/**
+ * A stored credential goes to the registry it is for, and to the one token address Docker Hub names. Nowhere else:
+ * a registry that answers with a token address of its own choosing must not be able to collect it.
+ */
+const mayHaveCredential = (registry: string, realmHost: string) => {
+  if (realmHost === registry) return true;
+  if (registry === REGISTRY.dockerHubHost && realmHost === REGISTRY.dockerHubTokenHost) return true;
+  return isLoopback(registry) && isLoopback(realmHost);
+};
+
 /** The parameters of a `Bearer realm="…",service="…",scope="…"` challenge. */
 function challengeOf(header: string | null): Map<string, string> | null {
   if (header === null || !header.toLowerCase().startsWith(REGISTRY.bearerScheme)) {
@@ -85,10 +103,19 @@ function tokenUrlOf(challenge: Map<string, string>, registry: string): URL {
   return realm;
 }
 
+/** One signature kept beside an image: the document it is over, and the signature itself. */
+export interface SignatureArtifact {
+  payload: string;
+  signature: string;
+  // Set where the signature came with a certificate instead of being made with a key: not read here.
+  certificate: string | null;
+}
+
 /** What a manifest, an index or an image configuration holds that is read here; all of it is the registry's word. */
 interface RegistryDocument {
   mediaType?: unknown;
   manifests?: { digest?: unknown; platform?: { os?: unknown; architecture?: unknown } }[];
+  layers?: { mediaType?: unknown; digest?: unknown; annotations?: Record<string, unknown> | null }[];
   config?: {
     digest?: unknown;
     Labels?: Record<string, unknown> | null;
@@ -157,11 +184,24 @@ export function portsIn(exposed: Record<string, unknown> | null | undefined): nu
 /** What an image says it is, and its configuration's digest: Docker's id for it, on the classic image store. */
 export type RemoteImage = ImageLabels & { configDigest?: string };
 
-export class RegistryClient {
-  constructor(private readonly fetchImplementation: typeof fetch = fetch) {}
+/** What a runner may use right now, which its heartbeat answers keep current. */
+export type RegistryCredentials = () => readonly RegistryAccess[];
 
-  async digest(reference: ImageReference): Promise<string> {
-    const { response } = await this.authorized(this.manifestUrl(reference, reference.tag), "HEAD", reference, null);
+export class RegistryClient {
+  constructor(
+    private readonly fetchImplementation: typeof fetch = fetch,
+    private readonly credentials: RegistryCredentials = () => [],
+  ) {}
+
+  /** The digest a tag points to now; `given` is a credential to use instead of the stored ones, for a test. */
+  async digest(reference: ImageReference, given: RegistryAccess | null = null): Promise<string> {
+    const { response } = await this.authorized(
+      this.manifestUrl(reference, reference.tag),
+      "HEAD",
+      reference,
+      null,
+      given,
+    );
     return this.digestOf(response);
   }
 
@@ -173,6 +213,39 @@ export class RegistryClient {
   async labels(reference: ImageReference, digest: string): Promise<RemoteImage> {
     const configuration = await this.configuration(reference, digest);
     return { ...imageLabelsOf(configuration.config?.Labels ?? {}), configDigest: configuration.digest };
+  }
+
+  /**
+   * The signatures a registry keeps for one image, which cosign writes to a tag of its digest. Each is the document
+   * it signs and the signature over it, as the registry holds them: nothing here says whether either is any good.
+   * `null` when the registry holds no signature for that image at all.
+   */
+  async signatures(reference: ImageReference, digest: string): Promise<SignatureArtifact[] | null> {
+    const tag = signatureTagOf(digest);
+    const found = await this.authorized(this.manifestUrl(reference, tag), "GET", reference, null);
+    // No such tag: this image carries no signature, which is not the same as one that does not hold up.
+    if (found.response.status === HTTP_STATUS.notFound) {
+      await found.response.body?.cancel();
+      return null;
+    }
+    const manifest = await this.documentOf(found.response);
+    const layers = (manifest.layers ?? []).filter(
+      (layer) => layer.mediaType === IMAGE_PROVENANCE.payloadMediaType && typeof layer.digest === "string",
+    );
+    const artifacts: SignatureArtifact[] = [];
+    for (const layer of layers.slice(0, IMAGE_PROVENANCE.signaturesPerImage)) {
+      const signature = layer.annotations?.[IMAGE_PROVENANCE.signatureAnnotation];
+      if (typeof signature !== "string") continue;
+      const certificate = layer.annotations?.[IMAGE_PROVENANCE.certificateAnnotation];
+      const blobUrl = `${this.repositoryUrl(reference)}/blobs/${String(layer.digest)}`;
+      const blob = await this.authorized(blobUrl, "GET", reference, found.token);
+      artifacts.push({
+        payload: await textWithin(blob.response, IMAGE_PROVENANCE.payloadBytesLimit),
+        signature,
+        certificate: typeof certificate === "string" ? certificate : null,
+      });
+    }
+    return artifacts;
   }
 
   /** What an image's build says it needs, without pulling it: for a machine of this architecture, if it runs there. */
@@ -244,27 +317,49 @@ export class RegistryClient {
     return `${this.repositoryUrl(reference)}/manifests/${tagOrDigest}`;
   }
 
-  /** Asks with the token it has, or anonymously; refused even so, the image is not public there. */
+  /** Asks with the token it has, or asks for one; refused even so, the image is not there for whoever asked. */
   private async authorized(
     url: string,
     method: RequestMethod,
     reference: ImageReference,
     token: string | null,
+    given: RegistryAccess | null = null,
   ): Promise<{ response: Response; token: string | null }> {
+    const access = given ?? this.accessFor(reference);
     const answer =
       token === null
-        ? await this.anonymously(url, method, reference)
+        ? await this.asAllowed(url, method, reference, access)
         : { response: await this.request(url, method, token), token };
     if (isRefusal(answer.response.status)) {
       await answer.response.body?.cancel();
-      throw new RegistryError(REGISTRY_MESSAGES.wantsCredentials(registryName(reference.registry)));
+      throw new RegistryError(this.refusal(reference.registry, access));
     }
     return answer;
   }
 
-  // Asks as it is; on a bearer challenge, fetches an anonymous token and asks again where the registry sent the
-  // first request (lscr.io redirects to ghcr.io).
-  private async anonymously(url: string, method: RequestMethod, reference: ImageReference) {
+  /** The stored credential for this image, the one scoped most closely to it; null where none is. */
+  private accessFor(reference: ImageReference): RegistryAccess | null {
+    return accessForImage(this.credentials(), reference);
+  }
+
+  // What a refusal means: with no credential the image is simply not there for whoever asked; with one, the
+  // registry turned that credential down, which is what a person has to be told.
+  private refusal(registry: string, access: RegistryAccess | null) {
+    const name = registryName(registry);
+    return access === null
+      ? REGISTRY_MESSAGES.wantsCredentials(name)
+      : REGISTRY_MESSAGES.refusedCredential(name, access.username);
+  }
+
+  // Asks as it is; on a bearer challenge, fetches a token — with the stored credential where there is one, so the
+  // token covers a private repository — and asks again where the registry sent the first request (lscr.io
+  // redirects to ghcr.io). A registry asking for basic authentication is told directly.
+  private async asAllowed(
+    url: string,
+    method: RequestMethod,
+    reference: ImageReference,
+    access: RegistryAccess | null,
+  ) {
     const first = await this.request(url, method, null);
     if (first.status !== HTTP_STATUS.unauthorized) {
       return { response: first, token: null };
@@ -272,17 +367,21 @@ export class RegistryClient {
     await first.body?.cancel();
     const challenge = challengeOf(first.headers.get(REGISTRY.challengeHeader));
     if (challenge === null) {
-      throw new RegistryError(REGISTRY_MESSAGES.wantsCredentials(registryName(reference.registry)));
+      if (access === null)
+        throw new RegistryError(REGISTRY_MESSAGES.wantsCredentials(registryName(reference.registry)));
+      return { response: await this.request(first.url || url, method, null, access), token: null };
     }
-    const anonymous = await this.anonymousToken(tokenUrlOf(challenge, reference.registry), reference.registry);
-    return { response: await this.request(first.url || url, method, anonymous), token: anonymous };
+    const token = await this.token(tokenUrlOf(challenge, reference.registry), reference.registry, access);
+    return { response: await this.request(first.url || url, method, token), token };
   }
 
   // A blob's GET may be redirected to a storage service; fetch drops the token on a hop to another origin.
-  private request(url: string, method: RequestMethod, token: string | null) {
+  private request(url: string, method: RequestMethod, token: string | null, access: RegistryAccess | null = null) {
     const headers: Record<string, string> = { [HTTP_HEADERS.accept]: REGISTRY.manifestTypes.join(", ") };
     if (token !== null) {
       headers[HTTP_HEADERS.authorization] = `${BEARER_PREFIX}${token}`;
+    } else if (access !== null) {
+      headers[HTTP_HEADERS.authorization] = basicHeader(access);
     }
     return this.fetchImplementation(url, {
       method,
@@ -303,13 +402,18 @@ export class RegistryClient {
     }
   }
 
-  // ghcr.io refuses an anonymous token for a private image, or one it does not have, with 403.
-  private async anonymousToken(url: URL, registry: string): Promise<string> {
+  // ghcr.io refuses a token for a private image, or one it does not have, with 403: anonymously, and with a
+  // credential that does not reach it.
+  private async token(url: URL, registry: string, access: RegistryAccess | null): Promise<string> {
+    if (access !== null && !mayHaveCredential(registry, url.host)) {
+      throw new RegistryError(REGISTRY_MESSAGES.refusedCredentialRealm(url.origin));
+    }
     const response = await this.fetchImplementation(url, {
+      headers: access === null ? {} : { [HTTP_HEADERS.authorization]: basicHeader(access) },
       signal: AbortSignal.timeout(REGISTRY.timeoutMilliseconds),
     });
     if (isRefusal(response.status)) {
-      throw new RegistryError(REGISTRY_MESSAGES.wantsCredentials(registryName(registry)));
+      throw new RegistryError(this.refusal(registry, access));
     }
     if (!response.ok) {
       throw new RegistryError(REGISTRY_MESSAGES.tokenStatus(response.status));

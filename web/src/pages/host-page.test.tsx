@@ -549,6 +549,15 @@ it("puts a host's old images in its containers' section, right after the contain
   expect(images.previousElementSibling).toBe(containers.querySelector(".host-containers"));
 });
 
+it("scrolls to the section a link from another page names, once the host is drawn", async () => {
+  const scrolled: string[] = [];
+  vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (this: Element) {
+    scrolled.push(this.id);
+  });
+  show(undefined, "#updates");
+  await waitFor(() => expect(scrolled).toContain("updates"));
+});
+
 describe("the almost-full disks banner", () => {
   const BYTES = 1_000_000_000;
   const diskAt = (path: string, used: number) => ({

@@ -7,7 +7,7 @@ import {
   type EmbeddedSshHost,
 } from "../../../test/support/embedded-ssh-host.js";
 import { API_ROUTES, apiPath, type HostView } from "../../shared/api.js";
-import { APPLICATION_HELPER_ERRORS, type ApplicationBackupRun } from "../../shared/application-backups.js";
+import type { ApplicationBackupRun } from "../../shared/application-backups.js";
 
 // The image the test control plane runs, as its AUTOHEAL_IMAGE names it.
 const AUTOHEAL_IMAGE = "autoheal:test";
@@ -72,11 +72,15 @@ describe("an application backup on an SSH host", () => {
     );
   };
 
-  it("without Autoheal's image there, is refused before the application stops, saying how to load it", async () => {
+  it("without Autoheal's image there or in the registry, is refused before the application stops, saying why", async () => {
     const run = await capture();
     expect(run).toMatchObject({
       status: "failed",
-      result: { ok: false, message: APPLICATION_HELPER_ERRORS.imageMissing(AUTOHEAL_IMAGE), stopped: [] },
+      result: {
+        ok: false,
+        message: expect.stringContaining(`Autoheal's image, ${AUTOHEAL_IMAGE}, is not on this host`),
+        stopped: [],
+      },
     });
     expect(setup.engine.stops).toEqual([]);
     expect(setup.engine.containers.get("paperless")!.State.Running).toBe(true);

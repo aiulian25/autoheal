@@ -110,6 +110,7 @@ export class InventoryService {
       operationPreviews: heartbeat.operationPreviews === true,
       ...(heartbeat.topology === undefined ? {} : { topologyJson: JSON.stringify(heartbeat.topology) }),
       resourcePermissions: heartbeat.resourcePermissions === true,
+      serviceProbes: heartbeat.serviceProbes === true,
       maintenanceGeneration: heartbeat.maintenanceGeneration ?? null,
       restartBudgetJson: JSON.stringify(heartbeat.restartBudget),
       recoveryHoldJson: heartbeat.recoveryHold ? JSON.stringify(heartbeat.recoveryHold) : null,

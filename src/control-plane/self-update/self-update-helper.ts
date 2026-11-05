@@ -74,6 +74,8 @@ export async function selfUpdate(
   const from = (resumed !== null ? earlier?.from : old?.Image) ?? "";
   let phase: SelfUpdatePhase = resumed?.phase ?? SELF_UPDATE_PHASE.preparing;
   let snapshot: DatabaseSnapshot | null = resumed?.snapshot ?? null;
+  // Sticky: an earlier helper of this same update may already have promised to put the database back.
+  let dataRestored = earlier?.dataRestored ?? false;
   const step = (status: SelfUpdateOutcome["status"], message: string, final: boolean) => {
     const outcome = {
       status,
@@ -85,7 +87,7 @@ export async function selfUpdate(
       message,
     };
     const recovery = final ? null : { version: SELF_UPDATE.recoveryVersion, phase, original, name, snapshot };
-    record({ ...outcome, recovery });
+    record({ ...outcome, recovery, dataRestored });
     return outcome;
   };
   const healthyBefore = async (deadline: number) => {
@@ -109,6 +111,13 @@ export async function selfUpdate(
       throw new Error(`${container} did not stop`);
     }
   };
+  // Asked to start, and seen to be running: a container is never reported as put back on the asking alone.
+  const started = async (container: string) => {
+    await docker.start(container);
+    if ((await docker.inspect(container))?.State.Running !== true) {
+      throw new Error(`${container} did not start`);
+    }
+  };
   const blocked = (error: unknown) =>
     step(SELF_UPDATE_STATUS.blocked, SELF_UPDATE_TEXT.blocked(describeError(error)), false);
   const finish = (status: SelfUpdateOutcome["status"], message: string) => {
@@ -125,9 +134,15 @@ export async function selfUpdate(
       if (holder !== null && (!isOriginal || holder.State.Running === true)) await stopped(name);
       if (holder !== null && !isOriginal) await docker.remove(name, false);
       if (snapshot === null) throw new Error("no copy of the database was kept");
+      // Promised before the file moves, so a helper that dies mid-restore still leaves the fence behind: the control
+      // plane that comes up on the older data settles what the replaced one dispatched instead of handing it out again.
+      if (!dataRestored && database.needsRestore(snapshot)) {
+        dataRestored = true;
+        step(SELF_UPDATE_STATUS.updating, message, false);
+      }
       const restored = database.restoreIfNeeded(snapshot);
       if (!isOriginal) await docker.rename(previous, name);
-      await docker.start(name);
+      await started(name);
       return finish(status, restored ? `${message} ${SELF_UPDATE_TEXT.dataRestored}` : message);
     } catch (error) {
       return blocked(error);
@@ -177,12 +192,15 @@ export async function selfUpdate(
   } catch (error) {
     // Nothing has been replaced, and its database is its own.
     const message = SELF_UPDATE_TEXT.helperFailed(describeError(error));
-    return docker.start(name).then(() => finish(SELF_UPDATE_STATUS.failed, message), blocked);
+    return started(name).then(() => finish(SELF_UPDATE_STATUS.failed, message), blocked);
   }
   phase = SELF_UPDATE_PHASE.replacing;
   step(SELF_UPDATE_STATUS.updating, SELF_UPDATE_TEXT.started, false);
-  await docker.rename(name, previous);
   try {
+    // Parking the original belongs inside the replacement, not before it: a refused rename has to put the original
+    // back, and one Docker carried out whose answer was lost must not read as one that never happened. Which it was
+    // is told apart below by what holds the name, so neither leaves the dashboard stopped with nothing replacing it.
+    await docker.rename(name, previous);
     await docker.create(name, specification.create);
     for (const [network, endpoint] of specification.extraNetworks) {
       await docker.connect(network, name, endpoint);

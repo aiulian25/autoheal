@@ -4,6 +4,7 @@ import { type Duplex, type Readable, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createInterface } from "node:readline";
 import {
+  REGISTRY_CREDENTIALS,
   RUNNER_MESSAGES,
   DOCKER_APPLICATION_TIMEOUT_MILLISECONDS,
   COMPOSE_PROJECT_LABEL,
@@ -34,7 +35,18 @@ import type { ContainerConfig, ContainerDetails, NetworkEndpoint } from "./incid
 import { CommandOutput, LogStreamTail } from "./log-stream.js";
 import { readFirstEntry, type TarHeader } from "./tar.js";
 import { splitTag } from "../shared/image-reference.js";
+import { accessForImage, type RegistryAccess } from "../shared/registry-credentials.js";
+import { parseImageReference } from "./registry-client.js";
 import type { PullLine } from "./update-progress.js";
+
+/**
+ * What Docker's pull reads a private registry's credential from: base64url JSON, as its API asks. `serveraddress`
+ * is the registry the reference names, so Docker sends it nowhere else.
+ */
+const registryAuthHeader = (access: RegistryAccess) =>
+  Buffer.from(
+    JSON.stringify({ username: access.username, password: access.password, serveraddress: access.registry }),
+  ).toString("base64url");
 import { LocalDockerConnection } from "./local-docker-connection.js";
 
 export class DockerError extends Error {}
@@ -255,9 +267,19 @@ export interface DockerConnection {
 export class DockerClient {
   private readonly connection: DockerConnection;
 
-  // A path is the local engine's socket.
-  constructor(connection: DockerConnection | string) {
+  // A path is the local engine's socket. The credentials are what the control plane allows this host for private
+  // registries, read at each pull so a rotation or a removal takes effect on the next one.
+  constructor(
+    connection: DockerConnection | string,
+    private readonly credentials: () => readonly RegistryAccess[] = () => [],
+  ) {
     this.connection = typeof connection === "string" ? new LocalDockerConnection(connection) : connection;
+  }
+
+  /** The credential for an image a pull is about to fetch; null for a public one, pulled as before. */
+  private accessFor(reference: string): RegistryAccess | null {
+    const image = parseImageReference(reference);
+    return image === null ? null : accessForImage(this.credentials(), image);
   }
 
   async inspect(name: string): Promise<ContainerDetails | null> {
@@ -815,7 +837,6 @@ export class DockerClient {
     return (JSON.parse(body.toString()) as { SpaceReclaimed?: number }).SpaceReclaimed ?? 0;
   }
 
-  /** Pulls an image by reference, following Docker's progress stream to its end or first error. */
   /** Pulls the image behind the tag; each line Docker streams about it goes to `onLine` as it comes. */
   async pull(reference: string, onLine: (line: PullLine) => void = () => undefined): Promise<void> {
     const digestAt = reference.indexOf("@");
@@ -823,7 +844,7 @@ export class DockerClient {
       digestAt < 0 ? splitTag(reference) : { name: reference.slice(0, digestAt), tag: reference.slice(digestAt + 1) };
     const query = { fromImage: name, tag };
     const signal = AbortSignal.timeout(DOCKER_PULL_TIMEOUT_MILLISECONDS);
-    const response = await this.open("POST", DOCKER_PATHS.pull, { query, signal });
+    const response = await this.open("POST", DOCKER_PATHS.pull, { query, signal, access: this.accessFor(name) });
     if (isFailure(response.statusCode ?? 0)) {
       this.assertOk(response.statusCode ?? 0, await readAll(response));
     }
@@ -919,13 +940,18 @@ export class DockerClient {
       payload?: unknown;
       archive?: Buffer;
       signal?: AbortSignal | undefined;
+      // A private registry's credential, which Docker reads from its own header to pull with.
+      access?: RegistryAccess | null;
     },
   ): Promise<IncomingMessage> {
     const search = options.query === undefined ? "" : `?${new URLSearchParams(options.query)}`;
     const json = options.payload === undefined ? null : JSON.stringify(options.payload);
     const body = options.archive ?? json;
     const contentType = options.archive === undefined ? JSON_CONTENT_TYPE : TAR_CONTENT_TYPE;
-    const headers = body === null ? {} : { [HTTP_HEADERS.contentType]: contentType };
+    const headers: Record<string, string> = body === null ? {} : { [HTTP_HEADERS.contentType]: contentType };
+    if (options.access) {
+      headers[REGISTRY_CREDENTIALS.authorizationHeader] = registryAuthHeader(options.access);
+    }
     return new Promise((resolve, reject) => {
       const outgoing = httpRequest(
         {

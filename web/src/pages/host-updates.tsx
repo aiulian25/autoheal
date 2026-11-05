@@ -75,7 +75,6 @@ function ContainerImages({
       </div>
       {admin && waiting.length > 0 && (
         <footer className="update-card-foot">
-          <p className="notice warning small">{TEXT.actions.checkpointWarning}</p>
           <UpdateActions into={actionsIn} title={text.title} ticked={selected.length}>
             <button
               type="button"

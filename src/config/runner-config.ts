@@ -27,6 +27,7 @@ import {
   ENV_CONTAINER_ACCESS,
   ENV_HOST_DEPLOY,
   ENV_HOST_TERMINAL,
+  ENV_HOST_TERMINAL_USER,
   ENV_HOST_ROOT,
   ENV_JOIN_CODE,
   ENV_OLLAMA_CONTEXT_TOKENS,
@@ -51,6 +52,7 @@ import {
   HOST_DEPLOY,
   HOST_DEPLOY_SETTINGS,
   HOST_TERMINAL,
+  HOST_TERMINAL_HELPER,
   HOST_TERMINAL_SETTINGS,
   HOST_PACKAGES_SETTINGS,
   type HostPackagesSetting,
@@ -100,6 +102,8 @@ export interface RunnerConfig {
   containerAccess: boolean;
   // Whether an admin may open a shell on the host itself from the dashboard.
   hostTerminal: boolean;
+  // Whose login shell that is on a runner's host; root where none is named.
+  hostTerminalUser: string | null;
   hostDeploy: boolean;
   // How much of a container's data an update keeps aside first; 0 keeps none.
   checkpointLimitBytes: number;
@@ -154,6 +158,9 @@ const runnerEnvironmentSchema = z
     ),
     [ENV_HOST_TERMINAL]: optionalText().pipe(
       z.enum(HOST_TERMINAL_SETTINGS, { error: CONFIG_MESSAGES.hostTerminal }).default(HOST_TERMINAL.on),
+    ),
+    [ENV_HOST_TERMINAL_USER]: optionalText().pipe(
+      z.string().regex(HOST_TERMINAL_HELPER.userName, CONFIG_MESSAGES.hostTerminalUser).optional(),
     ),
     [ENV_HOST_DBUS_DIRECTORY]: optionalText().pipe(
       z.string().startsWith(ABSOLUTE_PATH_PREFIX, CONFIG_MESSAGES.absolutePaths).default(DEFAULT_HOST_DBUS_DIRECTORY),
@@ -236,6 +243,7 @@ export function loadRunnerConfig(environment: NodeJS.ProcessEnv, joinFile: strin
     hostDbusDirectory: values[ENV_HOST_DBUS_DIRECTORY],
     containerAccess: values[ENV_CONTAINER_ACCESS] === CONTAINER_ACCESS.on,
     hostTerminal: values[ENV_HOST_TERMINAL] === HOST_TERMINAL.on,
+    hostTerminalUser: values[ENV_HOST_TERMINAL_USER] ?? null,
     hostDeploy: values[ENV_HOST_DEPLOY] === HOST_DEPLOY.on,
     checkpointLimitBytes: values[ENV_UPDATE_CHECKPOINT_LIMIT_GB] * BYTES_PER_GIGABYTE,
   };

@@ -221,9 +221,44 @@ describe("restoring", () => {
   });
 
   it("warns that one of a stack may come back out of step", async () => {
-    answer = { refusal: null, backups: [backup("20261101T000000Z", { fromStack: true })] };
+    answer = {
+      refusal: null,
+      backups: [backup("20261101T000000Z", { fromStack: true, hasSettings: false })],
+    };
     show(BACKUP_DIALOG.restore);
     expect(await screen.findByText(text.oneOfStack("wikijs"))).toBeTruthy();
+  });
+
+  describe("how a finished restore reads", () => {
+    const ended = async (over: Partial<BackupEntry>, result: Partial<typeof job>) => {
+      answer = { refusal: null, backups: [backup("20261101T000000Z", over)] };
+      job = { ...job, status: JOB_STATUS.succeeded, outcome: "Restored.", ...result };
+      show(BACKUP_DIALOG.restore);
+      fireEvent.click((await screen.findAllByRole("radio")).at(-1)!);
+      fireEvent.click(screen.getByRole("button", { name: text.restoreThis }));
+      return (await screen.findByText(/Restored|did not finish/)).className;
+    };
+
+    it("reads as done when everything it was asked for came back", async () => {
+      expect(await ended({}, {})).toBe("text-good");
+    });
+
+    it("does not read as a plain tick when only the data came back", async () => {
+      // One of a stack, whose Compose files are deliberately left: a success, but its stack is not as it was.
+      expect(await ended({ fromStack: true }, {})).toBe("notice");
+    });
+
+    it("reads as unfinished when a part of it could not be put back", async () => {
+      const style = await ended({}, { status: JOB_STATUS.failed, outcome: "The data is back, but it did not finish." });
+      expect(style).toBe("notice warning");
+    });
+  });
+
+  it("says the stack's Compose files stay as they are, since they speak for its other services too", async () => {
+    answer = { refusal: null, backups: [backup("20261101T000000Z", { fromStack: true })] };
+    show(BACKUP_DIALOG.restore);
+    expect(await screen.findByText(text.oneOfStackCompose("wikijs"))).toBeTruthy();
+    expect(screen.queryByText(text.oneOfStack("wikijs"))).toBeNull();
   });
 
   describe("going back from a restore", () => {

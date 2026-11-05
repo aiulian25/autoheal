@@ -19,6 +19,7 @@ const probe = (change: Partial<ProbeView> = {}): ProbeView => ({
   hostId: "h1",
   name: "Wiki",
   scope: "local-network",
+  vantage: null,
   intervalSeconds: 60,
   timeoutSeconds: 5,
   failuresBeforeDown: 3,

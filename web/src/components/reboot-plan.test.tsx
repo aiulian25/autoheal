@@ -3,7 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiPath, type HostView, type SessionView } from "../../../src/shared/api.js";
 import { HOST_KIND } from "../../../src/shared/constants.js";
-import { REBOOT_PLAN_ROUTES, type RebootPlanPreview, type RebootPlanView } from "../../../src/shared/reboot-plans.js";
+import {
+  REBOOT_PLAN_ROUTES,
+  REBOOT_PLAN_TEXT,
+  type RebootPlanPreview,
+  type RebootPlanView,
+} from "../../../src/shared/reboot-plans.js";
 import { SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { RebootPlanPanel } from "./reboot-plan.js";
 
@@ -56,17 +61,24 @@ const previewWith = (problem: string | null): RebootPlanPreview => ({
 
 let plans: RebootPlanView[];
 let preview: RebootPlanPreview;
+// The checks each host reports, which a refetch may answer differently.
+let probes: Record<string, { id: string; name: string }[]>;
 let sent: { url: string; body: Record<string, unknown> | null }[];
 
 beforeEach(() => {
   plans = [];
   preview = previewWith(null);
+  probes = {};
   sent = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const answer = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
-      if ((init?.method ?? "GET") === "GET") return answer(url === REBOOT_PLAN_ROUTES.plans ? plans : []);
+      if ((init?.method ?? "GET") === "GET") {
+        if (url === REBOOT_PLAN_ROUTES.plans) return answer(plans);
+        const forHost = /\/hosts\/([^/]+)\/probes$/.exec(url)?.[1];
+        return answer(forHost === undefined ? [] : (probes[forHost] ?? []));
+      }
       sent.push({ url, body: init?.body === undefined ? null : JSON.parse(String(init.body)) });
       return answer(url === REBOOT_PLAN_ROUTES.preview ? preview : planWith());
     }),
@@ -85,6 +97,7 @@ function show() {
       <RebootPlanPanel hosts={HOSTS} />
     </QueryClientProvider>,
   );
+  return client;
 }
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 
@@ -97,6 +110,49 @@ async function fillIn() {
 }
 
 describe("planning reboots from the fleet page", () => {
+  it("approves the checks that were reviewed, and refuses once one of them has gone", async () => {
+    probes = { h1: [{ id: "probe-1", name: "Wiki answers" }], h2: [] };
+    preview = { ...previewWith(null), checks: [{ probeId: "probe-1", name: "Wiki answers", problem: null }] };
+    const client = show();
+    fireEvent.change(await screen.findByLabelText(text.name), { target: { value: "Kernel updates" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Two" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "One" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Wiki answers" }));
+    fireEvent.click(button(text.review));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.body!.probeIds).toEqual(["probe-1"]);
+
+    // The check is no longer set up by the time they press Approve.
+    probes = { h1: [], h2: [] };
+    await client.invalidateQueries({ queryKey: ["probes"] });
+
+    expect(await screen.findByText(new RegExp(text.checksGone("Wiki answers")))).toBeTruthy();
+    expect(button(text.approve).disabled).toBe(true);
+    fireEvent.click(button(text.approve));
+    expect(sent).toHaveLength(1);
+
+    // Reviewing again starts from what is there now.
+    fireEvent.click(button(text.edit));
+    fireEvent.click(await screen.findByRole("button", { name: text.review }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]!.body!.probeIds).toEqual([]);
+  });
+
+  it("approves the reviewed check even while the fleet is answering again", async () => {
+    probes = { h1: [{ id: "probe-1", name: "Wiki answers" }], h2: [] };
+    show();
+    fireEvent.change(await screen.findByLabelText(text.name), { target: { value: "Kernel updates" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Two" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "One" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Wiki answers" }));
+    fireEvent.click(button(text.review));
+    await waitFor(() => expect(sent).toHaveLength(1));
+
+    fireEvent.click(button(text.approve));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ url: REBOOT_PLAN_ROUTES.plans, body: { probeIds: ["probe-1"] } });
+  });
+
   it("offers the fleet's hosts but not the machine Autoheal runs on", async () => {
     show();
     expect(await screen.findByRole("checkbox", { name: "One" })).toBeTruthy();
@@ -124,6 +180,15 @@ describe("planning reboots from the fleet page", () => {
     preview = previewWith("Rebooting Two would leave 0 healthy, and this plan needs 1.");
     await fillIn();
     expect(await screen.findByText(/Rebooting Two would leave 0 healthy/)).toBeTruthy();
+    expect(button(text.approve).disabled).toBe(true);
+  });
+
+  it("will not approve beside a saved plan that cannot be read, and says only that much", async () => {
+    preview = previewWith(REBOOT_PLAN_TEXT.unreadable(1));
+
+    await fillIn();
+
+    expect(await screen.findByText(new RegExp(REBOOT_PLAN_TEXT.unreadable(1)))).toBeTruthy();
     expect(button(text.approve).disabled).toBe(true);
   });
 });

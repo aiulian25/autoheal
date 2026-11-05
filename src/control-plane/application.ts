@@ -48,6 +48,8 @@ import { backupIfDue } from "./backups/backup-scheduler.js";
 import { ensureFirstAdmin } from "./auth/bootstrap.js";
 import { ensureBackupPassphrase, type BackupPassphrase } from "./backups/backup-passphrase.js";
 import { DatabaseHandle, databasePathIn } from "./database/connection.js";
+import { SelfUpdateOutcomeFile } from "./self-update/self-update-outcome.js";
+import { settleSelfUpdateRollback } from "./self-update/self-update-settlement.js";
 import { builtWebAssets } from "./http/web-assets.js";
 import { buildHealthServer, buildUserInterfaceServer, type StaticSettingsView } from "./server.js";
 import { createControlPlaneServices, type ControlPlaneServices } from "./services.js";
@@ -112,7 +114,19 @@ function renewWhenDue(config: ControlPlaneConfig, servers: readonly FastifyInsta
 }
 
 /** Whatever the previous process left half-done has no process behind it any more. */
-async function recoverFromRestart(services: ControlPlaneServices) {
+async function recoverFromRestart(
+  services: ControlPlaneServices,
+  databaseHandle: DatabaseHandle,
+  dataDirectory: string,
+  auditLog: AuditLog,
+  now: number,
+) {
+  // Before anything else looks at this data: an update that went back took the record of what its hosts were asked
+  // with it, so none of that may be handed out again.
+  const rollback = settleSelfUpdateRollback(databaseHandle, new SelfUpdateOutcomeFile(dataDirectory), auditLog, now);
+  if (rollback !== null) {
+    log(COMMAND_MESSAGES.selfUpdateRollbackSettled(rollback.cancelledIncidents));
+  }
   const cancelled = services.incidentsService.cancelInterrupted();
   const finished = services.replayService.finishInterrupted();
   await services.restoreService.clearPending();
@@ -151,7 +165,7 @@ export async function runControlPlane(): Promise<number> {
     environment: process.env,
     clock,
   });
-  await recoverFromRestart(services);
+  await recoverFromRestart(services, databaseHandle, config.dataDirectory, auditLog, clock());
   // With the Docker socket mounted, this machine is looked after from this container: no runner container joins.
   if (isMountPoint(JOIN_DIRECTORY) && !services.localHostRunner.inPlace()) {
     services.hostsService.ensureLocalRunner(JOIN_DIRECTORY);

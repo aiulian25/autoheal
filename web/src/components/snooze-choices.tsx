@@ -16,7 +16,7 @@ export function SnoozeChoices({ disabled, onChoose }: { disabled: boolean; onCho
           aria-label={text.choice(text.lengths[length])}
           onClick={() => onChoose(length)}
         >
-          {text.lengths[length]}
+          {text.shown[length]}
         </button>
       ))}
     </span>

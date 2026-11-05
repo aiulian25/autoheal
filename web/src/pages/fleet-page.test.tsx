@@ -367,7 +367,7 @@ describe("the fleet page", () => {
     renderFleet();
     const tile = await screen.findByRole("button", { name: TEXT.connectHost.tile });
     expect(tile.closest(".host-grid")!.lastElementChild).toBe(tile);
-    expect(screen.queryByRole("heading", { name: /Add a/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: TEXT.connectHost.title })).toBeNull();
     cleanup();
 
     session.user.role = "viewer";

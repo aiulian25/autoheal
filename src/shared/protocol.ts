@@ -1,3 +1,6 @@
+import { provenanceSchema, type ImageTrustPolicy } from "./image-provenance.js";
+import { PROBE_LIMITS, type ProbeBody } from "./probes.js";
+import type { RegistryAccess } from "./registry-credentials.js";
 import { BACKUP_ID, type BackupJobDetails, type BackupRequest } from "./container-backups.js";
 import { stackDriftReportSchema, type StackJobDetails, type StackRequest } from "./stacks.js";
 import { volumeReportSchema, type NewVolume, type VolumeLookRequest, type VolumeRemoval } from "./volumes.js";
@@ -194,6 +197,9 @@ export const containerSnapshotSchema = z.object({
       remote: imageLabelsSchema.nullable().optional(),
       // Why the last check failed; null when it did not.
       reason: z.string().max(ERROR_TEXT_LIMIT).nullable().optional(),
+      // Who published the newer image, where a trust rule asks for proof. Absent from runners from before it,
+      // and null where nothing asks.
+      provenance: provenanceSchema.nullable().optional(),
     })
     .nullable(),
 });
@@ -364,6 +370,28 @@ export const restartWaitSchema = z
 
 export type RestartWait = z.infer<typeof restartWaitSchema>;
 
+/** What a host saw when it made a check it was given. Public facts about a certificate only, as ever. */
+export const probeReportSchema = z.object({
+  id: z.string().max(PROBE_LIMITS.targetCharacters),
+  generation: z.string().max(PROBE_LIMITS.nameCharacters),
+  ok: z.boolean(),
+  latencyMilliseconds: z.number().int().min(0).nullable(),
+  problem: z.string().max(PROBE_LIMITS.problemCharacters).nullable(),
+  certificate: z
+    .object({
+      fingerprint: z.string().max(PROBE_LIMITS.nameCharacters),
+      subject: z.string().max(PROBE_LIMITS.targetCharacters),
+      issuer: z.string().max(PROBE_LIMITS.targetCharacters),
+      validFrom: z.number().int(),
+      validTo: z.number().int(),
+      name: z.string().max(PROBE_LIMITS.targetCharacters),
+      nameMatches: z.boolean(),
+      chainError: z.string().max(PROBE_LIMITS.problemCharacters).nullable(),
+    })
+    .optional(),
+});
+export type ProbeReport = z.infer<typeof probeReportSchema>;
+
 export const heartbeatSchema = z.object({
   // Absent until a runner has looked: says nothing either way.
   stackDrift: stackDriftReportSchema.optional(),
@@ -404,6 +432,11 @@ export const heartbeatSchema = z.object({
   hostTerminal: z.boolean().optional(),
   // Its .env's HOST_DEPLOY; absent from runners from before it, which cannot put a new app on their host.
   hostDeploy: z.boolean().optional(),
+  // Whether this runner can make service checks from its own host. Absent from runners from before it, whose
+  // checks stay with Autoheal rather than being assumed to work.
+  serviceProbes: z.boolean().optional(),
+  // What the checks it was given saw, each with the check and the generation it was given for.
+  probeResults: z.array(probeReportSchema).max(PROBE_LIMITS.resultsPerReport).optional(),
 });
 
 export type Heartbeat = z.infer<typeof heartbeatSchema>;
@@ -436,6 +469,22 @@ export interface HeartbeatResponse {
   publicBaseUrl: string;
   ollama: { url: string; model: string; contextTokens: number };
   control?: HostControl;
+  // The private registries this host may read and pull from, as Settings scoped them: absent from control planes
+  // before them, and from the answer to a host no credential names, which pulls anonymously as before.
+  registries?: RegistryAccess[];
+  // Which publishers this fleet trusts and where a signed image is required: absent where nothing asks for proof,
+  // and from control planes before it, which leaves every runner applying updates as it did.
+  imageTrust?: ImageTrustPolicy;
+  // The service checks this host is to make from where it is, due now. Absent where it has none.
+  probes?: RemoteProbe[];
+}
+
+/** One check a host is asked to make: which check it is, which version of it, and what to do. */
+export interface RemoteProbe {
+  id: string;
+  // What the check was when it was handed out: a result for another generation is not an answer to this question.
+  generation: string;
+  body: ProbeBody;
 }
 
 // Live stats, every few seconds. Rates are averages since the runner's previous sample.

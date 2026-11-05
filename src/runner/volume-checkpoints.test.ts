@@ -6,6 +6,8 @@ import { VolumeCheckpoints, RESTORE_OWNER_LABEL } from "./volume-checkpoints.js"
 
 const TAKEN_AT = Date.UTC(2026, 9, 24, 3, 12);
 const LIMIT = 2_000_000_000;
+// Autoheal's image as the runner gives it to the helper.
+const HELPER_IMAGE = "sha256:runner";
 const OLD_ID = "a".repeat(64);
 
 // Vaultwarden as compose runs it: its data volume and a bind mount written, its config read-only, Docker's
@@ -91,7 +93,7 @@ function fakeDocker(printed: string, existing: DockerVolume[] = []) {
 const checkpointsWith = (docker: ReturnType<typeof fakeDocker>["docker"], limitBytes = LIMIT) =>
   new VolumeCheckpoints({
     docker,
-    selfContainerName: "autoheal",
+    helperImage: async () => HELPER_IMAGE,
     limitBytes,
     now: () => TAKEN_AT,
     sleep: async () => {},

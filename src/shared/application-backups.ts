@@ -25,8 +25,9 @@ export const APPLICATION_ARTIFACT = {
 // Application backups run in a helper of Autoheal's own image: a runner's own, or on an SSH host the image the control
 // plane runs, found there by its reference once it is loaded or pulled.
 export const APPLICATION_HELPER_ERRORS = {
-  imageMissing: (reference: string) =>
-    `Autoheal's image, ${reference}, is not on this host, and application backups run in it. Load it there once (docker save ${reference} | ssh <user>@<host> docker load), then ask again. Nothing was stopped.`,
+  imageMissing: (reference: string, reason: string) =>
+    `Autoheal's image, ${reference}, is not on this host and could not be pulled there (${reason}); data copies and backups run in it. Let the host reach the registry, or load it there once (docker save ${reference} | ssh <user>@<host> docker load), then ask again. Nothing was stopped.`,
+  notKeptAfterPull: "Docker did not keep it after the pull",
   selfMissing: "Runner helper image is unavailable.",
 } as const;
 export const APPLICATION_ARTIFACT_ERRORS = {

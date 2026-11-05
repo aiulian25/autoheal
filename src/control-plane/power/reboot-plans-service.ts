@@ -1,5 +1,6 @@
+import type { AvailabilityGroupsService } from "../inventory/availability-groups-service.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import { API_ERRORS } from "../../shared/api.js";
 import {
   AUDIT_ACTIONS,
@@ -38,8 +39,23 @@ import { rebootPlans } from "./reboot-plans-schema.js";
 
 const MILLISECONDS_PER_MINUTE = 60_000;
 const OPEN_JOB_STATUSES = [JOB_STATUS.pending, JOB_STATUS.delivered];
+/** A saved row read back: the bytes are decoded and the shape checked apart, and neither throws. */
+function decoded(stateJson: string): { success: true; data: RebootPlanView } | { success: false } {
+  let held: unknown;
+  try {
+    held = JSON.parse(stateJson);
+  } catch {
+    return { success: false };
+  }
+  const parsed = rebootPlanViewSchema.safeParse(held);
+  return parsed.success ? { success: true, data: parsed.data } : { success: false };
+}
+
 const isOpen = ({ status }: RebootPlanView) =>
   status === REBOOT_PLAN_STATUS.running || status === REBOOT_PLAN_STATUS.paused;
+// Asked to go down, or back but not ready yet: either way it is not serving now.
+const isUnderWay = ({ status }: RebootStep) =>
+  status === REBOOT_STEP_STATUS.asked || status === REBOOT_STEP_STATUS.back;
 const notEnded = ({ status }: RebootStep) =>
   status !== REBOOT_STEP_STATUS.done && status !== REBOOT_STEP_STATUS.cancelled;
 
@@ -58,6 +74,8 @@ export interface RebootPlanDependencies {
   databaseHandle: DatabaseHandle;
   audit: AuditLog;
   permissions: Pick<ResourcePermissions, "isAdmin">;
+  // What an application's replicas say about taking hosts down; absent where no group is set up.
+  availability?: Pick<AvailabilityGroupsService, "problemFor">;
   // The same way in as the Reboot button: it refuses a host that cannot be asked, or that has a job still open.
   hostPackages: Pick<HostPackagesService, "request">;
   power: Pick<PowerService, "powerOf" | "rebootProgress" | "lastSeenOf">;
@@ -79,30 +97,74 @@ export class RebootPlansService {
     return this.dependencies.databaseHandle.database;
   }
 
-  private plans(): RebootPlanView[] {
-    const rows = this.database.select().from(rebootPlans).orderBy(desc(rebootPlans.createdAt)).all();
-    return rows.flatMap(({ id, stateJson }) => {
-      const parsed = rebootPlanViewSchema.safeParse(JSON.parse(stateJson));
+  /**
+   * Every saved plan this version can read, and the ids of those it cannot. Decoding and shape are judged apart, and
+   * neither throws: one row of nonsense must not take the whole panel, nor the scheduler, down with it. What such a
+   * row holds is never repeated anywhere, and the row itself is kept for whoever has to sort it out.
+   */
+  private read(rows: { id: string; stateJson: string }[]): { plans: RebootPlanView[]; unreadable: string[] } {
+    const unreadable: string[] = [];
+    const plans = rows.flatMap(({ id, stateJson }) => {
+      const parsed = decoded(stateJson);
       if (parsed.success) return [parsed.data];
-      // Nothing acts on a plan this version cannot read.
-      if (!this.reportedUnreadable.has(id)) log(`Reboot plan ${id} could not be read: ${parsed.error.message}`);
+      // Nothing acts on a plan this version cannot read, and nothing new starts beside it either: see create().
+      if (!this.reportedUnreadable.has(id)) log(REBOOT_PLAN_TEXT.unreadableRow(id));
       this.reportedUnreadable.add(id);
+      unreadable.push(id);
       return [];
     });
+    return { plans, unreadable };
+  }
+
+  // Only what is asked for: the newest few for the panel, the open ones for the scheduler, one by its id.
+  private rowsNewestFirst(limit: number) {
+    return this.database.select().from(rebootPlans).orderBy(desc(rebootPlans.createdAt)).limit(limit).all();
+  }
+
+  /**
+   * The plans that may still be going on, and the rows that cannot be told apart from one. Both are found by the
+   * status kept beside each plan, so this costs the same whatever the fleet's history holds: a plan whose shape
+   * this version cannot read still says `running` or `paused` and is picked up here, and one whose JSON cannot be
+   * read at all holds REBOOT_PLAN_UNREADABLE instead. Any other status is one a later version wrote.
+   */
+  private openOrUnknown() {
+    const settled: string[] = [REBOOT_PLAN_STATUS.completed, REBOOT_PLAN_STATUS.cancelled];
+    return this.read(this.database.select().from(rebootPlans).where(notInArray(rebootPlans.status, settled)).all());
+  }
+
+  /**
+   * Why nothing new may start: a saved plan this version cannot read could be a reboot going on right now, and
+   * skipping it would let a second plan reboot the same fleet underneath it. Null when every row reads.
+   */
+  private unreadableProblem(): string | null {
+    const { unreadable } = this.openOrUnknown();
+    return unreadable.length === 0 ? null : REBOOT_PLAN_TEXT.unreadable(unreadable.length);
   }
 
   private save(plan: RebootPlanView) {
     plan.updatedAt = this.dependencies.clock();
     const stateJson = JSON.stringify(plan);
+    const { status } = plan;
     this.database
       .insert(rebootPlans)
-      .values({ id: plan.id, createdAt: plan.createdAt, updatedAt: plan.updatedAt, stateJson })
-      .onConflictDoUpdate({ target: rebootPlans.id, set: { updatedAt: plan.updatedAt, stateJson } })
+      .values({ id: plan.id, createdAt: plan.createdAt, updatedAt: plan.updatedAt, stateJson, status })
+      .onConflictDoUpdate({ target: rebootPlans.id, set: { updatedAt: plan.updatedAt, stateJson, status } })
       .run();
   }
 
   list(): RebootPlanView[] {
-    return this.plans().slice(0, REBOOT_PLAN.retained);
+    return this.read(this.rowsNewestFirst(REBOOT_PLAN.retained)).plans;
+  }
+
+  /**
+   * The hosts that are down or on their way down right now, across every open plan. What an availability group
+   * counts as unavailable, so two operations that are each safe on their own cannot together take the last replica.
+   * A step still waiting its turn is not here: a plan takes one host at a time, each back before the next starts.
+   */
+  hostsDownNow(): string[] {
+    return this.openOrUnknown()
+      .plans.filter(isOpen)
+      .flatMap((plan) => plan.steps.filter(isUnderWay).map((step) => step.hostId));
   }
 
   private hostRow(hostId: string): HostRow | undefined {
@@ -141,6 +203,10 @@ export class RebootPlansService {
     if (healthy < body.minimumHealthy) {
       return REBOOT_PLAN_TEXT.tooFew(healthy, body.minimumHealthy, target.hostLabel);
     }
+    // A count of healthy hosts is not an application's quorum: what its replicas say is asked separately, about
+    // this host. Hosts already down elsewhere are counted by the groups themselves.
+    const availability = this.dependencies.availability?.problemFor({ hostIds: [target.hostId] });
+    if (availability !== null && availability !== undefined) return availability;
     return this.checksProblem(body, null);
   }
 
@@ -174,13 +240,18 @@ export class RebootPlansService {
         name: this.dependencies.probes.nameOf(probeId) ?? probeId,
         problem: this.dependencies.probes.evidence(probeId, null),
       })),
-      problem: this.gateProblem({ body, createdBy: actor }, { hostId: first.id, hostLabel: first.label }),
+      problem:
+        this.unreadableProblem() ??
+        this.gateProblem({ body, createdBy: actor }, { hostId: first.id, hostLabel: first.label }),
     };
   }
 
   /** Approves one plan as it stands: it never changes after this. */
   create(actor: Actor, body: RebootPlanBody): RebootPlanView {
-    if (this.plans().some(isOpen)) throw new DomainError(API_ERRORS.rebootPlanBusy);
+    const { plans, unreadable } = this.openOrUnknown();
+    // Whether a reboot is already going on cannot be told while a row is unreadable, so none is authorized.
+    if (unreadable.length > 0) throw new DomainError(API_ERRORS.rebootPlanUnreadable);
+    if (plans.some(isOpen)) throw new DomainError(API_ERRORS.rebootPlanBusy);
     const members = this.eligibleHosts(body);
     const now = this.dependencies.clock();
     const plan: RebootPlanView = {
@@ -221,7 +292,8 @@ export class RebootPlansService {
   }
 
   private planOf(planId: string) {
-    const plan = this.plans().find(({ id }) => id === planId);
+    const row = this.database.select().from(rebootPlans).where(eq(rebootPlans.id, planId)).get();
+    const plan = row === undefined ? undefined : this.read([row]).plans[0];
     if (plan === undefined) throw new DomainError(API_ERRORS.rebootPlanNotFound);
     return plan;
   }
@@ -268,7 +340,7 @@ export class RebootPlansService {
 
   /** One step of whichever plan is running. Nothing here is kept in memory, so a restart simply picks it up. */
   tick() {
-    const plan = this.plans().find(({ status }) => status === REBOOT_PLAN_STATUS.running);
+    const plan = this.openOrUnknown().plans.find(({ status }) => status === REBOOT_PLAN_STATUS.running);
     if (plan === undefined) return;
     const step = plan.steps.find(notEnded);
     if (step === undefined) {
@@ -365,7 +437,8 @@ export class RebootPlansService {
 
   /** After a database restore: its plans may be from before reboots that have since happened, so a person decides. */
   pauseAfterRestore() {
-    for (const plan of this.plans().filter(({ status }) => status === REBOOT_PLAN_STATUS.running)) {
+    const running = this.openOrUnknown().plans.filter(({ status }) => status === REBOOT_PLAN_STATUS.running);
+    for (const plan of running) {
       plan.status = REBOOT_PLAN_STATUS.paused;
       plan.reason = REBOOT_PLAN_TEXT.restored;
       this.save(plan);
@@ -373,7 +446,7 @@ export class RebootPlansService {
   }
 
   findings(): RebootPlanFinding[] {
-    return this.plans().flatMap((plan) => {
+    return this.openOrUnknown().plans.flatMap((plan) => {
       if (plan.status !== REBOOT_PLAN_STATUS.paused) return [];
       const step = plan.steps.find(notEnded) ?? plan.steps[0]!;
       return [

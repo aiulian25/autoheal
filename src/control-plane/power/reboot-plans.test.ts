@@ -11,18 +11,20 @@ import {
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
-import { API_ROUTES, apiPath, type EnrolledHostView, type TaskSummaryView } from "../../shared/api.js";
+import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type TaskSummaryView } from "../../shared/api.js";
 import { HOST_KIND, HTTP_HEADERS, JOB_ACTION, RUNNER_CAPABILITIES } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type PackageFacts, type WorkResponse } from "../../shared/protocol.js";
 import type { ProbeView } from "../../shared/probes.js";
 import {
+  REBOOT_PLAN,
   REBOOT_PLAN_ROUTES,
+  REBOOT_PLAN_STATUS,
   REBOOT_PLAN_TEXT,
   type RebootPlanBody,
   type RebootPlanPreview,
   type RebootPlanView,
 } from "../../shared/reboot-plans.js";
-import { hosts, jobs } from "../database/schema.js";
+import { hosts, jobs, rebootPlans } from "../database/schema.js";
 import { serviceProbes } from "../probes/probe-schema.js";
 
 const bootId = (host: number, boot: number) =>
@@ -126,6 +128,189 @@ describe("a plan of reboots across three hosts", () => {
   afterEach(async () => {
     await world.plane.app.close();
     await world.plane.runnerApp.close();
+  });
+
+  describe("a saved plan this version cannot read", () => {
+    const put = (id: string, stateJson: string) =>
+      world.plane.services.databaseHandle.database
+        .insert(rebootPlans)
+        .values({ id, createdAt: 1, updatedAt: 1, stateJson })
+        .run();
+    const UNREADABLE = [
+      ["bytes that are not JSON", "{"],
+      ["JSON that is not a plan", JSON.stringify({ kept: "nonsense" })],
+      ["a plan written by a later version", JSON.stringify({ id: "x", status: "running", version: 99 })],
+    ] as const;
+
+    it.each(UNREADABLE)("does not hide the plans that do read: %s", async (_case, stateJson) => {
+      const good = await approve();
+      put("unreadable", stateJson);
+
+      const listed = await world.admin.get(REBOOT_PLAN_ROUTES.plans);
+
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json<RebootPlanView[]>().map(({ id }) => id)).toEqual([good.id]);
+    });
+
+    it.each(UNREADABLE)("lets the scheduler carry on rather than throwing: %s", async (_case, stateJson) => {
+      await approve();
+      put("unreadable", stateJson);
+
+      expect(() => tick()).not.toThrow();
+      expect(await statuses()).not.toContain(undefined);
+    });
+
+    it.each(UNREADABLE)("authorizes no new plan beside it, since it may be running: %s", async (_case, stateJson) => {
+      put("unreadable", stateJson);
+
+      const made = await world.admin.post(REBOOT_PLAN_ROUTES.plans, bodyWith());
+
+      expect(made.statusCode).toBe(409);
+      expect(made.json()).toMatchObject({ error: API_ERRORS.rebootPlanUnreadable });
+    });
+
+    it("says which host is down right now, and not the ones still waiting their turn", async () => {
+      await approve();
+
+      // The first host has been asked; the others are waiting their turn, which is not being down.
+      expect(world.plane.services.rebootPlans.hostsDownNow()).toEqual([world.ids[0]!]);
+      expect(world.plane.services.rebootPlans.hostsDownNow()).not.toContain(world.ids[1]!);
+
+      // Back and through, and the next one not asked yet: nothing is down between the two.
+      await rebootAndReturn(0);
+      expect(world.plane.services.rebootPlans.hostsDownNow()).toEqual([]);
+    });
+
+    it("says so where a plan is composed, so it is seen before anything is asked for", async () => {
+      put("unreadable", "{");
+
+      const preview = (await world.admin.post(REBOOT_PLAN_ROUTES.preview, bodyWith())).json<RebootPlanPreview>();
+
+      expect(preview.problem).toBe(REBOOT_PLAN_TEXT.unreadable(1));
+      // What it holds is never repeated: only that it is there.
+      expect(JSON.stringify(preview)).not.toContain("nonsense");
+    });
+
+    it("keeps the row rather than clearing it away, and counts them all", async () => {
+      put("first", "{");
+      put("second", JSON.stringify({ kept: "nonsense" }));
+
+      const preview = (await world.admin.post(REBOOT_PLAN_ROUTES.preview, bodyWith())).json<RebootPlanPreview>();
+
+      expect(preview.problem).toBe(REBOOT_PLAN_TEXT.unreadable(2));
+      const kept = world.plane.services.databaseHandle.database.select().from(rebootPlans).all();
+      expect(kept.map(({ id }) => id).sort()).toEqual(["first", "second"]);
+    });
+
+    it("lets plans be made again once the rows are resolved", async () => {
+      put("unreadable", "{");
+      expect((await world.admin.post(REBOOT_PLAN_ROUTES.plans, bodyWith())).statusCode).toBe(409);
+
+      world.plane.services.databaseHandle.database.delete(rebootPlans).where(eq(rebootPlans.id, "unreadable")).run();
+
+      expect((await world.admin.post(REBOOT_PLAN_ROUTES.plans, bodyWith())).statusCode).toBe(200);
+    });
+  });
+
+  describe("a fleet with a long history of plans behind it", () => {
+    const HISTORY = 2000;
+    const settled = (index: number, status: string) =>
+      JSON.stringify({
+        id: `old-${index}`,
+        body: bodyWith(),
+        status,
+        createdBy: { userId: "u", username: "admin" },
+        createdAt: index,
+        updatedAt: index,
+        cancelAsked: false,
+        reason: null,
+        steps: [],
+      });
+    const fillHistory = (status: string = REBOOT_PLAN_STATUS.completed) => {
+      const database = world.plane.services.databaseHandle.database;
+      for (let index = 0; index < HISTORY; index += 1)
+        database
+          .insert(rebootPlans)
+          .values({
+            id: `old-${index}`,
+            createdAt: index,
+            updatedAt: index,
+            stateJson: settled(index, status),
+            status,
+          })
+          .run();
+    };
+    // How many saved plans a piece of work really reads back, however many are stored.
+    const plansRead = (work: () => unknown) => {
+      const sqlite = world.plane.services.databaseHandle.sqlite;
+      let rows = 0;
+      const real = sqlite.prepare.bind(sqlite);
+      const spy = vi.spyOn(sqlite, "prepare").mockImplementation((sql: string) => {
+        const statement = real(sql);
+        if (!sql.includes("reboot_plans")) return statement;
+        const all = statement.all.bind(statement);
+        statement.all = (...values: unknown[]) => {
+          const found = all(...values) as unknown[];
+          rows += found.length;
+          return found;
+        };
+        return statement;
+      });
+      try {
+        work();
+      } finally {
+        spy.mockRestore();
+      }
+      return rows;
+    };
+
+    it("reads none of the settled history when it ticks, however much of it there is", () => {
+      fillHistory();
+
+      expect(plansRead(() => tick())).toBe(0);
+    });
+
+    it("reads the open plan and no more, with the whole history behind it", async () => {
+      await approve();
+      fillHistory();
+
+      // One row: the plan that is running. Not the 2000 that are over.
+      expect(plansRead(() => tick())).toBe(1);
+    });
+
+    it("shows only the newest few, and asks the database for no more than that", async () => {
+      fillHistory();
+
+      const listed = (await world.admin.get(REBOOT_PLAN_ROUTES.plans)).json<RebootPlanView[]>();
+
+      expect(listed).toHaveLength(REBOOT_PLAN.retained);
+      expect(listed.map(({ id }) => id)).toEqual(
+        Array.from({ length: REBOOT_PLAN.retained }, (_, index) => `old-${HISTORY - 1 - index}`),
+      );
+    });
+
+    it("still finds a plan that is running among all of them, and carries it on", async () => {
+      const made = await approve();
+      fillHistory();
+
+      tick();
+
+      expect((await plan()).id).toBe(made.id);
+      expect((await plan()).status).toBe(REBOOT_PLAN_STATUS.running);
+    });
+
+    it("still refuses a new plan when an unreadable row is buried in the history", async () => {
+      fillHistory();
+      world.plane.services.databaseHandle.database
+        .insert(rebootPlans)
+        .values({ id: "unreadable", createdAt: 1, updatedAt: 1, stateJson: "{" })
+        .run();
+
+      const made = await world.admin.post(REBOOT_PLAN_ROUTES.plans, bodyWith());
+
+      expect(made.statusCode).toBe(409);
+      expect(made.json()).toMatchObject({ error: API_ERRORS.rebootPlanUnreadable });
+    });
   });
 
   it("is for admins", async () => {

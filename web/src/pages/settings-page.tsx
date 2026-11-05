@@ -51,6 +51,8 @@ import { RouterCard } from "./router-card.js";
 import { ModelChoices, OllamaServers, ServerForm, type ServerFields } from "./ollama-servers.js";
 import { api } from "../api-client.js";
 import { ErrorNotice, Loading, PlainText } from "../components/common.js";
+import { RegistryCredentialsCard } from "../components/registry-credentials.js";
+import { ImageTrustCard } from "../components/image-trust.js";
 import { Icon } from "../components/icons.js";
 import { SettingsFrame, useScrollToHash, type SettingsSection } from "../components/section-tabs.js";
 import {
@@ -902,6 +904,11 @@ function SelfUpdateCard() {
     <section className="card stack" aria-labelledby="self-update-title">
       <h3 id="self-update-title">{words.title}</h3>
       {view.unavailable !== null && <p className="small muted">{view.unavailable}</p>}
+      {view.recoveryBlocked !== null && (
+        <p className="notice warning small" role="status">
+          {view.recoveryBlocked}
+        </p>
+      )}
       {view.unavailable === null && (
         <>
           <p className="small muted">{words.explanation(view.reference)}</p>
@@ -909,7 +916,7 @@ function SelfUpdateCard() {
           <button
             type="button"
             className="primary"
-            disabled={start.isPending || updating(view)}
+            disabled={start.isPending || updating(view) || view.recoveryBlocked !== null}
             onClick={() => start.mutate()}
           >
             {words.update}
@@ -1046,6 +1053,8 @@ export function SettingsPage() {
           <SettingsBlock section={SETTINGS_SECTIONS.connections}>
             <OllamaCard admin={admin} />
             {homeAssistant !== undefined && <HomeAssistantCard view={homeAssistant} admin={admin} />}
+            {admin && <RegistryCredentialsCard />}
+            {admin && <ImageTrustCard />}
             {admin && <RouterCard />}
             {admin && <JarvisCard />}
           </SettingsBlock>

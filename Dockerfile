@@ -50,12 +50,17 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts --no-fund --no-audit
 
 FROM dependencies AS build
+ARG BUILDER_IMAGE
+ARG RUNTIME_IMAGE
 COPY tsconfig.json tsconfig.build.json vite.config.ts ./
 COPY src ./src
 COPY web ./web
 RUN npm run build && npm prune --omit=dev
-# What tells two builds of one release apart: only the code a runner runs, so a dashboard-only change asks nothing of it.
-RUN cd dist/server && find runner shared -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12 > build-id
+# What tells two builds of one release apart: every runtime input a runner has, which src/shared/runner-identity.ts
+# works out from the imports of the code a runner runs, so a dashboard-only change asks nothing of it.
+RUN node dist/server/shared/runner-identity.js dist/server package.json package-lock.json \
+      "${BUILDER_IMAGE}" "${RUNTIME_IMAGE}" > dist/server/build-id \
+  && cat dist/server/build-id
 # Keep only this platform's SQLite binary; its C sources, other platforms' builds and type
 # definitions are ~28 MB the runtime never reads. ssh2's optional native helpers are never built
 # (--ignore-scripts), and it runs on Node's own crypto without them.

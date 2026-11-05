@@ -121,6 +121,14 @@ const relativeTo = (folder: string, path: string) =>
   path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : path;
 const refused = (error: string): StackAnswer => ({ error });
 
+/** How a lifecycle action on a whole stack went, as its job reports it. */
+interface StackRun {
+  succeeded: boolean;
+  outcome: string;
+  output: string | null;
+}
+const didNotRun = (outcome: string, output: string | null = null): StackRun => ({ succeeded: false, outcome, output });
+
 interface Stack {
   project: string;
   folder: string;
@@ -893,20 +901,16 @@ export class Stacks {
     return ((await this.stackOf(project))?.members ?? []).map(nameOf);
   }
 
-  async run(
-    action: string,
-    details: StackJobDetails,
-  ): Promise<{ succeeded: boolean; outcome: string; output: string | null }> {
-    const failed = (outcome: string, output: string | null = null) => ({ succeeded: false, outcome, output });
+  async run(action: string, details: StackJobDetails): Promise<StackRun> {
     const stack = await this.stackOf(details.project);
-    if (stack === null) return failed(STACK_OUTCOMES.notCompose(details.project));
-    // Compose must not start from what an interrupted save left half written.
-    const refusal = await this.whileChanging<string | null>(
-      stack,
-      (reason) => reason,
-      async () => null,
-    );
-    if (refusal !== null) return failed(refusal);
+    if (stack === null) return didNotRun(STACK_OUTCOMES.notCompose(details.project));
+    // Held for the whole of it, not only to start from files an interrupted save left whole: Compose reads those
+    // files as it runs, and what it brought up is looked at afterwards, so a save waits its turn instead of cutting
+    // in. Another project's is its own lock, and a body that throws or times out still gives this one up.
+    return this.whileChanging(stack, didNotRun, () => this.lifecycle(action, details, stack));
+  }
+
+  private async lifecycle(action: string, details: StackJobDetails, stack: Stack): Promise<StackRun> {
     const reconciling = action === JOB_ACTION.stackUp ? details.reconcile : undefined;
     let reconciled: string[] = [];
     if (reconciling !== undefined) {
@@ -914,10 +918,10 @@ export class Stacks {
       const drift = compared === undefined ? null : await this.driftFrom(stack, compared);
       // Compared afresh: what was reviewed may be gone or have changed, and the host's own say decides.
       if (drift === null || drift.revision !== reconciling.revision) {
-        return failed(STACK_OUTCOMES.driftChanged(stack.project));
+        return didNotRun(STACK_OUTCOMES.driftChanged(stack.project));
       }
       reconciled = reconcilableServices(drift);
-      if (reconciled.length === 0) return failed(STACK_OUTCOMES.driftChanged(stack.project));
+      if (reconciled.length === 0) return didNotRun(STACK_OUTCOMES.driftChanged(stack.project));
     }
     const named = reconciled.map(shellQuoted).join(" ");
     const command: Record<string, { line: string; timeout: number }> = {
@@ -941,7 +945,7 @@ export class Stacks {
       },
     };
     const chosen = command[action];
-    if (chosen === undefined) return failed(STACK_OUTCOMES.notCompose(details.project));
+    if (chosen === undefined) return didNotRun(STACK_OUTCOMES.notCompose(details.project));
     const facts = action === JOB_ACTION.stackRemove && details.removeData ? await this.removalFacts(stack) : null;
     const dataLines = (facts?.removal?.data ?? []).map(({ path }) => `rm -rf ${shellQuoted(path)}`);
     const script = [
@@ -953,12 +957,12 @@ export class Stacks {
     ].join("\n");
     const ran = await this.dependencies.hostScript(script, chosen.timeout);
     const output = redactSecrets(tail(ran.output));
-    if (ran.exitCode === EXIT_FILES_MISSING) return failed(STACK_OUTCOMES.filesMissing(stack.project), output);
-    if (ran.exitCode !== 0) return failed(STACK_OUTCOMES.failed(stack.project), output);
+    if (ran.exitCode === EXIT_FILES_MISSING) return didNotRun(STACK_OUTCOMES.filesMissing(stack.project), output);
+    if (ran.exitCode !== 0) return didNotRun(STACK_OUTCOMES.failed(stack.project), output);
     if (action === JOB_ACTION.stackUp || action === JOB_ACTION.stackRebuild) {
       const problem = await this.settled(stack);
       void this.refreshDrift().catch(() => undefined);
-      if (problem !== null) return failed(STACK_OUTCOMES.cameBackBadly(problem), output);
+      if (problem !== null) return didNotRun(STACK_OUTCOMES.cameBackBadly(problem), output);
       const outcome =
         reconciling === undefined
           ? STACK_OUTCOMES.up(stack.project)

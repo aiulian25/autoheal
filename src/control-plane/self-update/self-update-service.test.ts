@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,11 +12,13 @@ import {
   AUDIT_ACTIONS,
   SELF_UPDATE,
   SELF_UPDATE_PHASE,
+  SELF_UPDATE_RECORD,
   SELF_UPDATE_STATUS,
   SELF_UPDATE_TEXT,
+  SELF_UPDATE_UNREADABLE,
 } from "../../shared/constants.js";
 import type { Actor } from "../audit/audit-log.js";
-import { SelfUpdateOutcomeFile } from "./self-update-outcome.js";
+import { outcomeIn, SelfUpdateOutcomeFile } from "./self-update-outcome.js";
 import { SelfUpdateService } from "./self-update-service.js";
 
 const NAME = "autoheal-control-plane";
@@ -103,6 +105,7 @@ describe("Autoheal updating itself, from the dashboard", () => {
       socketGroup: () => SOCKET_GROUP,
     });
   const audit = async () => JSON.stringify((await admin.get(API_ROUTES.audit)).json());
+  const stored = () => outcomeIn(outcomes.read());
 
   describe("which image an update looks for", () => {
     const COMPOSE_TAG = "ghcr.io/example/autoheal:latest";
@@ -260,11 +263,11 @@ describe("Autoheal updating itself, from the dashboard", () => {
         const selfUpdate = service(new RefusingDocker(engine.socketPath));
         await expect(selfUpdate.start(actor)).rejects.toThrow("no such device");
 
-        expect(outcomes.read()).toMatchObject({
+        expect(stored()).toMatchObject({
           status: SELF_UPDATE_STATUS.failed,
           message: SELF_UPDATE_TEXT.helperFailed("no such device"),
         });
-        expect(outcomes.read()!.finishedAt).not.toBeNull();
+        expect(stored()!.finishedAt).not.toBeNull();
         expect(engine.containers.has(SELF_UPDATE.helperName)).toBe(false);
         await selfUpdate.view();
         expect(await audit()).toContain(AUDIT_ACTIONS.selfUpdateFinished);
@@ -289,25 +292,25 @@ describe("Autoheal updating itself, from the dashboard", () => {
     });
   });
 
-  describe("an update that stopped partway", () => {
-    const partway = (original: string) =>
-      outcomes.write({
-        status: SELF_UPDATE_STATUS.watching,
-        from: OLD_IMAGE,
-        to: NEW_IMAGE,
-        reference: REFERENCE,
-        startedAt: 1,
-        finishedAt: null,
-        message: SELF_UPDATE_TEXT.watching,
-        recovery: {
-          version: SELF_UPDATE.recoveryVersion,
-          phase: SELF_UPDATE_PHASE.watching,
-          original,
-          name: NAME,
-          snapshot: { path: "/data/self-update-snapshot.sqlite", schemaVersion: 48 },
-        },
-      });
+  const partway = (original: string) =>
+    outcomes.write({
+      status: SELF_UPDATE_STATUS.watching,
+      from: OLD_IMAGE,
+      to: NEW_IMAGE,
+      reference: REFERENCE,
+      startedAt: 1,
+      finishedAt: null,
+      message: SELF_UPDATE_TEXT.watching,
+      recovery: {
+        version: SELF_UPDATE.recoveryVersion,
+        phase: SELF_UPDATE_PHASE.watching,
+        original,
+        name: NAME,
+        snapshot: { path: "/data/self-update-snapshot.sqlite", schemaVersion: 48 },
+      },
+    });
 
+  describe("an update that stopped partway", () => {
     it("reads as stopped once no helper runs, and keeps its recovery record out of the view", async () => {
       partway("the-original-container");
       const { last } = await service().view();
@@ -330,16 +333,84 @@ describe("Autoheal updating itself, from the dashboard", () => {
         Cmd: ["self-update", "the-original-container", NEW_IMAGE, REFERENCE],
       });
       expect(engine.pulls.length).toBe(pullsBefore);
-      expect(outcomes.read()).toMatchObject({ status: SELF_UPDATE_STATUS.watching, startedAt: 1 });
+      expect(stored()).toMatchObject({ status: SELF_UPDATE_STATUS.watching, startedAt: 1 });
     });
 
     it("records who it is replacing before the helper runs, so even a helper that never ran can be taken up", async () => {
       await service().start(actor);
-      expect(outcomes.read()!.recovery).toMatchObject({
+      expect(stored()!.recovery).toMatchObject({
         phase: SELF_UPDATE_PHASE.preparing,
         original: containerIdOf(NAME),
         name: NAME,
       });
+    });
+  });
+
+  describe("a record of the last update that cannot be read", () => {
+    const WRONG_VERSION = JSON.stringify({
+      status: SELF_UPDATE_STATUS.watching,
+      from: OLD_IMAGE,
+      to: NEW_IMAGE,
+      reference: REFERENCE,
+      startedAt: 1,
+      finishedAt: null,
+      message: SELF_UPDATE_TEXT.watching,
+      recovery: { version: SELF_UPDATE.recoveryVersion + 1, phase: "preparing", original: "c", name: NAME },
+    });
+    const SECRET = "a-passphrase-nobody-should-see";
+    const unreadable = (body: string) => writeFileSync(join(data, SELF_UPDATE.outcomeFile), body);
+
+    it.each([
+      ["bytes that are not JSON", `{ ${SECRET}`, SELF_UPDATE_UNREADABLE.notJson],
+      ["JSON that is not a record", JSON.stringify({ kept: SECRET }), SELF_UPDATE_UNREADABLE.notTheShape],
+      ["a recovery version this one does not read", WRONG_VERSION, SELF_UPDATE_UNREADABLE.notTheShape],
+    ])("is told apart from no record at all: %s", (_case, body, reason) => {
+      unreadable(body);
+      expect(outcomes.read()).toEqual({ state: SELF_UPDATE_RECORD.unreadable, reason });
+    });
+
+    it("has no record where there is no file, and reads one that is whole", () => {
+      expect(outcomes.read()).toEqual({ state: SELF_UPDATE_RECORD.absent });
+      partway("the-original-container");
+      expect(outcomes.read()).toMatchObject({
+        state: SELF_UPDATE_RECORD.valid,
+        outcome: { status: SELF_UPDATE_STATUS.watching },
+      });
+    });
+
+    it("refuses a new update and makes no helper, leaving the record as it was", async () => {
+      unreadable(`{ ${SECRET}`);
+
+      await expect(service().start(actor)).rejects.toMatchObject({
+        code: API_ERRORS.selfUpdateRecoveryBlocked,
+      });
+
+      expect(helperCreations()).toEqual([]);
+      expect(engine.containers.has(SELF_UPDATE.helperName)).toBe(false);
+      // The only evidence of an update that may be unfinished is still on disk, byte for byte.
+      expect(readFileSync(join(data, SELF_UPDATE.outcomeFile), "utf8")).toBe(`{ ${SECRET}`);
+      expect(await audit()).not.toContain(AUDIT_ACTIONS.selfUpdateStarted);
+    });
+
+    it("still says how things stand, and says recovery is blocked without repeating the record", async () => {
+      unreadable(JSON.stringify({ kept: SECRET }));
+
+      const view = await service().view();
+
+      expect(view).toMatchObject({ unavailable: null, runningImage: OLD_IMAGE, reference: REFERENCE, last: null });
+      expect(view.recoveryBlocked).toBe(SELF_UPDATE_TEXT.recoveryBlocked(SELF_UPDATE_UNREADABLE.notTheShape));
+      expect(JSON.stringify(view)).not.toContain(SECRET);
+    });
+
+    it("lets updates go on again once the record reads, and is no bar to one that is merely unfinished", async () => {
+      unreadable(`{ ${SECRET}`);
+      await expect(service().start(actor)).rejects.toMatchObject({ code: API_ERRORS.selfUpdateRecoveryBlocked });
+
+      partway("the-original-container");
+
+      expect((await service().view()).recoveryBlocked).toBeNull();
+      await service().start(actor);
+      expect(helperCreations()).toHaveLength(1);
     });
   });
 

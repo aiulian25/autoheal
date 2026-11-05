@@ -22,6 +22,7 @@ import {
   UPDATE_RUN_STATUS,
   WORK_ITEM_STATUS,
 } from "../../shared/constants.js";
+import { REBOOT_PLAN_STATUS, REBOOT_PLAN_UNREADABLE } from "../../shared/reboot-plans.js";
 import { AuditLog } from "../audit/audit-log.js";
 import { DatabaseHandle } from "./connection.js";
 import { RetentionSweep } from "./retention-sweep.js";
@@ -121,6 +122,16 @@ function fixture() {
         ago(days),
         ago(days),
         status === JOB_STATUS.pending ? null : ago(days),
+      ),
+    // A saved reboot plan: its status is kept beside it, and its steps name the jobs it asked for.
+    rebootPlan: (id: string, status: string, days: number, jobIds: readonly (string | null)[] = []) =>
+      run(
+        "INSERT INTO reboot_plans (id, created_at, updated_at, state_json, status) VALUES (?, ?, ?, ?, ?)",
+        id,
+        ago(days),
+        ago(days),
+        JSON.stringify({ id, status, steps: jobIds.map((jobId) => ({ jobId })) }),
+        status,
       ),
     updateRun: (id: string, status: string, days: number, currentJobId: string | null = null) =>
       run(
@@ -231,6 +242,16 @@ describe("the retention sweep", () => {
     seed.backupRun("recent-drill", "succeeded", 10, "named-artifact");
     seed.backupRun("queued-run", "queued", 200);
 
+    seed.rebootPlan("old-plan", REBOOT_PLAN_STATUS.completed, 91);
+    seed.rebootPlan("cancelled-plan", REBOOT_PLAN_STATUS.cancelled, 91);
+    seed.rebootPlan("recent-plan", REBOOT_PLAN_STATUS.completed, 89);
+    seed.rebootPlan("running-plan", REBOOT_PLAN_STATUS.running, 400);
+    seed.rebootPlan("paused-plan", REBOOT_PLAN_STATUS.paused, 400);
+    // Cannot be read, so whether its reboot ever finished is unknown: it is never swept away.
+    seed.rebootPlan("unreadable-plan", REBOOT_PLAN_UNREADABLE, 400);
+    // Its job is still here, so the plan that asked for it stays too.
+    seed.rebootPlan("job-plan", REBOOT_PLAN_STATUS.completed, 91, ["open-job"]);
+
     expect(sweep.sweep()).toEqual({
       runnerResults: 1,
       updateRuns: 1,
@@ -240,6 +261,7 @@ describe("the retention sweep", () => {
       incidents: 2,
       applicationBackupArtifacts: 1,
       applicationBackupRuns: 2,
+      rebootPlans: 2,
     });
 
     expect(idsIn(sqlite, "runner_results")).toEqual(["recent-receipt"]);
@@ -261,6 +283,14 @@ describe("the retention sweep", () => {
       "named-capture",
       "queued-run",
       "recent-drill",
+    ]);
+
+    expect(idsIn(sqlite, "reboot_plans")).toEqual([
+      "job-plan",
+      "paused-plan",
+      "recent-plan",
+      "running-plan",
+      "unreadable-plan",
     ]);
 
     // What hung off the removed records went with them, and nothing was left pointing at a missing row.

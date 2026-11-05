@@ -1,4 +1,4 @@
-import { RUNNER_BODY_LIMIT_BYTES } from "../shared/constants.js";
+import { JOB_OUTCOMES, RUNNER_BODY_LIMIT_BYTES, RUNNER_MESSAGES } from "../shared/constants.js";
 import { z } from "zod";
 import { handledIncidentSchema, outcomeSchema, jobResultSchema } from "../shared/protocol.js";
 import { log } from "../shared/log.js";
@@ -8,6 +8,8 @@ const LABEL = "autoheal.result.journal";
 const RECORD = "autoheal.result.record";
 const PREFIX = "autoheal-results-";
 const MAX_BYTES = 256 * RUNNER_BODY_LIMIT_BYTES;
+// Snapshots on the engine at once; reaching this many, something keeps refusing their removal, and actions stop.
+const MAX_SNAPSHOTS = 32;
 const identity = { id: z.string().min(1).max(128) };
 const reportSchema = z.discriminatedUnion("kind", [
   z.object({ ...identity, kind: z.literal("incident"), result: outcomeSchema }),
@@ -54,7 +56,7 @@ export class ResultJournal {
     const journal = new ResultJournal(store, capacity);
     try {
       const volumes = await store.volumes(LABEL);
-      if (volumes.length > 32) throw new Error("Excess retained snapshots");
+      if (volumes.length > MAX_SNAPSHOTS) throw new Error("Excess retained snapshots");
       for (const volume of volumes) {
         const text = volume.Labels?.[RECORD] ?? "";
         if (Buffer.byteLength(text) > MAX_BYTES || volume.Labels?.[LABEL] !== "1") throw new Error("Invalid snapshot");
@@ -100,6 +102,28 @@ export class ResultJournal {
           entry.kind === "job" && entry.target === target && entry.report === null && !this.owned.has(keyOf(entry)),
       )
       .map((entry) => entry.id);
+  }
+
+  /**
+   * Jobs an earlier runner reserved and never finished, once its shutdown journal holds nothing half done: each gets a
+   * result saying its end is unknown. Its id still never runs again, and its container may be acted on again.
+   * ponytail: jobs only; an interrupted incident or approved work still waits for a person, as before.
+   */
+  async settleInterrupted() {
+    const interrupted = [...this.entries.values()].filter(
+      (entry) => entry.kind === "job" && entry.report === null && !this.owned.has(keyOf(entry)),
+    );
+    if (interrupted.length === 0) return;
+    await this.change(() => {
+      for (const entry of interrupted) {
+        entry.report = {
+          kind: "job",
+          id: entry.id,
+          result: { succeeded: false, outcome: JOB_OUTCOMES.interruptedByRestart, output: null },
+        };
+      }
+    });
+    log(RUNNER_MESSAGES.interruptedJobsSettled(interrupted.length));
   }
 
   /** False means an existing action/result: do not execute it again. */
@@ -198,9 +222,12 @@ export class ResultJournal {
           const saved = (await this.store.volumes(LABEL)).find((volume) => volume.Name === name);
           if (saved?.Labels?.[RECORD] !== text) throw new Error("Unverified publication");
           this.revision += 1;
-          const previous = this.names;
-          this.names = [name];
-          for (const old of previous) await this.store.removeVolume(old);
+          // An old snapshot Docker will not remove now (another container mounted every volume for a moment) is
+          // tried again at the next change: the newest is read first anyway.
+          const kept: string[] = [];
+          for (const old of this.names) await this.store.removeVolume(old).catch(() => kept.push(old));
+          this.names = [name, ...kept];
+          if (this.names.length >= MAX_SNAPSHOTS) throw new Error("Excess retained snapshots");
         } catch {
           this.failed = true;
           throw new Error("Runner result persistence failed; preserve journal volumes and stop new actions.");

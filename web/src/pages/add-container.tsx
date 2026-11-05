@@ -132,11 +132,14 @@ export function Choices<Value>({
   selected,
   onChoose,
   label,
+  several = false,
 }: {
   options: { value: Value; label: string; note?: string | undefined }[];
   selected: (value: Value) => boolean;
   onChoose: (value: Value) => void;
   label: string;
+  // Any number of them at once: each carries a tick box, so the row does not read as one choice.
+  several?: boolean;
 }) {
   return (
     <span className="install-choices" role="group" aria-label={label}>
@@ -148,6 +151,7 @@ export function Choices<Value>({
           aria-pressed={selected(option.value)}
           onClick={() => onChoose(option.value)}
         >
+          {several && <Icon name={selected(option.value) ? "check" : "square"} />}
           {option.label}
           {option.note !== undefined && <span className="install-choice-note">{option.note}</span>}
         </button>
@@ -439,9 +443,13 @@ function ReadyToInstall({
           ) : (
             <Row label={text.runsAs} value={who.value} why={who.why} warn={who.warn} />
           )}
-          <span className="install-label">{text.network}</span>
+          <span className="install-label">
+            {text.network}
+            <span className="install-label-note">{text.pickAny}</span>
+          </span>
           <span className="install-row-choices">
             <Choices
+              several
               label={text.network}
               options={[
                 ...draft.networks.map((name) => ({

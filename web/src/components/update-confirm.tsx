@@ -5,6 +5,7 @@ import { JOB_ACTION } from "../../../src/shared/constants.js";
 import { TEXT } from "../constants.js";
 import { ErrorNotice } from "./common.js";
 import { previewIdsOf, useOperationReview } from "./dependency-map.js";
+import { ImageProvenanceLine } from "./image-provenance.js";
 
 const TEXTS = TEXT.hostContainers.updateBox;
 const GAP_PIXELS = 6;
@@ -76,6 +77,7 @@ export function UpdateConfirm({
       <p>{versions === null ? TEXTS.versionsUnknown : TEXT.updates.versions(versions.from, versions.to)}</p>
       <p className="small muted">{TEXTS.restarts}</p>
       <p className="small muted">{TEXTS.noCheckpoint}</p>
+      <ImageProvenanceLine provenance={container.update.provenance} />
       {preview.isPending && <p className="small muted">{TEXTS.checking}</p>}
       {others.length > 0 && <p className="small">{TEXTS.alsoHeld(others.join(", "))}</p>}
       {answer !== undefined && !answer.ok && <p className="notice error small">{answer.reason}</p>}

@@ -1,4 +1,5 @@
 import { RebootPlanPanel } from "../components/reboot-plan.js";
+import { AvailabilityGroups } from "../components/availability-groups.js";
 import { MaintenanceBadge } from "../components/maintenance-dialog.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId } from "react";
@@ -311,6 +312,7 @@ export function FleetPage() {
           {admin && <ConnectHostTile hosts={hosts.data} />}
         </div>
       )}
+      {hosts.data.length > 0 && <AvailabilityGroups admin={admin} />}
       {admin && <RebootPlanPanel hosts={hosts.data} />}
       {stopped.map((entry) => (
         <StoppedBanner key={entry.host.id} host={entry.host} count={entry.count} />

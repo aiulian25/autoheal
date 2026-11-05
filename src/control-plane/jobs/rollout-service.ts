@@ -1,3 +1,4 @@
+import type { AvailabilityGroupsService } from "../inventory/availability-groups-service.js";
 import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { API_ERRORS } from "../../shared/api.js";
@@ -75,6 +76,8 @@ export class RolloutService {
     private readonly jobsService: Pick<JobsService, "request" | "onFinished" | "rolloutDispatchAllowed">,
     private readonly maintenanceHeld: (hostId: string, name: string) => boolean,
     private readonly clock = Date.now,
+    // What an application's replicas say about replacing this container; absent where no group is set up.
+    private readonly availability?: Pick<AvailabilityGroupsService, "problemFor">,
   ) {
     jobsService.rolloutDispatchAllowed = (jobId) =>
       this.plans().some(
@@ -110,6 +113,15 @@ export class RolloutService {
     return this.database.select().from(rollouts).orderBy(desc(rollouts.createdAt)).limit(ROLLOUT_LIMITS.retained).all();
   }
   // The plans this version can read, newest first: the only ones anything here acts on.
+  /** The containers a rollout under way still has to replace: what an availability group counts as going down. */
+  containersStillToReplace(): { hostId: string; containerName: string }[] {
+    return this.plans()
+      .filter(active)
+      .flatMap((plan) =>
+        plan.targets.slice(plan.current).map(({ hostId, containerName }) => ({ hostId, containerName })),
+      );
+  }
+
   private plans(): RolloutView[] {
     const plans: RolloutView[] = [];
     for (const row of this.rows()) {
@@ -207,6 +219,12 @@ export class RolloutService {
         throw new DomainError(API_ERRORS.rolloutGate);
       if (members.some((name) => this.maintenanceHeld(target.hostId, name)))
         throw new DomainError(API_ERRORS.maintenanceActive);
+      // A canary is not an application's quorum: what the replicas of this container say is asked as well, about
+      // this target and every target this rollout has still to replace.
+      const availability = this.availability?.problemFor({
+        containers: [{ hostId: target.hostId, containerName: target.containerName }],
+      });
+      if (availability !== null && availability !== undefined) throw new DomainError(API_ERRORS.availabilityGate);
       return {
         hostId: target.hostId,
         containerName: target.containerName,

@@ -170,9 +170,6 @@ export function ContainerActions({
           {TEXT.actions.recovery(container.recovery.owner)}
         </p>
       )}
-      {allowed(JOB_ACTION.update) && container.handsOff === null && hasUpdate(container) && (
-        <p className="notice warning small">{TEXT.actions.checkpointWarning}</p>
-      )}
       {(actions.length > 0 || inPanel) && (
         <div
           className={inPanel ? "row panel-actions" : "row"}

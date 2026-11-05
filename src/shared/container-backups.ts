@@ -272,6 +272,11 @@ export const BACKUP_TEXT = {
   backedUp: (size: string) => `Backup saved and checked: ${size}.`,
   copyFailed: (reason: string) => `The second copy failed, though this backup is fine: ${reason}`,
   restored: (when: string) => `Restored to ${when}.`,
+  // The data is back, but something the restore was asked for did not happen: it is not over, and says so.
+  restoredNotFinished: (when: string) =>
+    `The data is back as it was at ${when}, but this restore did not finish: part of what it was asked to put back is not in place. It stays open until someone looks or it is asked again.`,
+  stackNotUp: (project: string, reason: string) =>
+    `${project} could not be brought up from the Compose files that came back${reason === "" ? "" : `: ${reason}`}.`,
   restoredNotUp: (names: string) => `The data is back, but ${names} did not come back healthy. See its logs.`,
   notQuiet: "A container using this data could not be confirmed stopped, so nothing was written back.",
   stillRunning: (names: string) =>
@@ -283,6 +288,14 @@ export const BACKUP_TEXT = {
     `The restore did not finish: ${reason}. ${names} stay stopped rather than start on half-written data. Try it again, or restore the backup taken just before it.`,
   restoreRefused: (reason: string) => `Nothing was changed: ${reason}`,
   settingsNotRestored: (reason: string) => `The data is back, but its Compose files were left as they are: ${reason}`,
+  // A Compose file says what every service of its stack is, so putting one back and bringing the stack up would
+  // recreate the rest from it, on data this restore never looked at and nobody asked about.
+  // A container of no stack keeps its settings in Docker, not in a file Autoheal can put back. Its data comes back
+  // under whatever it runs now, which may be a newer image than the one the data was written by.
+  ownSettingsNotRestored: (names: string) =>
+    `The data is back, and ${names} still runs the settings and image it runs now: a container that is not part of a stack keeps those in Docker, and this restore does not put them back. Check it is the version this data belongs with.`,
+  settingsWiderThanRestore: (project: string, others: string) =>
+    `The data is back, and ${project}'s Compose files were left as they are: they also say what ${others} is, which this restore does not cover. To put the files back too, restore the whole stack.`,
 } as const;
 
 export const backupReadme = (

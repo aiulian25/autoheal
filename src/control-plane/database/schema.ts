@@ -148,6 +148,56 @@ export const ollamaServers = sqliteTable("ollama_servers", {
   createdAt: integer("created_at").notNull(),
 });
 
+export const registryCredentials = sqliteTable("registry_credentials", {
+  id: text("id").primaryKey(),
+  registry: text("registry").notNull(),
+  repository: text("repository"),
+  username: text("username").notNull(),
+  sealedPassword: text("sealed_password").notNull(),
+  hostIdsJson: text("host_ids_json"),
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const trustedPublishers = sqliteTable("trusted_publishers", {
+  name: text("name").primaryKey(),
+  publicKey: text("public_key").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const imageTrustRules = sqliteTable("image_trust_rules", {
+  id: text("id").primaryKey(),
+  registry: text("registry").notNull(),
+  repository: text("repository"),
+  publishersJson: text("publishers_json"),
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const availabilityGroups = sqliteTable("availability_groups", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  minimumAvailable: integer("minimum_available").notNull(),
+  evidenceFreshSeconds: integer("evidence_fresh_seconds").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const availabilityGroupMembers = sqliteTable(
+  "availability_group_members",
+  {
+    groupId: text("group_id").notNull(),
+    hostId: text("host_id").notNull(),
+    containerName: text("container_name").notNull(),
+    failureDomain: text("failure_domain"),
+    probeId: text("probe_id"),
+  },
+  (table) => [primaryKey({ columns: [table.groupId, table.hostId, table.containerName] })],
+);
+
 export const hosts = sqliteTable("hosts", {
   id: text("id").primaryKey(),
   label: text("label").notNull().unique(),
@@ -168,6 +218,8 @@ export const hosts = sqliteTable("hosts", {
   resourcePermissions: integer("resource_permissions", { mode: "boolean" }).notNull().default(false),
   topologyJson: text("topology_json"),
   operationPreviews: integer("operation_previews", { mode: "boolean" }).notNull().default(false),
+  // Whether its runner can make service checks from its own host.
+  serviceProbes: integer("service_probes", { mode: "boolean" }).notNull().default(false),
   rollouts: integer("rollouts", { mode: "boolean" }).notNull().default(false),
   applicationBackups: integer("application_backups", { mode: "boolean" }).notNull().default(false),
   restartBudgetJson: text("restart_budget_json").notNull().default("{}"),

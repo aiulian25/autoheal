@@ -163,9 +163,14 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
     if (heartbeat.stackDrift !== undefined) services.stackDrift.record(request.runnerHost!.id, heartbeat.stackDrift);
     services.live.publish({ kind: LIVE_EVENT.inventory, hostId: request.runnerHost!.id });
     services.jobsService.noteBoot(request.runnerHost!, heartbeat.host?.bootId);
+    if (heartbeat.probeResults !== undefined) {
+      services.probes.recordReports(request.runnerHost!.id, heartbeat.probeResults);
+    }
+    const probes = services.probes.probesFor(request.runnerHost!.id);
     return {
       ...services.runnerSettings(request.runnerHost!.id),
       control: services.hostControl.forRunner(request.runnerHost!.id),
+      ...(probes.length === 0 ? {} : { probes }),
     };
   });
 

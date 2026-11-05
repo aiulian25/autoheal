@@ -77,6 +77,7 @@ export function toHostView(
     kind: host.kind,
     ssh,
     docker: host.docker,
+    serviceProbes: host.serviceProbes,
     state: hostStateOf(host, now),
     tokenHint: host.tokenHint,
     enrolledAt: host.enrolledAt,
@@ -132,6 +133,7 @@ export function containerViewsOf(
         policy: policyOf(byItself),
         remote: update?.remote ?? null,
         reason: update?.reason ?? null,
+        provenance: update?.provenance ?? null,
       },
       // The inventory is newer than the stats when a container has just stopped.
       usage: container.state === CONTAINER_STATE_RUNNING ? (usage.get(container.name) ?? null) : null,

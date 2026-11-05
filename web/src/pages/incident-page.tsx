@@ -32,11 +32,12 @@ import {
   wordsOf,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { containerLink } from "../host-links.js";
 import { MINIMUM_POINTS } from "../components/charts.js";
 import { Badge, ErrorNotice, Loading, PlainText, TimeAgo } from "../components/common.js";
 import { Icon } from "../components/icons.js";
 import { approvalOf, incidentLink, incidentQuery, useApproval } from "../components/incident-parts.js";
-import { EXIT_CODE_IN_STATE, LOG_EXCERPT_LINES, PATHS, SEARCH_PARAMETERS, TEXT } from "../constants.js";
+import { EXIT_CODE_IN_STATE, LOG_EXCERPT_LINES, PATHS, TEXT } from "../constants.js";
 import { duration, timeAgo } from "../format.js";
 import { REPAIR_STATE, repairOf, type RepairState, type RepairView } from "../incident-steps.js";
 import { hostContainersQuery, hostsQuery, integrationsQuery } from "../queries.js";
@@ -44,9 +45,6 @@ import { isAdmin, useSignedInSession } from "../session.js";
 import { ContainerCharts } from "./host-stats.js";
 
 const text = TEXT.incidentPage;
-
-const containerLink = (hostId: string, name: string) =>
-  `${apiPath(PATHS.host, { hostId })}?${new URLSearchParams({ [SEARCH_PARAMETERS.container]: name })}`;
 
 const eventOf = (incident: IncidentDetailView, kind: string) =>
   incident.trace.find((event) => event.kind === kind) ?? null;

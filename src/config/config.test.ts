@@ -229,6 +229,14 @@ describe("runner config", () => {
     ).toEqual(["UPDATE_CHECKPOINT_LIMIT_GB: must be at least 0"]);
   });
 
+  it("opens the host's shell as the user HOST_TERMINAL_USER names, root's when empty, and refuses an option", () => {
+    expect(loadRunnerConfig(runnerEnvironment({})).hostTerminalUser).toBeNull();
+    expect(loadRunnerConfig(runnerEnvironment({ HOST_TERMINAL_USER: "alex" })).hostTerminalUser).toBe("alex");
+    expect(configErrorOf(() => loadRunnerConfig(runnerEnvironment({ HOST_TERMINAL_USER: "-c id" }))).problems).toEqual([
+      "HOST_TERMINAL_USER: must be a user name on the host, like alex",
+    ]);
+  });
+
   it("lets admins open a shell on the host unless its .env says HOST_TERMINAL=off", () => {
     expect(loadRunnerConfig(runnerEnvironment()).hostTerminal).toBe(true);
     expect(loadRunnerConfig(runnerEnvironment({ HOST_TERMINAL: "off" })).hostTerminal).toBe(false);

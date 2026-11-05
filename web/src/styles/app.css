@@ -4355,7 +4355,11 @@ dialog.connect-host > h2 {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-2);
+  gap: var(--space-1);
+}
+
+.snooze-choices button {
+  padding-inline: var(--space-2);
 }
 
 /* The words sit a little low, as in buttons; the icon stays centred. */
@@ -6410,6 +6414,17 @@ button.install-choice[aria-pressed="true"] {
   font-size: 0.65625rem;
 }
 
+button.install-choice .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.install-label-note {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.65625rem;
+}
+
 .connect-host-body input.install-port {
   width: 5.5rem;
   min-height: 24px;
@@ -7361,4 +7376,9 @@ button.network-stat {
 
 .router-fingerprint {
   overflow-wrap: anywhere;
+}
+
+/* Each update's own way to where it is looked at on its host, at the end of its row. */
+.update-row .update-review {
+  margin-left: auto;
 }

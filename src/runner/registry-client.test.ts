@@ -29,10 +29,12 @@ describe("RegistryClient", () => {
   let base: string;
   let requests: { method: string; url: string; authorization: string | undefined }[];
   let realm: string;
+  let challenge: "bearer" | "basic";
 
   beforeEach(async () => {
     requests = [];
     realm = "";
+    challenge = "bearer";
     server = createServer((request: IncomingMessage, response) => {
       requests.push({ method: request.method!, url: request.url!, authorization: request.headers.authorization });
       if (request.url!.startsWith("/token")) {
@@ -41,6 +43,19 @@ describe("RegistryClient", () => {
       }
       if (request.url === "/v2/team/missing/manifests/latest") {
         response.writeHead(404);
+        return response.end();
+      }
+      // Private whoever asks: for the case where even a credential is turned down.
+      if (request.url === "/v2/team/private/manifests/latest") {
+        response.writeHead(403);
+        return response.end();
+      }
+      if (challenge === "basic") {
+        if (request.headers.authorization?.startsWith("Basic ") !== true) {
+          response.writeHead(401, { "www-authenticate": 'Basic realm="registry"' });
+          return response.end();
+        }
+        response.writeHead(200, { "docker-content-digest": DIGEST });
         return response.end();
       }
       if (request.headers.authorization !== "Bearer anonymous-token") {
@@ -114,7 +129,7 @@ describe("RegistryClient", () => {
     }) as typeof fetch;
     const local = new RegistryClient(hub).digest({
       registry: "registry-1.docker.io",
-      repository: "library/cinesort",
+      repository: "library/notebook",
       tag: "latest",
     });
     await expect(local).rejects.toThrow("not public on Docker Hub: private, or built on this host");
@@ -288,5 +303,102 @@ describe("imageLabelsOf", () => {
     expect(
       imageLabelsOf({ "org.opencontainers.image.version": "2.1.0", "org.label-schema.version": "2.0.0" }),
     ).toMatchObject({ version: "2.1.0" });
+  });
+});
+
+describe("RegistryClient with a stored credential", () => {
+  let server: Server;
+  let base: string;
+  let requests: { url: string; authorization: string | undefined }[];
+  let realm: string;
+  let basicOnly: boolean;
+  const owner = { registry: "", repository: "team/app", username: "owner", password: "a-token" };
+  const basic = `Basic ${Buffer.from("owner:a-token").toString("base64")}`;
+
+  beforeEach(async () => {
+    requests = [];
+    basicOnly = false;
+    server = createServer((request: IncomingMessage, response) => {
+      requests.push({ url: request.url!, authorization: request.headers.authorization });
+      if (request.url!.startsWith("/token")) {
+        response.writeHead(200, { "content-type": "application/json" });
+        return response.end(JSON.stringify({ token: "scoped-token" }));
+      }
+      if (request.url === "/v2/team/private/manifests/latest") {
+        response.writeHead(403);
+        return response.end();
+      }
+      const allowed = basicOnly ? basic : "Bearer scoped-token";
+      if (request.headers.authorization !== allowed) {
+        response.writeHead(401, {
+          "www-authenticate": basicOnly ? 'Basic realm="registry"' : `Bearer realm="${realm}",service="registry"`,
+        });
+        return response.end();
+      }
+      response.writeHead(200, { "docker-content-digest": DIGEST });
+      return response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+    realm = `http://${base}/token`;
+    owner.registry = base;
+  });
+
+  afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  const client = (...available: (typeof owner)[]) => new RegistryClient(fetch, () => available);
+
+  it("proves the credential to the token address, so a private repository answers", async () => {
+    const digest = await client(owner).digest({ registry: base, repository: "team/app", tag: "latest" });
+
+    expect(digest).toBe(DIGEST);
+    expect(requests.map(({ url }) => url)).toEqual([
+      "/v2/team/app/manifests/latest",
+      "/token?service=registry",
+      "/v2/team/app/manifests/latest",
+    ]);
+    expect(requests[1]!.authorization).toBe(basic);
+    expect(requests[2]!.authorization).toBe("Bearer scoped-token");
+  });
+
+  it("asks anonymously for a repository no credential covers", async () => {
+    await client({ ...owner, repository: "team/other" })
+      .digest({ registry: base, repository: "team/app", tag: "latest" })
+      .catch(() => undefined);
+
+    expect(requests[1]!.authorization).toBeUndefined();
+  });
+
+  it("tells the registry itself when it asks for basic authentication", async () => {
+    basicOnly = true;
+
+    expect(await client(owner).digest({ registry: base, repository: "team/app", tag: "latest" })).toBe(DIGEST);
+    expect(requests.map(({ authorization }) => authorization)).toEqual([undefined, basic]);
+  });
+
+  it("will not send the credential to a token address the registry picked elsewhere", async () => {
+    realm = "https://token.example.com/token";
+
+    await expect(client(owner).digest({ registry: base, repository: "team/app", tag: "latest" })).rejects.toThrow(
+      /would not send the credential to a token address at https:\/\/token.example.com/,
+    );
+    expect(requests).toHaveLength(1);
+  });
+
+  it("says the registry refused the stored credential, naming the user and not the password", async () => {
+    const refused = client({ ...owner, repository: "team/private" })
+      .digest({ registry: base, repository: "team/private", tag: "latest" })
+      .catch((error: Error) => error.message);
+
+    expect(await refused).toBe(`${base} refused the stored credential for owner`);
+    expect(await refused).not.toContain("a-token");
+  });
+
+  it("says an image is simply not public there when no credential covers it", async () => {
+    const refused = client()
+      .digest({ registry: base, repository: "team/private", tag: "latest" })
+      .catch((error: Error) => error.message);
+
+    expect(await refused).toContain("not public");
   });
 });

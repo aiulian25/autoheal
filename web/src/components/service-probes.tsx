@@ -17,6 +17,8 @@ import { TEXT } from "../constants.js";
 import { TimeChart } from "./charts.js";
 import { CertificateStatusLine } from "./certificate-status.js";
 import { Badge, ErrorNotice, Loading, TimeAgo } from "./common.js";
+import { VantageChoice, VantageLine } from "./probe-vantages.js";
+import { hostsQuery } from "../queries.js";
 
 const text = TEXT.probes;
 const REFRESH_MILLISECONDS = 30_000;
@@ -34,6 +36,7 @@ const BLANK = {
   name: "",
   kind: PROBE_KIND.http as ProbeTarget["kind"],
   scope: PROBE_SCOPE.localNetwork as ProbeBody["scope"],
+  vantage: null as string | null,
   url: "",
   expectedStatus: String(USUAL_STATUS),
   ignoreCertificate: false,
@@ -84,6 +87,7 @@ function targetOf(draft: Draft): ProbeTarget {
 const bodyOf = (draft: Draft): ProbeBody => ({
   name: draft.name,
   scope: draft.scope,
+  vantage: draft.vantage,
   intervalSeconds: Number(draft.intervalSeconds),
   timeoutSeconds: Number(draft.timeoutSeconds),
   failuresBeforeDown: Number(draft.failuresBeforeDown),
@@ -175,6 +179,7 @@ function AddProbe({ hostId, onDone }: { hostId: string; onDone: () => void }) {
           </label>
         </>
       )}
+      <VantageChoice hostId={hostId} value={draft.vantage} onChange={(vantage) => set({ vantage })} />
       <label>
         {text.scope}
         <select value={draft.scope} onChange={(event) => set({ scope: event.target.value as Draft["scope"] })}>
@@ -243,6 +248,7 @@ function Availability({
 
 function Probe({ hostId, probe }: { hostId: string; probe: ProbeView }) {
   const [removing, setRemoving] = useState(false);
+  const hosts = useQuery(hostsQuery);
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: () => api("DELETE", apiPath(API_ROUTES.hostProbe, { hostId, probeId: probe.id })),
@@ -254,7 +260,8 @@ function Probe({ hostId, probe }: { hostId: string; probe: ProbeView }) {
         <strong>{probe.name}</strong> <Badge value={text.states[probe.state]} tone={STATE_TONE[probe.state]} />{" "}
         <span className="small muted">
           {text.since} <TimeAgo timestamp={probe.stateSince} />
-        </span>
+        </span>{" "}
+        <VantageLine vantage={probe.vantage} hosts={hosts.data ?? []} />
       </p>
       {probe.inMaintenance && <p className="small muted">{text.maintenance}</p>}
       {probe.lastProblem !== null && <p className="small text-danger">{probe.lastProblem}</p>}

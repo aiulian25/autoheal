@@ -42,6 +42,39 @@ describe("DockerClient over the unix socket", () => {
     }
   });
 
+  it("gives Docker the stored credential for a private image, and nothing for a public one", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "autoheal-private-pull-"));
+    const socket = join(directory, "engine.sock");
+    const asked: { image: string | null; credential: string | undefined }[] = [];
+    const server = createServer((request, response) => {
+      asked.push({
+        image: new URL(request.url!, "http://docker").searchParams.get("fromImage"),
+        credential: request.headers["x-registry-auth"] as string | undefined,
+      });
+      response.end('{"status":"Downloaded"}\n');
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      const client = new DockerClient(socket, () => [
+        { registry: "ghcr.io", repository: "owner/app", username: "owner", password: "a-token" },
+      ]);
+      await client.pull("ghcr.io/owner/app:2");
+      await client.pull("nginx:1.27");
+
+      const [privateImage, publicImage] = asked;
+      expect(privateImage!.image).toBe("ghcr.io/owner/app");
+      expect(JSON.parse(Buffer.from(privateImage!.credential!, "base64url").toString())).toEqual({
+        username: "owner",
+        password: "a-token",
+        serveraddress: "ghcr.io",
+      });
+      expect(publicImage!.credential).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("changes only the restart policy and reports Docker refusals", async () => {
     const directory = mkdtempSync(join(tmpdir(), "autoheal-restart-policy-"));
     const socket = join(directory, "engine.sock");

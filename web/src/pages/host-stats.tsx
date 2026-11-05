@@ -21,7 +21,7 @@ import { trendQuery, trendReferences, TrendHistory } from "../components/anomaly
 import { api } from "../api-client.js";
 import { powerAway } from "./host-power.js";
 import { Dial, TimeChart, type ChartSeries, type DialProps, type Tone } from "../components/charts.js";
-import { CopyButton } from "../components/common.js";
+import { CopyButton, ErrorNotice, Loading } from "../components/common.js";
 import { ContainerActions, hasParked } from "../components/container-actions.js";
 import { ContainerDetailTabs, type DetailTab } from "../components/container-details.js";
 import { Icon } from "../components/icons.js";
@@ -460,6 +460,8 @@ export function HostHistory({ host }: { host: HostView }) {
     enabled: open,
   });
   const points = history.data ?? [];
+  const nothingYet = history.isSuccess && points.length === 0;
+  const olderThanAsked = history.isError && points.length > 0;
   return (
     <details className="fold stats-history" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
@@ -468,7 +470,26 @@ export function HostHistory({ host }: { host: HostView }) {
       {open && (
         <div className="stack">
           <p className="small muted">{TEXT.metrics.history}</p>
+          {history.isPending && <Loading />}
           {points.length > 0 && <HostCharts points={points} trend={trend.data} />}
+          {nothingYet && (
+            <p className="small muted" role="status">
+              {TEXT.metrics.noReadings}
+            </p>
+          )}
+          <ErrorNotice error={history.error} />
+          {olderThanAsked && (
+            <p className="small muted" role="status">
+              {TEXT.metrics.oldReadings}
+            </p>
+          )}
+          {history.isError && (
+            <div className="card-actions">
+              <button type="button" onClick={() => history.refetch()} disabled={history.isFetching}>
+                {TEXT.metrics.readAgain}
+              </button>
+            </div>
+          )}
           <TrendHistory trend={trend.data} error={trend.error} />
         </div>
       )}

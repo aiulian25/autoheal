@@ -32,6 +32,7 @@ import { JOB_REFRESH_MILLISECONDS, PATHS, RECENT_INCIDENTS, REFRESH_MILLISECONDS
 import { countInWords, dateTime, duration, listSeparator, percent, timeAgo } from "../format.js";
 import { boardQuery, hostContainersQuery, hostPackagesQuery, hostTasksQuery, hostsQuery } from "../queries.js";
 import { SnoozeChoices } from "../components/snooze-choices.js";
+import { useScrollToHash } from "../components/section-tabs.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { RecoveryHoldBadge, StateBadge, waitingUpdates } from "./fleet-page.js";
 import { HostChanges } from "./host-changes.js";
@@ -477,6 +478,8 @@ export function HostPage() {
   const [containersAsked, setContainersAsked] = useState(0);
   const hosts = useQuery(hostsQuery);
   const containers = useQuery({ ...hostContainersQuery(hostId), enabled: hostId !== "" });
+  // A link from Attention or a task to one section lands on it once the host is drawn.
+  useScrollToHash(hosts.data !== undefined);
   if (hosts.data === undefined) {
     return hosts.error ? <ErrorNotice error={hosts.error} /> : <Loading />;
   }

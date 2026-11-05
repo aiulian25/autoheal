@@ -11,5 +11,8 @@ function buildId(): string | null {
 
 const id = buildId();
 
-/** This build's version, telling apart builds of one release: runner hosts run their own copy of the code. */
+/**
+ * This build's version, telling apart builds of one release: runner hosts run their own copy of the code. What moves
+ * the build ID, and so marks a host's runner behind, is what runner-identity.ts hashes at build time.
+ */
 export const RUNNING_VERSION = id === null || id === "" ? APP_VERSION : `${APP_VERSION}+${id}`;

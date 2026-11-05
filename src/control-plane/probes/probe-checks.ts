@@ -91,10 +91,23 @@ function destinationOf(target: ProbeTarget) {
   return target.server;
 }
 
-const untilAborted = (limit: AbortSignal, problem: string) =>
-  new Promise<never>((_resolve, reject) => {
-    limit.addEventListener("abort", () => reject(new Error(problem)), { once: true });
+/**
+ * Rejects once the check is stopped or out of time. A signal that has already fired never fires again, so one given
+ * that way is answered at once rather than waited on. `forget` takes the listener off once the race is over.
+ */
+function untilAborted(limit: AbortSignal, problem: string) {
+  let forget = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    if (limit.aborted) {
+      reject(new Error(problem));
+      return;
+    }
+    const stop = () => reject(new Error(problem));
+    limit.addEventListener("abort", stop, { once: true });
+    forget = () => limit.removeEventListener("abort", stop);
   });
+  return { aborted, forget: () => forget() };
+}
 
 type Answer = { problem: string | null; certificate?: ObservedCertificate };
 const ANSWERED: Answer = { problem: null };
@@ -189,8 +202,9 @@ export async function runCheck(body: ProbeBody, stop: AbortSignal): Promise<Prob
   const limit = AbortSignal.any([stop, AbortSignal.timeout(timeoutMilliseconds)]);
   const startedAt = performance.now();
   const asked = ask(body, limit, timeoutMilliseconds);
+  const stopped = untilAborted(limit, PROBE_TEXT.timedOut(timeoutSeconds));
   try {
-    const answer = await Promise.race([asked, untilAborted(limit, PROBE_TEXT.timedOut(timeoutSeconds))]);
+    const answer = await Promise.race([asked, stopped.aborted]);
     const { problem, certificate } = answer;
     const latencyMilliseconds = Math.round(performance.now() - startedAt);
     return {
@@ -203,5 +217,7 @@ export async function runCheck(body: ProbeBody, stop: AbortSignal): Promise<Prob
     asked.catch(() => undefined);
     const problem = limit.aborted ? PROBE_TEXT.timedOut(timeoutSeconds) : describeError(error);
     return { ok: false, latencyMilliseconds: null, problem: problem.slice(0, PROBE_LIMITS.problemCharacters) };
+  } finally {
+    stopped.forget();
   }
 }

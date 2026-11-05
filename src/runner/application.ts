@@ -4,6 +4,7 @@ import { containerResources } from "./operation-coordinator.js";
 import {
   ApplicationBackups,
   HelperImageMissing,
+  type HelperImage,
   imageOnHost,
   type ApplicationBackupClient,
 } from "./application-backups.js";
@@ -71,6 +72,13 @@ import { LOCAL_HOST_FILES, type HostFiles } from "./host-files.js";
 import { imageStoreOf, readHostHealth } from "./host-health.js";
 import { HostMetricsSampler } from "./host-metrics.js";
 import { ImageUpdateChecker } from "./image-updates.js";
+import { EMPTY_TRUST_POLICY, type ImageTrustPolicy } from "../shared/image-provenance.js";
+import { ImageProvenanceReader } from "./image-provenance.js";
+import { PROBE_LIMITS } from "../shared/probes.js";
+import type { ProbeReport } from "../shared/protocol.js";
+import { ServiceProbes } from "./service-probes.js";
+import type { ProvenanceSource } from "./image-updates.js";
+import type { RegistryAccess } from "../shared/registry-credentials.js";
 import { RegistryClient, parseImageReference } from "./registry-client.js";
 import { RemedyGuard } from "./remedy-guard.js";
 import { Watcher } from "./watcher.js";
@@ -159,10 +167,17 @@ interface RunnerRuntime {
   aliveFile: string | null;
   lifecycle: RuntimeLifecycle;
   shutdownJournal: ShutdownJournal;
+  results: ResultJournal;
   gpus: NvidiaGpus;
   installs: Installs;
   // What the control plane said at the last heartbeat: its Ollama and the dashboard's address.
   fromControlPlane: HeartbeatResponse | null;
+  // The private registries this host may use, read at each pull and check: the control plane's last word on them.
+  registries: { allowed: readonly RegistryAccess[] };
+  // The publishers this fleet trusts and where an update waits for a signed image.
+  trust: { policy: ImageTrustPolicy };
+  // The service checks this host makes from where it is, and what the last ones it was given saw.
+  serviceProbes: { checks: ServiceProbes; reports: ProbeReport[] };
   // The Ollama client for the settings in use, made again only when they change.
   localModel: { settings: OllamaSettings; client: OllamaClient } | null;
   // Whether the last heartbeat got through: the first one that does after none did is logged.
@@ -233,7 +248,10 @@ export async function createRuntime(
   ports: RunnerPorts = localRunnerPorts(config),
 ): Promise<RunnerRuntime> {
   const { localHost } = ports;
-  const transport = new DockerClient(ports.docker);
+  const registries: { allowed: readonly RegistryAccess[] } = { allowed: [] };
+  // Which publishers this fleet trusts and where a signed image is required: the control plane's last word on it.
+  const trust: { policy: ImageTrustPolicy } = { policy: EMPTY_TRUST_POLICY };
+  const transport = new DockerClient(ports.docker, () => registries.allowed);
   const shutdownJournal = new ShutdownJournal(transport, localHost?.currentBoot);
   const docker = shutdownJournal.docker(transport);
   const journal = new OperationJournal(docker);
@@ -293,9 +311,15 @@ export async function createRuntime(
   });
   const gpus = new NvidiaGpus(NVIDIA_SMI.command, ports.hostCommand);
   const kernelGpus = new SysfsGpus(config.hostRoot, ports.hostFiles);
-  const updates = new ImageUpdateChecker(docker, new RegistryClient());
+  const provenanceRegistry = new RegistryClient(fetch, () => registries.allowed);
+  const provenance = new ImageProvenanceReader(provenanceRegistry, () => trust.policy);
+  const provenanceSource: ProvenanceSource = {
+    policy: () => trust.policy,
+    read: (reference, digest) => provenance.read(reference, digest),
+  };
+  const updates = new ImageUpdateChecker(docker, provenanceRegistry, Date.now, provenanceSource);
   const hostScript = ports.hostScript ?? hostScriptThroughDocker(docker, config.selfContainerName, sleep, Date.now);
-  const registry = new RegistryClient();
+  const registry = new RegistryClient(fetch, () => registries.allowed);
   const stackImageExists = imageExistsWith(
     (reference) => docker.inspectImage(reference),
     async (reference) => {
@@ -340,9 +364,13 @@ export async function createRuntime(
     aliveFile: localHost?.aliveFile ?? null,
     lifecycle: new RuntimeLifecycle(),
     shutdownJournal,
+    results,
     gpus,
     installs,
     fromControlPlane: null,
+    registries,
+    trust,
+    serviceProbes: { checks: new ServiceProbes(), reports: [] },
     localModel: null,
     reachingControlPlane: false,
     docker,
@@ -371,29 +399,23 @@ export async function createRuntime(
     metricsRunning: false,
     metricsProblem: null,
   };
-  // Data is copied by a helper of this runner's own image; an SSH host has no runner container of its own to take
-  // it from, so its updates keep no data, and say so, until that image is pulled there.
-  const checkpoints =
-    localHost === null
-      ? null
-      : new VolumeCheckpoints({
-          docker,
-          selfContainerName: config.selfContainerName,
-          limitBytes: config.checkpointLimitBytes,
-        });
+  // Data is copied and backed up by helpers of Autoheal's image: this runner's own container's, or on an SSH host,
+  // which has none, the image the control plane names, pulled there the first time.
+  const helperImage: HelperImage =
+    ports.helperImageReference === null
+      ? async () => {
+          const self = await docker.inspect(config.selfContainerName);
+          if (!self?.Image) throw new HelperImageMissing(APPLICATION_HELPER_ERRORS.selfMissing);
+          return self.Image;
+        }
+      : imageOnHost(transport, ports.helperImageReference);
+  const checkpoints = new VolumeCheckpoints({ docker, helperImage, limitBytes: config.checkpointLimitBytes });
   const containerBackups = new ContainerBackups({
     docker,
     stacks,
     guard,
     settings: config,
-    helperImage:
-      ports.helperImageReference === null
-        ? async () => {
-            const self = await docker.inspect(config.selfContainerName);
-            if (!self?.Image) throw new HelperImageMissing(APPLICATION_HELPER_ERRORS.selfMissing);
-            return self.Image;
-          }
-        : imageOnHost(transport, ports.helperImageReference),
+    helperImage,
     openKey: (jobId, sealedKey) =>
       controlPlane === null
         ? Promise.reject(new Error(BACKUP_TEXT.gone))
@@ -419,8 +441,9 @@ export async function createRuntime(
       Date.now,
       checkpoints,
       journal,
-      checkpoints === null ? JOB_OUTCOMES.noDataCopyHere : JOB_OUTCOMES.checkpointUnavailable,
+      JOB_OUTCOMES.checkpointUnavailable,
       (imageId, reference) => updates.confirmCurrent(imageId, reference),
+      provenanceSource,
     ),
     // An edit job's settings come from the control plane; a runner on its own gets no jobs at all.
     settingsOf: (jobId) =>
@@ -667,12 +690,29 @@ async function heartbeat(runtime: RunnerRuntime) {
       docker: true,
       hostTerminal: runtime.config.hostTerminal,
       hostDeploy: runtime.config.hostDeploy,
+      serviceProbes: true,
+      ...(runtime.serviceProbes.reports.length === 0 ? {} : { probeResults: runtime.serviceProbes.reports }),
       ...(driftReport === null ? {} : { stackDrift: driftReport }),
     };
     if (Buffer.byteLength(JSON.stringify(payload)) > RUNNER_BODY_LIMIT_BYTES) delete payload.topology;
     const answer = await runtime.controlPlane.heartbeat(payload);
     runtime.maintenance?.apply(answer?.control?.maintenance);
     runtime.fromControlPlane = answer ?? runtime.fromControlPlane;
+    // A rotated or revoked credential stops being used from the next pull or check on, and a changed trust policy
+    // makes every image's provenance a fresh question.
+    if (answer !== null) {
+      runtime.registries.allowed = answer.registries ?? [];
+      runtime.trust.policy = answer.imageTrust ?? EMPTY_TRUST_POLICY;
+      // What was reported has been taken; the checks this answer gives are made before the next report.
+      runtime.serviceProbes.reports = [];
+      const given = answer.probes ?? [];
+      if (given.length > 0) {
+        // The whole batch is bounded by the deadline the control plane waits for, each check by its own timeout.
+        const deadline = AbortSignal.timeout(PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND);
+        runtime.serviceProbes.reports = await runtime.serviceProbes.checks.run(given, deadline).catch(() => []);
+        runtime.heartbeatAgain = true;
+      }
+    }
     // A reset it had not heard of: the dashboard learns at once, from the report that follows this one.
     if (runtime.guard.resetRestarts(answer?.control?.restartsResetAt, Date.now())) runtime.heartbeatAgain = true;
     if (!runtime.reachingControlPlane) {
@@ -758,7 +798,8 @@ export function createContainerAccess(runtime: RunnerRuntime) {
           },
         ),
     },
-    hostShell: runtime.ports.hostShell ?? hostShellThroughDocker(docker, config.selfContainerName),
+    hostShell:
+      runtime.ports.hostShell ?? hostShellThroughDocker(docker, config.selfContainerName, config.hostTerminalUser),
     controlPlane,
     settings: config,
     authorizeOperator: (requestId, member) => controlPlane.authorizeOperatorAccess("terminal", requestId, member),
@@ -828,6 +869,8 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
   await runtime.shutdownJournal.settleReboots();
   await runtime.shutdownJournal.settleUntouched();
   await runtime.shutdownJournal.assertClean();
+  // Nothing is half done now: what jobs an earlier runner never finished no longer hold their containers.
+  await runtime.results.settleInterrupted();
   log(
     RUNNER_MESSAGES.watching(
       config.dryRun,

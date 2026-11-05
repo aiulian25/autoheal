@@ -29,6 +29,7 @@ import {
   type TaskStatus,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { containerLink, hostLink } from "../host-links.js";
 import { Badge, ErrorNotice, Loading, PageHeader, TimeAgo, rowClick } from "../components/common.js";
 import { ContainerActions, hasParked } from "../components/container-actions.js";
 import {
@@ -36,7 +37,6 @@ import {
   ASSIGNEE_SEPARATOR,
   INVENTORY_REFRESH_MILLISECONDS,
   PATHS,
-  SEARCH_PARAMETERS,
   TASK_LIST_VIEW,
   TASK_SEARCH_PARAMETERS,
   TASK_SHOW,
@@ -49,9 +49,6 @@ import { HostPackages, RebootWarning } from "./host-packages.js";
 type Show = (typeof TASK_SHOW)[keyof typeof TASK_SHOW];
 
 const taskLink = (taskId: string) => apiPath(PATHS.task, { taskId });
-const hostLink = (hostId: string) => apiPath(PATHS.host, { hostId });
-const containerLink = (hostId: string, name: string) =>
-  `${hostLink(hostId)}?${new URLSearchParams({ [SEARCH_PARAMETERS.container]: name })}`;
 
 // Each quick filter is a question the list answers: what is open, what is mine, what Autoheal is doing.
 const SHOW_QUERIES: Record<Show, Record<string, string>> = {

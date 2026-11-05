@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { HostView, JobView } from "../../../src/shared/api.js";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
@@ -224,6 +224,11 @@ it("shows every option, selects one with a click, and takes several networks", a
   expect(pressed(/^npm, Nginx Proxy Manager/)).toBe("true");
   expect(pressed(/^cloudflare, Cloudflare Tunnel/)).toBe("false");
   expect(screen.getByText("your proxy: Nginx Proxy Manager")).toBeTruthy();
+  // Said to take more than one, each with a tick box; a one-of row such as Restart has none.
+  expect(screen.getByText("one or more")).toBeTruthy();
+  const networks = screen.getByRole("group", { name: "Network" });
+  expect(networks.querySelectorAll("svg.icon")).toHaveLength(within(networks).getAllByRole("button").length);
+  expect(screen.getByRole("group", { name: "Restart" }).querySelectorAll("svg.icon")).toHaveLength(0);
 
   fireEvent.click(screen.getByRole("button", { name: /^cloudflare, Cloudflare Tunnel/ }));
   expect(pressed(/^npm, Nginx Proxy Manager/)).toBe("true");

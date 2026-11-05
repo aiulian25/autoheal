@@ -87,6 +87,7 @@ const words = TEXT.settingsPage.selfUpdate;
 const RUNNING_IMAGE = `sha256:${"a".repeat(64)}`;
 const selfUpdate: SelfUpdateView = {
   unavailable: null,
+  recoveryBlocked: null,
   runningImage: RUNNING_IMAGE,
   reference: "ghcr.io/owner/autoheal:2",
   last: null,
@@ -101,6 +102,8 @@ function serve(role: "admin" | "viewer", extra: Record<string, unknown> = {}) {
     [API_ROUTES.ollamaSettings]: ollamaSettings(),
     [API_ROUTES.ollamaServers]: { extras: [], reviewServerId: null, defaultName: null },
     [API_ROUTES.hosts]: [],
+    [API_ROUTES.registryCredentials]: [],
+    [API_ROUTES.imageTrust]: { publishers: [], rules: [], revision: 0 },
     [`POST ${API_ROUTES.ollamaSettingsModels}`]: [
       { name: "qwen3:30b-a3b", sizeBytes: 19_000_000_000, parameterSize: "30B", quantization: "Q4_K_M", loaded: false },
       { name: "qwen3:4b", sizeBytes: 2_500_000_000, parameterSize: "4B", quantization: "Q4_K_M", loaded: true },

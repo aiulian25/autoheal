@@ -2,6 +2,8 @@
 
 import type { ViewPreferences } from "../../src/shared/view-preferences.js";
 import type { JarvisView } from "../../src/shared/jarvis.js";
+import type { RegistryCredentialView } from "../../src/shared/registry-credentials.js";
+import type { AvailabilityGroupView } from "../../src/shared/availability-groups.js";
 import {
   API_ROUTES,
   CONTAINER_QUERY,
@@ -98,6 +100,32 @@ export const ollamaServersQuery = {
   queryKey: ["ollama-servers"],
   queryFn: () => api<OllamaServersView>("GET", API_ROUTES.ollamaServers),
   refetchInterval: REFRESH_MILLISECONDS,
+} as const;
+
+/** What the dashboard shows of the trust policy: the publishers, the rules, and which policy this is. */
+export interface ImageTrustView {
+  publishers: { name: string; publicKey: string; keyType: string; createdBy: string; createdAt: number }[];
+  rules: { id: string; registry: string; repository: string | null; publishers: string[] }[];
+  revision: number;
+}
+
+// An application's replicas across the fleet, and how much of it must keep serving.
+export const availabilityGroupsQuery = {
+  queryKey: ["availability-groups"],
+  queryFn: () => api<AvailabilityGroupView[]>("GET", API_ROUTES.availabilityGroups),
+  refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+} as const;
+
+// Who is trusted to publish an image, and where a signed one is required.
+export const imageTrustQuery = {
+  queryKey: ["image-trust"],
+  queryFn: () => api<ImageTrustView>("GET", API_ROUTES.imageTrust),
+} as const;
+
+// Which private registries are set up, and for which hosts: changes only when an admin saves one.
+export const registryCredentialsQuery = {
+  queryKey: ["registry-credentials"],
+  queryFn: () => api<RegistryCredentialView[]>("GET", API_ROUTES.registryCredentials),
 } as const;
 
 export const routerSettingsQuery = {

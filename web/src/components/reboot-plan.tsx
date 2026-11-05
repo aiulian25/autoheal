@@ -17,6 +17,9 @@ import { Badge, ErrorNotice } from "./common.js";
 
 const text = TEXT.rebootPlans;
 const PLANS_KEY = ["reboot-plans"];
+/** What the review called a check, for saying which one has gone since. */
+const checkName = (preview: RebootPlanPreview, probeId: string) =>
+  preview.checks.find((check) => check.probeId === probeId)?.name ?? text.checkGoneUnnamed;
 const isOpen = ({ status }: RebootPlanView) =>
   status === REBOOT_PLAN_STATUS.running || status === REBOOT_PLAN_STATUS.paused;
 const momentOf = (value: string) => (value === "" ? null : new Date(value).getTime());
@@ -107,7 +110,8 @@ function NewPlan({ hosts }: { hosts: readonly HostView[] }) {
   const [returnMinutes, setReturnMinutes] = useState(String(REBOOT_PLAN.returnMinutes.usual));
   const [notBefore, setNotBefore] = useState("");
   const [notAfter, setNotAfter] = useState("");
-  const [preview, setPreview] = useState<RebootPlanPreview | null>(null);
+  // What the review answered, kept with the body it answered for: that exact body is what approval sends.
+  const [reviewed, setReviewed] = useState<{ body: RebootPlanBody; preview: RebootPlanPreview } | null>(null);
   const queryClient = useQueryClient();
   const eligible = hosts.filter(({ kind }) => kind !== HOST_KIND.local);
   const probeQueries = useQueries({
@@ -127,33 +131,45 @@ function NewPlan({ hosts }: { hosts: readonly HostView[] }) {
     notAfter: momentOf(notAfter),
   });
   const review = useMutation({
-    mutationFn: () => api<RebootPlanPreview>("POST", REBOOT_PLAN_ROUTES.preview, body()),
-    onSuccess: setPreview,
+    mutationFn: async () => {
+      const asked = body();
+      return { body: asked, preview: await api<RebootPlanPreview>("POST", REBOOT_PLAN_ROUTES.preview, asked) };
+    },
+    onSuccess: setReviewed,
   });
   const approve = useMutation({
-    mutationFn: () => api<RebootPlanView>("POST", REBOOT_PLAN_ROUTES.plans, body()),
+    mutationFn: (approved: RebootPlanBody) => api<RebootPlanView>("POST", REBOOT_PLAN_ROUTES.plans, approved),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: PLANS_KEY }),
   });
+  // A check that has gone since the review would quietly leave the approved plan, so it has to be reviewed again.
+  const everyProbeKnown = probeQueries.every(({ data }) => data !== undefined);
+  const goneChecks = (reviewed?.body.probeIds ?? []).filter((id) => !probes.some((probe) => probe.id === id));
+  const checksChanged = everyProbeKnown && goneChecks.length > 0;
   const toggled = (list: string[], id: string) =>
     list.includes(id) ? list.filter((each) => each !== id) : [...list, id];
   const submit = (event: FormEvent) => {
     event.preventDefault();
     review.mutate();
   };
-  if (preview !== null) {
+  if (reviewed !== null) {
     return (
       <div className="stack">
-        <PreviewOf preview={preview} />
+        <PreviewOf preview={reviewed.preview} />
+        {checksChanged && (
+          <p className="text-warning">
+            {text.checksGone(goneChecks.map((id) => checkName(reviewed.preview, id)).join(", "))}
+          </p>
+        )}
         <ErrorNotice error={approve.error} />
         <div className="card-actions">
           <button
             type="button"
-            disabled={approve.isPending || preview.problem !== null}
-            onClick={() => approve.mutate()}
+            disabled={approve.isPending || reviewed.preview.problem !== null || checksChanged}
+            onClick={() => approve.mutate(reviewed.body)}
           >
             {text.approve}
           </button>
-          <button type="button" className="quiet" onClick={() => setPreview(null)}>
+          <button type="button" className="quiet" onClick={() => setReviewed(null)}>
             {text.edit}
           </button>
         </div>

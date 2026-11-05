@@ -12,12 +12,21 @@ import {
 import { describeError } from "../shared/errors.js";
 import type { ImageLabels } from "../shared/protocol.js";
 import type { ContainerSummary, DockerClient } from "./docker-client.js";
+import { ruleForImage, type ImageProvenance, type ImageTrustPolicy } from "../shared/image-provenance.js";
 import { parseImageReference, type ImageReference, type RegistryClient, type RemoteImage } from "./registry-client.js";
+
+/** What reads who published an image, and the policy that says where it matters. */
+export interface ProvenanceSource {
+  policy: () => ImageTrustPolicy;
+  read: (reference: ImageReference, digest: string) => Promise<ImageProvenance>;
+}
 
 export interface UpdateCheck {
   status: UpdateStatus;
   checkedAt: number;
   remoteDigest: string | null;
+  // Who published the newer image, where a trust rule asks: null where none does, so nothing is read.
+  provenance?: ImageProvenance | null;
   // What the newer image says it is; null with no update, and until its labels are read.
   remote: ImageLabels | null;
   // Why it could not be checked; null when it was.
@@ -62,6 +71,8 @@ export class ImageUpdateChecker {
     private readonly docker: Pick<DockerClient, "containerSummaries" | "inspect" | "inspectImage">,
     private readonly registry: Pick<RegistryClient, "digest" | "labels">,
     private readonly clock: () => number = Date.now,
+    // Who published a newer image, read only for the scopes a trust rule covers.
+    private readonly provenance: ProvenanceSource | null = null,
   ) {}
 
   /** Null until checked, and for images that can't be: built here, pinned to a digest, or labelled off. */
@@ -203,6 +214,13 @@ export class ImageUpdateChecker {
     return request;
   }
 
+  /** Who published an image an update would bring, where a rule asks for proof; null where none does. */
+  private async whoPublished(reference: ImageReference, digest: string): Promise<ImageProvenance | null> {
+    const source = this.provenance;
+    if (source === null || ruleForImage(source.policy(), reference) === null) return null;
+    return source.read(reference, digest).catch(() => null);
+  }
+
   private async checkOne(
     key: string,
     imageId: string,
@@ -224,12 +242,16 @@ export class ImageUpdateChecker {
       // A tag's digest covers every platform, so a rebuild for another one moves it with nothing new for this machine.
       const sameImage = remoteImage?.configDigest === imageId;
       const { configDigest: _configDigest, ...remote } = remoteImage ?? {};
+      const offered = !sameImage && status === UPDATE_STATUS.available;
+      const provenance = offered ? await this.whoPublished(reference, remoteDigest) : null;
       this.results.set(key, {
         status: sameImage ? UPDATE_STATUS.current : status,
         checkedAt,
         remoteDigest,
         remote: remoteImage === null || sameImage ? null : (remote as ImageLabels),
         reason: status === UPDATE_STATUS.unknown ? REGISTRY_MESSAGES.unknownImage : null,
+        // Left out where nothing asked, so a check says exactly what it always did.
+        ...(provenance === null ? {} : { provenance }),
       });
     } catch (error) {
       // A registry that is down or private says nothing about the image; the last answer stays useful.

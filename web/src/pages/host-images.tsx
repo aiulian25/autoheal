@@ -8,6 +8,8 @@ import { ErrorNotice, Loading, TimeAgo } from "../components/common.js";
 import { LatestJob, isWaiting } from "../components/container-actions.js";
 import { INVENTORY_REFRESH_MILLISECONDS, JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
 import { bytes, shortImageId } from "../format.js";
+import type { RegistryCredentialView } from "../../../src/shared/registry-credentials.js";
+import { registryCredentialsQuery } from "../queries.js";
 
 const hostImagesQuery = (hostId: string) => ({
   queryKey: ["host-images", hostId],
@@ -15,6 +17,14 @@ const hostImagesQuery = (hostId: string) => ({
 });
 
 const sizeText = (sizeBytes: number) => bytes(sizeBytes, BYTES_PER_KILOBYTE);
+
+/** What this host may read from a private registry, so an image it cannot read is understandable. */
+const scopesFor = (credentials: RegistryCredentialView[] | undefined, hostId: string) =>
+  (credentials ?? [])
+    .filter(({ hostIds }) => hostIds.length === 0 || hostIds.includes(hostId))
+    .map((credential) =>
+      credential.repository === null ? credential.registry : `${credential.registry}/${credential.repository}`,
+    );
 const totalOf = (images: readonly UnusedImage[]) => images.reduce((total, image) => total + image.sizeBytes, 0);
 
 // Its names; where it came from, for one a newer pull took the name from; its id when Docker knows neither.
@@ -23,6 +33,20 @@ function nameOf(image: UnusedImage): string {
     return image.tags.join(", ");
   }
   return image.repository === null ? shortImageId(image.id) : TEXT.hostImages.untagged(image.repository);
+}
+
+/** Which private registries this host reads with a stored credential; nothing where it reads only public ones. */
+function RegistryScopeNote({ scopes }: { scopes: string[] }) {
+  if (scopes.length === 0) {
+    return null;
+  }
+  return (
+    <p className="muted small">
+      {TEXT.registries.scopeHere}
+      {TEXT.separator}
+      <span className="mono">{scopes.join(TEXT.listComma)}</span>
+    </p>
+  );
 }
 
 // The list follows a removal on its way closely, and otherwise refreshes as the containers do.
@@ -38,6 +62,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
   const query = hostImagesQuery(host.id);
   const view = useQuery({ ...query, refetchInterval: (current) => refreshOf(current.state.data) });
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const credentials = useQuery({ ...registryCredentialsQuery, enabled: admin });
   const remove = useMutation({
     mutationFn: (images: readonly UnusedImage[]) =>
       api<JobView>("POST", apiPath(API_ROUTES.hostActions, { hostId: host.id }), {
@@ -84,6 +109,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
           <span className="small muted">{TEXT.hostImages.summary(images.length, sizeText(totalOf(images)))}</span>
         )}
       </div>
+      {admin && <RegistryScopeNote scopes={scopesFor(credentials.data, host.id)} />}
       {data.images === null && <p className="muted">{TEXT.hostImages.notReported}</p>}
       {data.images?.length === 0 && <p className="muted">{TEXT.hostImages.none}</p>}
       {images.length > 0 && watching && <p className="muted small">{TEXT.hostControl.watchOnly}</p>}

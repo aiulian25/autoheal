@@ -1,3 +1,4 @@
+import type { ImageProvenance } from "./image-provenance.js";
 import type { VolumeReport } from "./volumes.js";
 import type { NetworkReport } from "./networks.js";
 import { ROLLOUT_ROUTES } from "./rollouts.js";
@@ -277,6 +278,18 @@ export const API_ROUTES = {
   // Each host's nightly window, and whether Autoheal takes security fixes in it.
   hostUpdateSettings: "/api/settings/host-updates",
   trustedProxies: "/api/settings/trusted-proxies",
+  // What private registries want, and which hosts may use each one.
+  registryCredentials: "/api/settings/registries",
+  registryCredential: "/api/settings/registries/:credentialId",
+  registryCredentialTest: "/api/settings/registries/:credentialId/test",
+  // An application's replicas across the fleet, and how much of it must keep serving through a fleet operation.
+  availabilityGroups: "/api/availability-groups",
+  availabilityGroup: "/api/availability-groups/:groupId",
+  // Which publishers are trusted, and where a signed image is required before an update is applied.
+  imageTrust: "/api/settings/image-trust",
+  imageTrustPublisher: "/api/settings/image-trust/publishers/:name",
+  imageTrustRules: "/api/settings/image-trust/rules",
+  imageTrustRule: "/api/settings/image-trust/rules/:ruleId",
   // A shell in a container: opened here, then followed, typed into, resized and closed by its id.
   terminals: "/api/inventory/hosts/:hostId/containers/:containerName/terminals",
   hostTerminals: "/api/inventory/hosts/:hostId/terminals",
@@ -373,6 +386,7 @@ export const API_ERRORS = {
   savedViewLimitReached: "saved_view_limit_reached",
   savedViewNotFound: "saved_view_not_found",
   rebootPlanBusy: "reboot_plan_busy",
+  rebootPlanUnreadable: "reboot_plan_unreadable",
   rebootPlanNotFound: "reboot_plan_not_found",
   rebootPlanUnavailable: "reboot_plan_unavailable",
   rebootPlanNotReady: "reboot_plan_not_ready",
@@ -399,6 +413,7 @@ export const API_ERRORS = {
   selfUpdateUnavailable: "self_update_unavailable",
   selfUpdateNewest: "self_update_newest",
   selfUpdateRunning: "self_update_running",
+  selfUpdateRecoveryBlocked: "self_update_recovery_blocked",
   sshRootPasswordRefused: "ssh_root_password_refused",
   sshHostNotConnected: "ssh_host_not_connected",
   hostRevoked: "host_revoked",
@@ -436,6 +451,30 @@ export const API_ERRORS = {
   // A new address needs its token again: a stored token never follows a changed address.
   integrationTokenRequired: "integration_token_required",
   integrationNotSet: "integration_not_set",
+  // One credential per registry and repository scope, so which one a pull uses is never a question of order.
+  registryScopeTaken: "registry_scope_taken",
+  // An application's replicas across the fleet, and how much of it must keep serving.
+  availabilityNameTaken: "availability_name_taken",
+  availabilityGroupNotFound: "availability_group_not_found",
+  availabilityGroupsFull: "availability_groups_full",
+  // The operation would leave a group with less serving than it asks for.
+  availabilityGate: "availability_gate",
+  // A trusted publisher's key, and where a signed image is required.
+  publisherKeyInvalid: "publisher_key_invalid",
+  publisherNameTaken: "publisher_name_taken",
+  publisherNotFound: "publisher_not_found",
+  publisherInUse: "publisher_in_use",
+  // A rule with no key to open a signature with would refuse every update, so it is not accepted.
+  publisherNeeded: "publisher_needed",
+  trustScopeTaken: "trust_scope_taken",
+  trustRuleNotFound: "trust_rule_not_found",
+  trustRulesFull: "trust_rules_full",
+  registryCredentialNotFound: "registry_credential_not_found",
+  // A credential for a whole registry needs a repository to be tried against.
+  registryRepositoryNeeded: "registry_repository_needed",
+  registryRepositoryOutOfScope: "registry_repository_out_of_scope",
+  // Another backup passphrase sealed it, so it cannot be read: give it again.
+  registryCredentialSealed: "registry_credential_sealed",
   jarvisNameTaken: "jarvis_name_taken",
   // The .env names the trusted proxies, so the dashboard may not change them.
   trustedProxiesFromEnvironment: "trusted_proxies_from_environment",
@@ -631,6 +670,8 @@ export interface ContainerUpdateView {
   remote: ImageLabels | null;
   // Why its runner's last check failed; null when it did not.
   reason: string | null;
+  // Who published the newer image, where a trust rule asks for proof; null where nothing asks.
+  provenance?: ImageProvenance | null;
 }
 
 /** An SSH host's session: where it is, since when, and why when it is not connected. */
@@ -670,6 +711,8 @@ export interface SelfUpdateOutcome {
 export interface SelfUpdateView {
   // Null when Autoheal can update itself here; otherwise why not.
   unavailable: string | null;
+  // Why no update may start until a person has looked at the record of the last one; null while it can be read.
+  recoveryBlocked: string | null;
   // The image the control plane runs, and the one an update would run: AUTOHEAL_IMAGE.
   runningImage: string | null;
   reference: string;
@@ -696,6 +739,8 @@ export interface HostView {
   inPlace?: { problem: string | null };
   // False for an SSH host without Docker: its system is watched, it has no containers. Absent from older views.
   docker?: boolean;
+  // Whether its runner can make service checks from its own host; absent from views before it.
+  serviceProbes?: boolean;
   state: HostState;
   tokenHint: string;
   enrolledAt: number;
@@ -1329,6 +1374,7 @@ export const DATA_KIND = {
   incidents: "incidents",
   applicationBackupArtifacts: "applicationBackupArtifacts",
   applicationBackupRuns: "applicationBackupRuns",
+  rebootPlans: "rebootPlans",
   auditEvents: "auditEvents",
 } as const;
 export type DataKind = (typeof DATA_KIND)[keyof typeof DATA_KIND];

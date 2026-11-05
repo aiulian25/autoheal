@@ -24,6 +24,7 @@ export const ENV_HOST_FILESYSTEMS = "HOST_FILESYSTEMS";
 export const ENV_HOST_PACKAGES = "HOST_PACKAGES";
 export const ENV_CONTAINER_ACCESS = "CONTAINER_ACCESS";
 export const ENV_HOST_TERMINAL = "HOST_TERMINAL";
+export const ENV_HOST_TERMINAL_USER = "HOST_TERMINAL_USER";
 export const ENV_HOST_DEPLOY = "HOST_DEPLOY";
 // Where the host keeps its D-Bus socket, as Docker sees the host: what the package helper mounts.
 export const ENV_HOST_DBUS_DIRECTORY = "HOST_DBUS_DIRECTORY";
@@ -100,6 +101,7 @@ export const CONFIG_MESSAGES = {
   hostPackages: "must be off, check or apply",
   containerAccess: "must be off or on",
   hostTerminal: "must be off or on",
+  hostTerminalUser: "must be a user name on the host, like alex",
   hostDeploy: "must be off or on",
   invalid: (problems: readonly string[]) => `Invalid configuration:\n  ${problems.join("\n  ")}`,
   valid: "Configuration is valid.",
@@ -571,6 +573,8 @@ export const RUNNER_MESSAGES = {
   // A host without Docker: its system is watched, there are no containers to look after.
   systemOnly: (host: string) => `${host}: no Docker there, so its system alone is watched`,
   systemOnlyFailed: (host: string, problem: string) => `${host}: its system could not be reported: ${problem}`,
+  interruptedJobsSettled: (count: number) =>
+    `${count} ${count === 1 ? "job" : "jobs"} an earlier runner never finished left nothing half done: closed as unknown, so their containers can be acted on again.`,
   untouchedSettled: (operation: string, target: string) =>
     `${operation} on ${target} was interrupted before it changed anything: cleared, and it will not run again.`,
   rebootSettled: (operation: string) =>
@@ -834,8 +838,10 @@ export const WORK_ITEM_STATUS = {
 export const WORK_ITEM_STATUSES = Object.values(WORK_ITEM_STATUS);
 export type WorkItemStatus = (typeof WORK_ITEM_STATUS)[keyof typeof WORK_ITEM_STATUS];
 
-export const APP_VERSION = "1.0.0";
+// Moves with package.json's version, which a test holds it to: the dashboard must not name an older release.
+export const APP_VERSION = "1.2.0";
 export const BUILD_ID_FILE = "build-id";
+export const BUILD_ID_LENGTH = 12;
 export const RUNNER_TOKEN_BYTES = 32;
 export const TOKEN_HINT_LENGTH = 4;
 export const RUNNER_VERSION_MAXIMUM_LENGTH = 32;
@@ -2089,6 +2095,10 @@ export const STACK_RESTART_INTERRUPTED =
 // A host's latest stack restarts kept; only the last is shown, the others are there to look at in the database.
 export const STACK_RESTARTS_KEPT = 10;
 export const JOB_CANCELLED_BY_RESTORE = "Cancelled by a restore: an action asked for before it never runs.";
+// An update of Autoheal that could not hold put its database back to before it began, so this action's answer, and
+// any record that it already ran on the host, went with it. It is closed rather than handed out a second time.
+export const JOB_CANCELLED_BY_SELF_UPDATE_ROLLBACK =
+  "Cancelled by an update of Autoheal that went back: whether the host carried this out is unknown, so it is not asked again. Look at the container and ask again if it is still needed.";
 export const JOB_LIST_LIMIT = 50;
 // Stop gives a container this long to exit cleanly, as docker stop does.
 export const STOP_GRACE_SECONDS = 10;
@@ -2170,8 +2180,6 @@ export const JOB_OUTCOMES = {
     ` Its data was not kept (${reason}). Rolling back is blocked without a complete checkpoint; recover its data manually before downgrading.`,
   checkpointRequired: "a complete data checkpoint is required before an update with automatic undo",
   checkpointUnavailable: "the checkpoint service is unavailable",
-  // An SSH host has no Autoheal container whose image could copy the data, until that image is pulled there.
-  noDataCopyHere: "no data copy on this host yet",
   noBackupsHere: "This host does not do container backups yet.",
   // A container job for a host Autoheal reaches over SSH without Docker: there is no container to act on.
   noDockerHere: "Refused: there is no Docker on this host, so it has no containers to act on.",
@@ -2423,6 +2431,8 @@ export const REGISTRY = {
   dockerHubHost: "registry-1.docker.io",
   dockerHubName: "Docker Hub",
   dockerHubNames: ["docker.io", "index.docker.io", "registry-1.docker.io"],
+  // The one token address a registry may send a stored credential to besides itself: Docker Hub's own.
+  dockerHubTokenHost: "auth.docker.io",
   officialNamespace: "library",
   defaultTag: "latest",
   // An index first, so a multi-architecture image answers with the digest `docker pull` records.
@@ -2452,6 +2462,85 @@ export const REGISTRY = {
   // Docker Hub counts a manifest GET as a pull, against the same anonymous limit as `docker pull` from this
   // address: a check reads at most this many new images' labels there, the rest at the checks after.
   dockerHubLabelReads: 3,
+} as const;
+/**
+ * Reading who published an image: the one proof Autoheal reads is a cosign signature made with a key, kept beside
+ * the image in its own registry under a tag of its digest. Its payload is Red Hat's simple signing document, which
+ * names the image the signature is for; the signature itself is opened with Node's own crypto, never by hand.
+ */
+export const IMAGE_PROVENANCE = {
+  digestSeparator: ":",
+  tagSeparator: "-",
+  signatureSuffix: ".sig",
+  payloadMediaType: "application/vnd.dev.cosign.simplesigning.v1+json",
+  signatureAnnotation: "dev.cosignproject.cosign/signature",
+  certificateAnnotation: "dev.cosignproject.cosign/certificate",
+  payloadType: "cosign container image signature",
+  digestAlgorithm: "sha256",
+  publisherNameLength: 60,
+  publisherKeyLength: 4096,
+  publishersLimit: 32,
+  rulesLimit: 64,
+  problemLength: 300,
+  // A signature document is a few hundred bytes; anything near this is not one.
+  payloadBytesLimit: 64 * 1024,
+  // How many signatures one image may carry before the rest are left unread.
+  signaturesPerImage: 8,
+  // How long evidence about one digest is kept before it is read again, and how many digests at once.
+  freshMilliseconds: 6 * 60 * 60 * 1000,
+  cacheLimit: 500,
+} as const;
+
+export const PROVENANCE_MESSAGES = {
+  noPublishers: "no trusted publisher key is set up to open a signature with",
+  noSignature: "the registry keeps no signature for this image",
+  noTrustedKey: "no trusted publisher's key opens the signature it keeps",
+  keylessNotRead: "its signature carries a signing certificate, which Autoheal does not read",
+  otherImage: "the signature it keeps is for another image",
+  heldBack: (reference: string, problem: string) =>
+    `${reference} was not applied: this scope needs a signed image, and ${problem}.`,
+  heldBackUnknown: (reference: string) => `${reference} was not applied: this scope needs a signed image.`,
+} as const;
+
+/**
+ * An application's replicas across the fleet, and how much of it must keep serving through a reboot or a rollout.
+ * A guard over what Autoheal can see, never a claim about what a cluster inside those containers believes.
+ */
+export const AVAILABILITY_GROUPS = {
+  nameLength: 80,
+  containerNameLength: 128,
+  domainLength: 80,
+  membersLimit: 64,
+  minimumAvailableLimit: 64,
+  groupsLimit: 64,
+  freshSeconds: { minimum: 30, maximum: 3600, usual: 300 },
+} as const;
+
+export const AVAILABILITY_TEXT = {
+  wouldLeave: (name: string, remaining: number, needed: number) =>
+    `${name} would be left with ${remaining} of the ${needed} it needs serving.`,
+  nothingShows: (count: number) =>
+    `Nothing shows whether ${count} ${count === 1 ? "replica is" : "replicas are"} serving, which does not count as serving.`,
+  hostQuiet: (label: string) => `${label} has not reported recently enough.`,
+  notRunning: (containerName: string) => `${containerName} is not running.`,
+  notThere: (containerName: string) => `${containerName} is not on that host.`,
+  hostGone: "That host is no longer part of the fleet.",
+  busyElsewhere: (name: string) => `Another operation already under way takes a replica of ${name} down.`,
+} as const;
+
+/** What a stored registry credential may hold, and how many hosts one may be narrowed to. */
+export const REGISTRY_CREDENTIALS = {
+  registryLength: 253,
+  repositoryLength: 255,
+  usernameLength: 255,
+  // A registry token is the password here, and some are long.
+  passwordLength: 4096,
+  hostsLimit: 64,
+  // A repository path as a registry accepts it, with or without the trailing slash a person may type.
+  repositoryPattern: /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*\/?$/,
+  // What Docker's pull API reads the credential from.
+  authorizationHeader: "X-Registry-Auth",
+  basicScheme: "Basic ",
 } as const;
 // The labels an image's build may set to say what it is (OCI image spec, "Pre-Defined Annotation Keys").
 export const OCI_LABELS = {
@@ -2488,6 +2577,9 @@ export const REGISTRY_MESSAGES = {
   noConfig: "the manifest names no image configuration",
   notJson: "the registry's answer was not JSON",
   unknownImage: "the registry does not know the image it runs: built here, or pulled from elsewhere",
+  refusedCredential: (registry: string, username: string) =>
+    `${registry} refused the stored credential for ${username}`,
+  refusedCredentialRealm: (origin: string) => `would not send the credential to a token address at ${origin}`,
 } as const;
 export const DIGEST_SEPARATOR = "@";
 export const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -2994,6 +3086,7 @@ export const TARGET_TASK = "task";
 export const TARGET_CONTAINER = "container";
 export const TARGET_WIDGET_KEY = "widget_key";
 export const TARGET_INTEGRATION = "integration";
+export const TARGET_REGISTRY = "registry";
 export const TARGET_SETTING = "setting";
 export const TARGET_APPLICATION_BACKUP_PLAN = "application-backup-plan";
 export const TARGET_SSH_KEY = "ssh_key";
@@ -3047,6 +3140,7 @@ export const AUDIT_ACTIONS = {
   hostSwitchedToLocal: "host.switched_to_local",
   selfUpdateStarted: "autoheal.update_started",
   selfUpdateFinished: "autoheal.update_finished",
+  selfUpdateRollbackSettled: "autoheal.update_rollback_settled",
   hostSshHostKeyTrusted: "host.ssh_host_key_trusted",
   hostSshKeyReplaced: "host.ssh_key_replaced",
   hostSshSettingsSaved: "host.ssh_settings_saved",
@@ -3100,6 +3194,16 @@ export const AUDIT_ACTIONS = {
   sessionEnded: "account.session_ended",
   otherSessionsEnded: "account.other_sessions_ended",
   integrationSaved: "integration.saved",
+  registryCredentialAdded: "registry.credential_added",
+  registryCredentialRotated: "registry.credential_rotated",
+  registryCredentialRemoved: "registry.credential_removed",
+  registryCredentialTested: "registry.credential_tested",
+  availabilityGroupSaved: "availability.group_saved",
+  availabilityGroupRemoved: "availability.group_removed",
+  trustedPublisherAdded: "registry.publisher_added",
+  trustedPublisherRemoved: "registry.publisher_removed",
+  imageTrustRuleAdded: "registry.trust_rule_added",
+  imageTrustRuleRemoved: "registry.trust_rule_removed",
   integrationRemoved: "integration.removed",
   ollamaServerAdded: "ollama.server_added",
   ollamaServerChanged: "ollama.server_changed",
@@ -3858,7 +3962,19 @@ export const HOST_TERMINAL_HELPER = {
   noHealthcheck: "NONE",
   holdHours: 12,
   hold: (hours: number) => ["/nodejs/bin/node", "-e", `setTimeout(() => {}, ${hours} * 3600 * 1000)`],
-  shell: ["/usr/bin/nsenter", "--target", "1", "--all", "--", "su", "-l"],
+  // A login shell as that user, in their home; root's where none is named.
+  shell: (user: string | null) => [
+    "/usr/bin/nsenter",
+    "--target",
+    "1",
+    "--all",
+    "--",
+    "su",
+    "-l",
+    ...(user === null ? [] : [user]),
+  ],
+  // A POSIX user name, as useradd takes it: never an option su would read.
+  userName: /^[a-z_][a-z0-9_.-]{0,31}\$?$/i,
   enter: ["/usr/bin/nsenter", "--target", "1", "--all", "--"],
 } as const;
 // Over SSH: the SSH user's own login shell, drawn for xterm.js.
@@ -4317,7 +4433,6 @@ export const VOLUME_COPY_MESSAGES = {
   specialFile: "checkpoint fidelity does not support sockets, pipes, devices or symbolic-link mount roots",
   externalLinks: "a hard-link group extends outside one checkpoint mount",
   entryLimit: "checkpoint metadata exceeds the supported entry limit",
-  selfMissing: (name: string) => `the runner cannot find its own container, ${name}`,
   targetGone: (target: string) => `the container no longer mounts ${target}`,
 } as const;
 // Following a run: how often its status file is looked for, and how long past its own timeout. While
@@ -4608,6 +4723,8 @@ export const COMMAND_MESSAGES = {
   stopping: (signal: string) => `received ${signal}, shutting down`,
   recovered: (incidents: number, replays: number) =>
     `after a restart: ${incidents} incident(s) left mid-decision were cancelled, ${replays} replay(s) closed`,
+  selfUpdateRollbackSettled: (incidents: number) =>
+    `an update of Autoheal went back and its database with it: every action still waiting or out with a host was closed, and ${incidents} incident(s) cancelled. The hosts may have carried some of them out; nothing is asked again by itself.`,
 } as const;
 
 export const LOG_PREFIX = "[autoheal]";
@@ -4809,6 +4926,7 @@ export const RETENTION_MILLISECONDS = {
   endedIncidents: 180 * MILLISECONDS_PER_DAY,
   replayRuns: 90 * MILLISECONDS_PER_DAY,
   applicationBackupRuns: 90 * MILLISECONDS_PER_DAY,
+  rebootPlans: 90 * MILLISECONDS_PER_DAY,
 } as const;
 export const RETENTION_SWEEP_INTERVAL_MILLISECONDS = MILLISECONDS_PER_DAY;
 // Rows removed per transaction, so a first sweep of an old database never builds one huge write.
@@ -5028,6 +5146,16 @@ export const SELF_UPDATE_STATUS = {
   // Stopped where nothing could safely be started: not final, and trying again takes it up from there.
   blocked: "blocked",
 } as const;
+// What the recovery file on disk turned out to be. An unreadable one is not an absent one: it may be hiding an
+// update that never finished, so nothing new may start over it.
+export const SELF_UPDATE_RECORD = { absent: "absent", valid: "valid", unreadable: "unreadable" } as const;
+export type SelfUpdateRecordState = (typeof SELF_UPDATE_RECORD)[keyof typeof SELF_UPDATE_RECORD];
+// Why it could not be read, in fixed words: the file's own bytes are never repeated, here or over the API.
+export const SELF_UPDATE_UNREADABLE = {
+  notJson: "it is not the JSON it should be",
+  notTheShape: "its contents are not a record this version of Autoheal reads",
+} as const;
+
 export const SELF_UPDATE_PHASE = {
   preparing: "preparing",
   replacing: "replacing",
@@ -5060,6 +5188,8 @@ export const SELF_UPDATE_TEXT = {
   noSocket:
     "Autoheal's container has no Docker socket, so it cannot update itself: on the main host, docker compose pull && docker compose up -d.",
   noOwnContainer: "Autoheal cannot find its own container in Docker, so it cannot update itself.",
+  recoveryBlocked: (reason: string) =>
+    `Autoheal cannot tell how its last update went: ${reason}. An update may be unfinished, so no new one starts until someone looks. The record is ${SELF_UPDATE.outcomeFile} in Autoheal's data volume; read it, finish or undo what it describes, then move it away.`,
 } as const;
 export const SSH_KEY = {
   // A probe's command only says what the host has: a few words.

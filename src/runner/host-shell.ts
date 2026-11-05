@@ -5,13 +5,14 @@ import type { HostScript } from "./installs.js";
 import type { HostShellOpener } from "./terminal-sessions.js";
 
 /**
- * Root's login shell on the runner's own host, through a helper container of its own image: privileged, in the
+ * A login shell on the runner's own host, root's or the named user's, through a helper container of its own image: privileged, in the
  * host's process namespace, holding still while nsenter enters the host's first process's namespaces. The helper
  * goes once the shell's end is read; one a runner left behind goes by itself when its hold runs out.
  */
 export function hostShellThroughDocker(
   docker: Pick<DockerClient, "inspect" | "create" | "start" | "remove" | "openShell">,
   selfContainerName: string,
+  user: string | null,
 ): HostShellOpener {
   return async (columns, rows): Promise<ShellStream> => {
     const self = await docker.inspect(selfContainerName);
@@ -36,7 +37,7 @@ export function hostShellThroughDocker(
     const removed = () => void docker.remove(name).catch(() => undefined);
     try {
       await docker.start(name);
-      const shell = await docker.openShell(name, columns, rows, HOST_TERMINAL_HELPER.shell);
+      const shell = await docker.openShell(name, columns, rows, HOST_TERMINAL_HELPER.shell(user));
       return { ...shell, exitCode: () => shell.exitCode().finally(removed) };
     } catch (error) {
       removed();

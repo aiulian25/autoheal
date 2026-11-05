@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { SelfUpdateOutcomeFile } from "../control-plane/self-update/self-update-outcome.js";
+import {
+  outcomeIn,
+  SelfUpdateOutcomeFile,
+  unreadableReason,
+} from "../control-plane/self-update/self-update-outcome.js";
 import { SelfUpdateDatabaseFiles } from "../control-plane/self-update/self-update-database.js";
 import { selfUpdate } from "../control-plane/self-update/self-update-helper.js";
 import { DockerClient } from "../runner/docker-client.js";
@@ -10,6 +14,7 @@ import {
   EXIT_SUCCESS,
   EXIT_USAGE,
   SELF_UPDATE_STATUS,
+  SELF_UPDATE_TEXT,
   USAGE,
 } from "../shared/constants.js";
 
@@ -23,6 +28,7 @@ const selfUpdateArguments = z.tuple([z.string().min(1), z.string().min(1), z.str
 export async function runSelfUpdate(
   commandArguments: string[],
   output: Pick<Console, "log" | "error"> = console,
+  dataDirectory: string = DEFAULT_DATA_DIRECTORY,
 ): Promise<number> {
   const parsed = selfUpdateArguments.safeParse(commandArguments);
   if (!parsed.success) {
@@ -30,7 +36,14 @@ export async function runSelfUpdate(
     return EXIT_USAGE;
   }
   const [container, image, reference] = parsed.data;
-  const outcomes = new SelfUpdateOutcomeFile(DEFAULT_DATA_DIRECTORY);
+  const outcomes = new SelfUpdateOutcomeFile(dataDirectory);
+  const record = outcomes.read();
+  const blocked = unreadableReason(record);
+  // The helper runs with the socket: it must stop where the control plane would, and before it touches Docker.
+  if (blocked !== null) {
+    output.error(SELF_UPDATE_TEXT.recoveryBlocked(blocked));
+    return EXIT_FAILURE;
+  }
   const outcome = await selfUpdate(
     new DockerClient(DEFAULT_DOCKER_SOCKET_PATH),
     { container, image, reference },
@@ -38,8 +51,8 @@ export async function runSelfUpdate(
       outcomes.write(step);
       output.log(step.message);
     },
-    new SelfUpdateDatabaseFiles(DEFAULT_DATA_DIRECTORY),
-    outcomes.read(),
+    new SelfUpdateDatabaseFiles(dataDirectory),
+    outcomeIn(record),
   );
   return outcome.status === SELF_UPDATE_STATUS.succeeded ? EXIT_SUCCESS : EXIT_FAILURE;
 }

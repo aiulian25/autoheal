@@ -11,6 +11,7 @@ import {
   type SessionView,
 } from "../../../src/shared/api.js";
 import type { UnusedImage } from "../../../src/shared/protocol.js";
+import type { RegistryCredentialView } from "../../../src/shared/registry-credentials.js";
 import { SESSION_QUERY_KEY } from "../constants.js";
 import { HostImages } from "./host-images.js";
 
@@ -64,9 +65,11 @@ const KEPT = image({
 const NAMELESS = image({ id: digest("b"), repository: "ghcr.io/immich-app/immich-server", sizeBytes: 1_200_000_000 });
 const BUILT_HERE = image({ id: digest("c"), sizeBytes: 20_000_000 });
 
-function serve(view: HostImagesView) {
+function serve(view: HostImagesView, credentials: RegistryCredentialView[] = []) {
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-    const answer = (init?.method ?? "GET") === "GET" && url === IMAGES ? view : { id: "j1", status: "pending" };
+    const reading = (init?.method ?? "GET") === "GET";
+    const answers: Record<string, unknown> = { [IMAGES]: view, [API_ROUTES.registryCredentials]: credentials };
+    const answer = reading ? (answers[url] ?? []) : { id: "j1", status: "pending" };
     return new Response(JSON.stringify(answer), { headers: { "content-type": "application/json" } });
   });
   vi.stubGlobal("fetch", fetch);
@@ -160,4 +163,33 @@ describe("a host's old images", () => {
     show(<HostImages host={alder(false)} admin />);
     expect(await screen.findByText(/Its runner has not listed them yet/)).toBeTruthy();
   });
+});
+
+it("says which private registries this host reads with a stored credential", async () => {
+  serve({ images: [KEPT], lastRemoval: null }, [
+    {
+      id: "c1",
+      registry: "ghcr.io",
+      repository: "owner/app",
+      username: "owner",
+      hostIds: [],
+      createdBy: "admin",
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    {
+      id: "c2",
+      registry: "registry.example.com",
+      repository: null,
+      username: "other",
+      hostIds: ["h2"],
+      createdBy: "admin",
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+  show(<HostImages host={alder(false)} admin />);
+
+  expect(await screen.findByText("ghcr.io/owner/app")).toBeTruthy();
+  expect(screen.queryByText(/registry.example.com/)).toBeNull();
 });

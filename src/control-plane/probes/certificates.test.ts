@@ -98,6 +98,7 @@ describe("a certificate check of a local endpoint", () => {
   const bodyFor = (port: number, change: object = {}): ProbeBody => ({
     name: "Wiki",
     scope: PROBE_SCOPE.thisMachine,
+    vantage: null,
     intervalSeconds: 60,
     timeoutSeconds: 2,
     failuresBeforeDown: 1,

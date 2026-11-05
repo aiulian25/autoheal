@@ -7,6 +7,7 @@ import { UPDATE_GROUP_LABEL, updateGroupOf, type UpdateGroup } from "./update-gr
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
+  PROVENANCE_MESSAGES,
   ANONYMOUS_VOLUME_PATTERN,
   BIND_SEPARATOR,
   DEFAULT_BRIDGE_NETWORK,
@@ -36,8 +37,21 @@ import {
   type UpdatePhase,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
+import { ruleForImage, satisfiesRule } from "../shared/image-provenance.js";
+import type { ProvenanceSource } from "./image-updates.js";
+import { parseImageReference } from "./registry-client.js";
 import type { ContainerSummary, DockerClient, ImageDetails } from "./docker-client.js";
 import { splitTag } from "../shared/image-reference.js";
+
+/**
+ * The digest Docker recorded for what it just pulled, for this very repository: what a signature must be over.
+ * Null where Docker knows no digest for it, such as an image built on the host under the same name.
+ */
+function pulledDigest(image: ImageDetails | null, reference: string): string | null {
+  const wanted = canonicalRepository(reference);
+  const found = (image?.RepoDigests ?? []).find((entry) => canonicalRepository(entry) === wanted);
+  return found?.split("@")[1] ?? null;
+}
 import { utcMinute } from "../shared/time-zones.js";
 import { deniedMountOf, withSettings } from "./container-settings.js";
 import { untilSettled } from "./settle-check.js";
@@ -325,7 +339,28 @@ export class ContainerUpdater {
     private readonly withoutCheckpoints: string = JOB_OUTCOMES.checkpointUnavailable,
     // The pull found the image it already runs: the offer of an update is told it was wrong.
     private readonly confirmCurrent: (imageId: string, reference: string) => void = () => undefined,
+    // Who published an image, for the scopes an admin asks proof of; null where nothing does.
+    private readonly provenance: ProvenanceSource | null = null,
   ) {}
+
+  /**
+   * Why the image just pulled may not be put in place: a scope that asks for a signed image, and this digest is not
+   * one that holds up. Asked after the pull and about the digest Docker recorded for it, never about the tag, and
+   * before anything is stopped. Null where no rule covers the image, or where the proof is in hand.
+   */
+  private async provenanceRefusal(reference: string, newImage: ImageDetails | null): Promise<string | null> {
+    const source = this.provenance;
+    const image = parseImageReference(reference);
+    if (source === null || image === null) return null;
+    const rule = ruleForImage(source.policy(), image);
+    if (rule === null) return null;
+    const pulled = pulledDigest(newImage, reference);
+    if (pulled === null) return PROVENANCE_MESSAGES.heldBackUnknown(reference);
+    const found = await source.read(image, pulled).catch((error: unknown) => describeError(error));
+    if (typeof found === "string") return PROVENANCE_MESSAGES.heldBack(reference, found);
+    if (satisfiesRule(rule, found, pulled)) return null;
+    return PROVENANCE_MESSAGES.heldBack(reference, found.problem ?? found.status);
+  }
 
   /**
    * The containers that run inside this one's network. An update recreates them inside the new one's: the
@@ -416,6 +451,10 @@ export class ContainerUpdater {
       return failed("Docker did not verify the reviewed image digest and platform. No container was stopped.");
     if (rollout && newImage?.Id === details.Image)
       return failed("The reviewed image is already running; no rollout replacement was made.");
+    const heldBack = await this.provenanceRefusal(reference, newImage);
+    if (heldBack !== null) {
+      return failed(heldBack);
+    }
     if (newImage === null || newImage.Id === details.Image) {
       if (details.Image !== undefined) this.confirmCurrent(details.Image, reference);
       return { succeeded: true, outcome: JOB_OUTCOMES.alreadyCurrent(name) };

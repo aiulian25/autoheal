@@ -23,6 +23,12 @@ export const BACKUP_DIALOG = { backUp: "back_up", restore: "restore" } as const;
 export type BackupDialogMode = (typeof BACKUP_DIALOG)[keyof typeof BACKUP_DIALOG];
 
 const isOpen = (job: JobView) => job.status === JOB_STATUS.pending || job.status === JOB_STATUS.delivered;
+
+/** How the ending reads: finished, finished with its settings left as they were, or not finished. */
+function completionStyle(status: JobView["status"], dataOnly: boolean): string {
+  if (status !== JOB_STATUS.succeeded) return "notice warning";
+  return dataOnly ? "notice" : "text-good";
+}
 const nameOf = ({ container, stack }: BackupTarget) => stack ?? container ?? "";
 const dateOf = (at: number) => new Date(at).toLocaleString();
 
@@ -128,7 +134,11 @@ function RestoreNotes({ backup, name }: { backup: BackupEntry; name: string }) {
           {backup.hasSettings ? text.olderImageCompose(moved[0]!.image) : text.olderImageAlone(moved[0]!.image)}
         </p>
       )}
-      {backup.fromStack && <p className="notice warning small">{text.oneOfStack(name)}</p>}
+      {backup.fromStack && (
+        <p className="notice warning small">
+          {backup.hasSettings ? text.oneOfStackCompose(name) : text.oneOfStack(name)}
+        </p>
+      )}
       {backup.leftOut.length > 0 && <p className="small muted">{text.leftOutThen(backup.leftOut.join(", "))}</p>}
       <p className="small muted">{text.whatIsLost(name)}</p>
     </>
@@ -216,6 +226,9 @@ export function BackupDialog({
   // This restore's own copy, by its name, and only while it is still there; never just the newest one listed.
   const undoTo = backups.find(({ id, why }) => id === job.data?.recoveryBackupId && why === BACKUP_WHY.safety);
   const canUndo = mode === BACKUP_DIALOG.restore && finished && undoTo !== undefined;
+  // Three endings, not two: everything back, the data back with its settings deliberately left, and one that could
+  // not finish. The middle one is a success, but never a plain tick: its stack still runs what it ran before.
+  const dataOnly = mode === BACKUP_DIALOG.restore && selected?.fromStack === true && selected.hasSettings;
   const toggle = (source: string) => {
     const next = new Set(ticked);
     if (!next.delete(source)) next.add(source);
@@ -271,7 +284,7 @@ export function BackupDialog({
         {!working && selected !== undefined && <RestoreNotes backup={selected} name={name} />}
         {working && !finished && job.data !== undefined && <Progress job={job.data} />}
         {finished && (
-          <p className={job.data.status === JOB_STATUS.succeeded ? "text-good" : "notice warning"} role="status">
+          <p className={completionStyle(job.data.status, dataOnly)} role="status">
             {job.data.outcome}
           </p>
         )}

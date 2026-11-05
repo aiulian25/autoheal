@@ -1,5 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
 import { Readable, type Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +124,8 @@ export class FakeDockerEngine {
   readonly buildCachePrunes: string[] = [];
   // Each image pulled, as `name:tag`; a pull streams one progress line for a layer, then its status.
   readonly pulls: string[] = [];
+  // What a pull was given for a private registry, as Docker reads it: by image, decoded from its own header.
+  readonly pullCredentials = new Map<string, { username: string; password: string; serveraddress: string }>();
   private readonly streams = new Set<ServerResponse>();
   // Each exec asked for: the container it runs in, its command and whether it has a terminal (a shell), the
   // sizes it was given, and how it ended.
@@ -147,7 +155,8 @@ export class FakeDockerEngine {
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
       request.on(
         "end",
-        () => void engine.route(request.method ?? "", request.url ?? "", Buffer.concat(chunks), response),
+        () =>
+          void engine.route(request.method ?? "", request.url ?? "", Buffer.concat(chunks), response, request.headers),
       );
     });
     engine.server.on("upgrade", (request: IncomingMessage, socket: Duplex) => engine.shell(request, socket));
@@ -278,7 +287,13 @@ export class FakeDockerEngine {
     response.end(Buffer.concat([frame(result.stdout), frame(result.stderr, STDERR)]));
   }
 
-  private async route(method: string, url: string, body: Buffer, response: ServerResponse) {
+  private async route(
+    method: string,
+    url: string,
+    body: Buffer,
+    response: ServerResponse,
+    headers: IncomingHttpHeaders = {},
+  ) {
     const { pathname, search, searchParams } = new URL(url, "http://docker");
     const json = (status: number, body: unknown) => {
       response.writeHead(status, { "content-type": "application/json" });
@@ -337,6 +352,10 @@ export class FakeDockerEngine {
     if (pathname === "/images/create" && method === "POST") {
       const pulled = `${searchParams.get("fromImage")}:${searchParams.get("tag")}`;
       this.pulls.push(pulled);
+      const given = headers["x-registry-auth"];
+      if (typeof given === "string") {
+        this.pullCredentials.set(pulled, JSON.parse(Buffer.from(given, "base64url").toString()));
+      }
       // A registry whose tag moved on: the pull points it at the new image.
       const moved = this.tagsMovedOnPull.get(pulled);
       if (moved !== undefined) this.imageIds.set(pulled, moved);

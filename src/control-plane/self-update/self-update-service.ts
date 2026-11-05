@@ -21,7 +21,14 @@ import {
 } from "../../shared/constants.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import { DomainError } from "../domain-error.js";
-import { unfinishedRecovery, type JournalledOutcome, type SelfUpdateOutcomeFile } from "./self-update-outcome.js";
+import {
+  outcomeIn,
+  unfinishedRecovery,
+  unreadableReason,
+  type JournalledOutcome,
+  type SelfUpdateOutcomeFile,
+  type SelfUpdateRecord,
+} from "./self-update-outcome.js";
 
 type SelfUpdateDocker = Pick<DockerClient, "inspect" | "inspectImage" | "pull" | "create" | "start" | "remove">;
 
@@ -70,11 +77,14 @@ export class SelfUpdateService {
   async view(): Promise<SelfUpdateView> {
     const { docker } = this.dependencies;
     const own = docker === null ? null : await docker.inspect(this.ownContainer);
+    const record = this.dependencies.outcomes.read();
+    const blocked = unreadableReason(record);
     return {
       unavailable: this.unavailable(docker, own),
       runningImage: own?.Image ?? null,
       reference: this.referenceOf(own),
-      last: await this.lastSeen(docker),
+      recoveryBlocked: blocked === null ? null : SELF_UPDATE_TEXT.recoveryBlocked(blocked),
+      last: await this.lastSeen(docker, record),
     };
   }
 
@@ -98,7 +108,12 @@ export class SelfUpdateService {
     }
     const reference = this.referenceOf(own);
     await this.refuseActiveHelper(docker);
-    const unfinished = outcomes.read();
+    const record = outcomes.read();
+    // An update may be unfinished behind a record that cannot be read: nothing new starts until a person has seen it.
+    if (unreadableReason(record) !== null) {
+      throw new DomainError(API_ERRORS.selfUpdateRecoveryBlocked);
+    }
+    const unfinished = outcomeIn(record);
     const recovery = unfinishedRecovery(unfinished);
     if (unfinished !== null && recovery !== null) {
       return this.takeUp(docker, own, unfinished, recovery.original);
@@ -196,9 +211,9 @@ export class SelfUpdateService {
   }
 
   // An unfinished update with no helper running is not going on, whatever it last wrote.
-  private async lastSeen(docker: SelfUpdateDocker | null) {
-    const last = this.lastAudited();
-    if (docker === null || last === null || unfinishedRecovery(this.dependencies.outcomes.read()) === null) return last;
+  private async lastSeen(docker: SelfUpdateDocker | null, record: SelfUpdateRecord) {
+    const last = this.lastAudited(record);
+    if (docker === null || last === null || unfinishedRecovery(outcomeIn(record)) === null) return last;
     if (last.status === SELF_UPDATE_STATUS.blocked) return last;
     const helper = await docker.inspect(SELF_UPDATE.helperName);
     if (helper?.State.Running === true) return last;
@@ -245,13 +260,13 @@ export class SelfUpdateService {
   }
 
   // The last update, put in the audit log once it has finished, by whichever control plane sees it finished first.
-  private lastAudited() {
+  private lastAudited(record: SelfUpdateRecord) {
     const { outcomes, auditLog } = this.dependencies;
-    const stored = outcomes.read();
+    const stored = outcomeIn(record);
     if (stored === null) {
       return null;
     }
-    const { audited, recovery, ...outcome } = stored;
+    const { audited, settled, recovery, dataRestored, ...outcome } = stored;
     if (!audited && SELF_UPDATE_FINAL.includes(outcome.status)) {
       auditLog.record({
         actorKind: ACTOR_SYSTEM,
@@ -260,7 +275,7 @@ export class SelfUpdateService {
         targetKind: TARGET_AUTOHEAL,
         details: { status: outcome.status, reference: outcome.reference, from: outcome.from, to: outcome.to },
       });
-      outcomes.write({ ...outcome, recovery }, true);
+      outcomes.write({ ...outcome, recovery, dataRestored }, { audited: true, settled });
     }
     return outcome;
   }

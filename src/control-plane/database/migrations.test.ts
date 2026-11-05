@@ -6,7 +6,9 @@ import { is } from "drizzle-orm";
 import { SQLiteTable, getTableConfig } from "drizzle-orm/sqlite-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseHandle, databasePathIn } from "./connection.js";
+import { REBOOT_PLAN_STATUS, REBOOT_PLAN_UNREADABLE } from "../../shared/reboot-plans.js";
 import { hostControlMigration } from "./migrations/0010-host-control.js";
+import { rebootPlanRetentionMigration } from "./migrations/0060-reboot-plan-retention.js";
 import { hostDefaultsMigration } from "./migrations/0013-host-defaults.js";
 import { containerChoicesMigration } from "./migrations/0015-container-choices.js";
 import { widgetKeyScopeMigration } from "./migrations/0035-widget-key-scope.js";
@@ -148,6 +150,36 @@ describe("migrations", () => {
       { container_name: "attic", restart_choice: "restart", update_choice: "ask" },
       { container_name: "quantum", restart_choice: "ask", update_choice: "apply" },
     ]);
+    sqlite.close();
+  });
+
+  it("gives each saved reboot plan the status it already says, and marks an unreadable one blocked", () => {
+    const sqlite = new Database(":memory:");
+    for (const migration of MIGRATIONS.filter(({ version }) => version < rebootPlanRetentionMigration.version)) {
+      sqlite.exec(migration.sql);
+      sqlite.pragma(`user_version = ${migration.version}`);
+    }
+    const addPlan = sqlite.prepare(
+      "insert into reboot_plans (id, created_at, updated_at, state_json) values (?,?,?,?)",
+    );
+    addPlan.run("done", 1, 1, JSON.stringify({ id: "done", status: REBOOT_PLAN_STATUS.completed }));
+    addPlan.run("live", 2, 2, JSON.stringify({ id: "live", status: REBOOT_PLAN_STATUS.running }));
+    addPlan.run("unreadable", 3, 3, "{");
+
+    migrate(sqlite);
+
+    expect(sqlite.prepare("select id, status from reboot_plans order by created_at").all()).toEqual([
+      { id: "done", status: REBOOT_PLAN_STATUS.completed },
+      { id: "live", status: REBOOT_PLAN_STATUS.running },
+      // Kept as blocked rather than taken for settled: nothing sweeps it away and no new plan starts beside it.
+      { id: "unreadable", status: REBOOT_PLAN_UNREADABLE },
+    ]);
+    expect(
+      sqlite
+        .prepare("select name from sqlite_master where type = 'index' and tbl_name = 'reboot_plans'")
+        .all()
+        .map((row) => (row as { name: string }).name),
+    ).toContain("reboot_plans_status");
     sqlite.close();
   });
 

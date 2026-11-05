@@ -1,3 +1,6 @@
+import { and, eq } from "drizzle-orm";
+import { CONTAINER_STATE_RUNNING, HOST_STATUS_ACTIVE } from "../shared/constants.js";
+import { hosts as hostsTable } from "./database/schema.js";
 import { JarvisService } from "./jarvis/jarvis-service.js";
 import { StackService } from "./container-access/stack-service.js";
 import { VolumeLookService } from "./container-access/volume-look-service.js";
@@ -40,6 +43,10 @@ import {
   SECRET_BOX_MESSAGES,
 } from "../shared/constants.js";
 import type { HeartbeatResponse } from "../shared/protocol.js";
+import { RegistryClient } from "../runner/registry-client.js";
+import { RegistryCredentialsService } from "./settings/registry-credentials-service.js";
+import { ImageTrustService } from "./settings/image-trust-service.js";
+import { AvailabilityGroupsService } from "./inventory/availability-groups-service.js";
 import { joinUrl } from "../shared/urls.js";
 import { OllamaClient } from "../ollama/ollama-client.js";
 import { AccountService } from "./account/account-service.js";
@@ -179,6 +186,12 @@ export interface ControlPlaneServices {
   homeReview: HomeReview;
   settingsStore: SettingsStore;
   integrationsService: IntegrationsService;
+  // What private registries each host may read and pull from, and the only place their passwords are kept.
+  registryCredentials: RegistryCredentialsService;
+  // Which publishers are trusted, and where an update waits for a signed image.
+  imageTrust: ImageTrustService;
+  // An application's replicas across the fleet, and how much of it must keep serving through a fleet operation.
+  availabilityGroups: AvailabilityGroupsService;
   trustedProxies: TrustedProxiesService;
   notifier: Notifier;
   backupPassphraseNotice: BackupPassphraseNotice;
@@ -291,6 +304,17 @@ export function createControlPlaneServices(
       },
       secretBox,
     ),
+  );
+  // One host's row, for the few places that need what its runner can do rather than the whole inventory view.
+  const hostRowOf = (hostId: string) =>
+    databaseHandle.database
+      .select()
+      .from(hostsTable)
+      .where(and(eq(hostsTable.id, hostId), eq(hostsTable.status, HOST_STATUS_ACTIVE)))
+      .get();
+  const imageTrust = tracked(new ImageTrustService(databaseHandle, auditLog, clock));
+  const registryCredentialsService = tracked(
+    new RegistryCredentialsService(databaseHandle, auditLog, secretBox, new RegistryClient(), clock),
   );
   const sshKeysService = tracked(new SshKeysService(databaseHandle, auditLog, secretBox, clock));
   const sshHostsService = tracked(
@@ -419,7 +443,18 @@ export function createControlPlaneServices(
   const backupService = tracked(new BackupService(databaseHandle, auditLog, backups, clock));
   const live = tracked(new LiveEvents());
   const maintenance = tracked(new MaintenanceService(databaseHandle, auditLog, clock));
-  const probes = tracked(new ProbeService({ databaseHandle, maintenance, clock }));
+  const probes = tracked(
+    new ProbeService({
+      databaseHandle,
+      maintenance,
+      clock,
+      vantages: {
+        canCheck: (hostId) => hostRowOf(hostId)?.serviceProbes === true,
+        lastReportAt: (hostId) => hostRowOf(hostId)?.lastHeartbeatAt ?? null,
+        labelOf: (hostId) => hostRowOf(hostId)?.label ?? null,
+      },
+    }),
+  );
   const jobsService = tracked(
     new JobsService(
       databaseHandle,
@@ -514,7 +549,7 @@ export function createControlPlaneServices(
       clock,
     }),
   );
-  const rebootPlans = tracked(
+  const rebootPlans: RebootPlansService = tracked(
     new RebootPlansService({
       databaseHandle,
       audit: auditLog,
@@ -524,6 +559,26 @@ export function createControlPlaneServices(
       probes,
       rebootRequired: (hostId) =>
         inventoryService.hosts().find(({ id }) => id === hostId)?.health?.rebootRequired ?? null,
+      availability: { problemFor: (asking) => availabilityGroups.problemFor(asking) },
+      clock,
+    }),
+  );
+  const availabilityGroups: AvailabilityGroupsService = tracked(
+    new AvailabilityGroupsService({
+      databaseHandle,
+      auditLog,
+      replica: (hostId, containerName) => {
+        const host = inventoryService.hosts().find(({ id }) => id === hostId);
+        if (host === undefined) return { hostLabel: null, reportedAt: null, running: null };
+        const container = inventoryService.containers({ hostId }).find(({ name }) => name === containerName);
+        return {
+          hostLabel: host.label,
+          reportedAt: host.lastHeartbeatAt,
+          running: container === undefined ? null : container.state === CONTAINER_STATE_RUNNING,
+        };
+      },
+      probeProblem: (probeId, since) => probes.evidence(probeId, since),
+      underWay: () => [{ hostIds: rebootPlans.hostsDownNow() }, { containers: rollouts.containersStillToReplace() }],
       clock,
     }),
   );
@@ -557,7 +612,7 @@ export function createControlPlaneServices(
   const topology = tracked(
     new TopologyService(databaseHandle, inventoryService, resourcePermissions, waitingRunners, clock),
   );
-  const rollouts = tracked(
+  const rollouts: RolloutService = tracked(
     new RolloutService(
       databaseHandle,
       auditLog,
@@ -567,6 +622,7 @@ export function createControlPlaneServices(
       jobsService,
       (hostId, name) => maintenance.held(hostId, name),
       clock,
+      { problemFor: (asking) => availabilityGroups.problemFor(asking) },
     ),
   );
   const applicationBackups = tracked(
@@ -665,7 +721,21 @@ export function createControlPlaneServices(
     trustedProxies,
     notifier,
     backupPassphraseNotice: tracked(new BackupPassphraseNotice(settingsStore, generatedBackupPassphrase, clock)),
-    runnerSettings: (hostId) => ({ publicBaseUrl, ollama: ollamaPool.settingsFor(hostId) }),
+    // A host no credential names is told nothing about registries, as every control plane before them was.
+    runnerSettings: (hostId) => {
+      const registries = registryCredentialsService.accessFor(hostId);
+      const trust = imageTrust.policy();
+      return {
+        publicBaseUrl,
+        ollama: ollamaPool.settingsFor(hostId),
+        ...(registries.length === 0 ? {} : { registries }),
+        // A fleet asking proof of nobody is told nothing about it, as every control plane before it was.
+        ...(trust.required.length === 0 && trust.publishers.length === 0 ? {} : { imageTrust: trust }),
+      };
+    },
+    registryCredentials: registryCredentialsService,
+    imageTrust,
+    availabilityGroups,
     ollamaSettings,
     incidentsService,
     ollamaPool,

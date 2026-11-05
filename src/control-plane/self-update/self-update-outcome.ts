@@ -2,7 +2,14 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { SelfUpdateOutcome } from "../../shared/api.js";
-import { SELF_UPDATE, SELF_UPDATE_FINAL, SELF_UPDATE_PHASE, SELF_UPDATE_STATUS } from "../../shared/constants.js";
+import {
+  SELF_UPDATE,
+  SELF_UPDATE_FINAL,
+  SELF_UPDATE_PHASE,
+  SELF_UPDATE_RECORD,
+  SELF_UPDATE_STATUS,
+  SELF_UPDATE_UNREADABLE,
+} from "../../shared/constants.js";
 
 const snapshotSchema = z.object({ path: z.string(), schemaVersion: z.number().int() });
 
@@ -16,7 +23,7 @@ const recoverySchema = z.object({
   snapshot: snapshotSchema.nullable(),
 });
 export type SelfUpdateRecovery = z.infer<typeof recoverySchema>;
-export type JournalledOutcome = SelfUpdateOutcome & { recovery?: SelfUpdateRecovery | null };
+export type JournalledOutcome = SelfUpdateOutcome & { recovery?: SelfUpdateRecovery | null; dataRestored?: boolean };
 
 const outcomeSchema = z.object({
   status: z.enum(SELF_UPDATE_STATUS),
@@ -27,11 +34,37 @@ const outcomeSchema = z.object({
   finishedAt: z.number().nullable(),
   message: z.string(),
   recovery: recoverySchema.nullable().default(null),
+  // Written before the database file moves and before anything starts on it: whichever control plane comes up then
+  // has work in hand that its hosts may already have carried out, and must settle it rather than hand it out again.
+  dataRestored: z.boolean().default(false),
 });
 
-// Its own lines, kept with the outcome: whether the control plane has put the finished update in the audit log yet.
-const storedSchema = outcomeSchema.extend({ audited: z.boolean().default(false) });
+// Its own lines, kept with the outcome: what the control plane has done about it since, which the helper never writes.
+const storedSchema = outcomeSchema.extend({
+  audited: z.boolean().default(false),
+  settled: z.boolean().default(false),
+});
 type StoredOutcome = z.infer<typeof storedSchema>;
+/** What a control plane has done about a record it read, kept beside the update the helper wrote. */
+export type SelfUpdateHandled = { audited?: boolean; settled?: boolean };
+
+/**
+ * What the file held: nothing, an update, or bytes this version cannot make sense of. The last is kept apart from the
+ * first on purpose, as an unreadable record may be an update that never finished, and starting another would write
+ * over the only evidence of it.
+ */
+export type SelfUpdateRecord =
+  | { state: typeof SELF_UPDATE_RECORD.absent }
+  | { state: typeof SELF_UPDATE_RECORD.valid; outcome: StoredOutcome }
+  | { state: typeof SELF_UPDATE_RECORD.unreadable; reason: string };
+
+/** The update it holds, or null where there is none to read; an unreadable record is no record of an update. */
+export const outcomeIn = (record: SelfUpdateRecord): StoredOutcome | null =>
+  record.state === SELF_UPDATE_RECORD.valid ? record.outcome : null;
+
+/** Why the record cannot be read, in words for a person; null while it can be. */
+export const unreadableReason = (record: SelfUpdateRecord): string | null =>
+  record.state === SELF_UPDATE_RECORD.unreadable ? record.reason : null;
 
 /** The last update of Autoheal itself, in the data volume: written by its helper, read by the control plane after. */
 export class SelfUpdateOutcomeFile {
@@ -41,18 +74,30 @@ export class SelfUpdateOutcomeFile {
     this.path = join(dataDirectory, SELF_UPDATE.outcomeFile);
   }
 
-  read(): StoredOutcome | null {
+  // Decoding and shape are judged apart, and neither throws: a file that cannot be read is a state of its own, and
+  // the bytes behind it stay on disk and out of the answer.
+  read(): SelfUpdateRecord {
     if (!existsSync(this.path)) {
-      return null;
+      return { state: SELF_UPDATE_RECORD.absent };
     }
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync(this.path, "utf8")));
-    return parsed.success ? parsed.data : null;
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(readFileSync(this.path, "utf8"));
+    } catch {
+      return { state: SELF_UPDATE_RECORD.unreadable, reason: SELF_UPDATE_UNREADABLE.notJson };
+    }
+    const parsed = storedSchema.safeParse(decoded);
+    if (!parsed.success) {
+      return { state: SELF_UPDATE_RECORD.unreadable, reason: SELF_UPDATE_UNREADABLE.notTheShape };
+    }
+    return { state: SELF_UPDATE_RECORD.valid, outcome: parsed.data };
   }
 
   // Whole or not at all: written beside it, then moved over it.
-  write(outcome: JournalledOutcome, audited = false) {
+  write(outcome: JournalledOutcome, handled: SelfUpdateHandled = {}) {
     const next = `${this.path}.next`;
-    writeFileSync(next, JSON.stringify({ ...outcome, audited }));
+    const stored = { ...outcome, audited: handled.audited ?? false, settled: handled.settled ?? false };
+    writeFileSync(next, JSON.stringify(stored));
     renameSync(next, this.path);
   }
 }

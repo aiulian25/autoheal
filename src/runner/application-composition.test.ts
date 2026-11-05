@@ -152,3 +152,60 @@ describe("application backup runner composition", () => {
     expect(engine.execs.size).toBe(0);
   });
 });
+
+describe("private registries a runner is allowed", () => {
+  let engine: FakeDockerEngine, root: string;
+  beforeEach(async () => {
+    engine = await FakeDockerEngine.start();
+    root = mkdtempSync(join(tmpdir(), "autoheal-registries-"));
+  });
+  afterEach(async () => {
+    await engine.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("pulls a covered image with the credential the control plane allowed, and others with none", async () => {
+    const runtime = await createRuntime(
+      loadRunnerConfig(
+        { OLLAMA_URL: "https://localhost:1", DOCKER_SOCKET_PATH: engine.socketPath, HOST_ROOT: root },
+        join(root, "no-join"),
+      ),
+    );
+    expect(runtime.registries.allowed).toEqual([]);
+
+    // What the answer to its heartbeat carries.
+    runtime.registries.allowed = [
+      { registry: "ghcr.io", repository: "owner/app", username: "owner", password: "a-token" },
+    ];
+    await runtime.docker.pull("ghcr.io/owner/app:2");
+    await runtime.docker.pull("ghcr.io/someone/else:2");
+    await runtime.docker.pull("nginx:1.27");
+
+    expect(engine.pullCredentials.get("ghcr.io/owner/app:2")).toEqual({
+      username: "owner",
+      password: "a-token",
+      serveraddress: "ghcr.io",
+    });
+    expect(engine.pullCredentials.has("ghcr.io/someone/else:2")).toBe(false);
+    expect(engine.pullCredentials.has("nginx:1.27")).toBe(false);
+  });
+
+  it("stops using a credential the control plane no longer allows", async () => {
+    const runtime = await createRuntime(
+      loadRunnerConfig(
+        { OLLAMA_URL: "https://localhost:1", DOCKER_SOCKET_PATH: engine.socketPath, HOST_ROOT: root },
+        join(root, "no-join"),
+      ),
+    );
+    runtime.registries.allowed = [
+      { registry: "ghcr.io", repository: "owner/app", username: "owner", password: "a-token" },
+    ];
+    await runtime.docker.pull("ghcr.io/owner/app:2");
+
+    runtime.registries.allowed = [];
+    await runtime.docker.pull("ghcr.io/owner/app:3");
+
+    expect(engine.pullCredentials.has("ghcr.io/owner/app:2")).toBe(true);
+    expect(engine.pullCredentials.has("ghcr.io/owner/app:3")).toBe(false);
+  });
+});

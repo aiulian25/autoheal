@@ -9,10 +9,13 @@ const OLD = `sha256:${"1".repeat(64)}`;
 const NEW = `sha256:${"2".repeat(64)}`;
 const WEB = "example/web:2";
 const DB = "example/db:16";
+// The image the test control plane runs, as its AUTOHEAL_IMAGE names it, and what the registry has behind it.
+const AUTOHEAL_IMAGE = "autoheal:test";
+const HELPER = `sha256:${"3".repeat(64)}`;
 // An update waits this long for the new container to keep running: the updater's own settle time, and some.
 const UPDATE_TEST_MILLISECONDS = 90_000;
 
-describe("updates and roll back on an SSH host, where data cannot be kept yet", () => {
+describe("updates and roll back on an SSH host", () => {
   let engine: FakeDockerEngine;
   let admin: TestClient;
   let hostId: string;
@@ -48,6 +51,10 @@ describe("updates and roll back on an SSH host, where data cannot be kept yet", 
     }
     engine.imageLabels.set(OLD, {});
     engine.imageLabels.set(NEW, {});
+    // Autoheal's own image is not on the host: the registry has it. Its helpers end at once, having printed nothing.
+    engine.tagsMovedOnPull.set(AUTOHEAL_IMAGE, HELPER);
+    engine.imageLabels.set(HELPER, {});
+    engine.failingImages.add(HELPER);
     const { sshHostsService, embeddedRunners } = started.controlPlane.services;
     sshHostsService.updateSettings(started.actor, hostId, { ...sshHostsService.settingsOf(hostId), dryRun: false });
     embeddedRunners.begin();
@@ -89,13 +96,15 @@ describe("updates and roll back on an SSH host, where data cannot be kept yet", 
       expect(engine.containers.get("web")).toMatchObject({ Image: NEW, State: { Running: true } });
       expect(engine.pulls).toContain(WEB);
 
-      // Its data: updated all the same at a person's word, the reason it was not kept said in the outcome.
+      // Its data is copied first by a helper of Autoheal's image, pulled onto the host for it. The fake engine does
+      // not run the helper's program, so the copy reports nothing and the update goes on at a person's word, saying so.
       const database = await act("db", JOB_ACTION.update);
       expect(database.status, database.outcome ?? "").toBe(JOB_STATUS.succeeded);
-      expect(database.outcome).toContain(JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.noDataCopyHere));
+      expect(engine.pulls).toContain(AUTOHEAL_IMAGE);
+      const helpers = engine.creations.filter(({ name }) => name.startsWith("autoheal-helper-checkpoint-"));
+      expect(helpers.map(({ specification }) => specification.Image)).toEqual([HELPER]);
+      expect(database.outcome).toContain("Its data was not kept");
       expect(engine.containers.get("db")).toMatchObject({ Image: NEW, State: { Running: true } });
-      // No helper of Autoheal's image was asked for: there is none on the host.
-      expect(engine.creations.map((creation) => creation.name).sort()).toEqual(["db", "web"]);
     },
     UPDATE_TEST_MILLISECONDS,
   );

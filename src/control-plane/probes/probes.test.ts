@@ -10,7 +10,7 @@ import {
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
-import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
+import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { AGENT_AUTOHEAL, DETECTOR_KEYS, HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 import {
@@ -22,10 +22,10 @@ import {
   type ProbeTarget,
   type ProbeView,
 } from "../../shared/probes.js";
-import { jobs, tasks } from "../database/schema.js";
+import { hosts, jobs, tasks } from "../database/schema.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { nextStreak, ProbeService } from "./probe-service.js";
-import { serviceProbeSamples } from "./probe-schema.js";
+import { serviceProbes, serviceProbeSamples } from "./probe-schema.js";
 
 const INTERVAL_MILLISECONDS = 60_000;
 
@@ -75,6 +75,7 @@ describe("a host's service checks", () => {
   const bodyWith = (target: ProbeTarget, change: Partial<ProbeBody> = {}): ProbeBody => ({
     name: "Wiki",
     scope: PROBE_SCOPE.thisMachine,
+    vantage: null,
     intervalSeconds: 60,
     timeoutSeconds: 1,
     failuresBeforeDown: 2,
@@ -338,6 +339,7 @@ describe("running many checks", () => {
   const body: ProbeBody = {
     name: "Wiki",
     scope: PROBE_SCOPE.thisMachine,
+    vantage: null,
     intervalSeconds: 60,
     timeoutSeconds: 1,
     failuresBeforeDown: 1,
@@ -347,9 +349,10 @@ describe("running many checks", () => {
   let plane: TestControlPlane;
   let hostId: string;
   let database: DatabaseHandle;
+  let admin: TestClient;
   beforeEach(async () => {
     plane = await startTestControlPlane();
-    const admin = (await fullySignedInAdmin(plane)).client;
+    admin = (await fullySignedInAdmin(plane)).client;
     hostId = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>().host.id;
     database = plane.services.databaseHandle;
   });
@@ -364,6 +367,73 @@ describe("running many checks", () => {
       clock: () => plane.clock.now,
       check,
     });
+
+  describe("asking for more checks than it may have, all at once", () => {
+    const idle = () => serviceWith(async () => ({ ok: true, latencyMilliseconds: 1, problem: null }));
+    const stored = () => database.database.select().from(serviceProbes).all().length;
+    const racing = async (service: ProbeService, host: string, howMany: number) => {
+      const asked = await Promise.allSettled(
+        Array.from({ length: howMany }, (_, index) => service.create(host, { ...body, name: `Racing ${index}` })),
+      );
+      return {
+        made: asked.filter(({ status }) => status === "fulfilled").length,
+        refused: asked.flatMap((one) => (one.status === "rejected" ? [one.reason as { code?: string }] : [])),
+      };
+    };
+
+    it("takes only the one place left on a host, however many ask for it at once", async () => {
+      const service = idle();
+      for (let index = 0; index < PROBE_LIMITS.perHost - 1; index += 1) await service.create(hostId, body);
+
+      const { made, refused } = await racing(service, hostId, 4);
+
+      expect(made).toBe(1);
+      expect(stored()).toBe(PROBE_LIMITS.perHost);
+      expect(refused.map(({ code }) => code)).toEqual(Array.from({ length: 3 }, () => API_ERRORS.probeLimitReached));
+    });
+
+    it("keeps the fleet's own bound, counting checks on every host together", async () => {
+      const service = idle();
+      const second = (await admin.post(API_ROUTES.hosts, { label: "Cedar" })).json<EnrolledHostView>().host.id;
+      // Filled to one short of the fleet's limit, spread so no host is at its own.
+      for (let index = 0; index < PROBE_LIMITS.total - 1; index += 1) {
+        const host = index % 2 === 0 ? hostId : second;
+        if (index < PROBE_LIMITS.perHost * 2) await service.create(host, body);
+        else
+          database.database
+            .insert(serviceProbes)
+            .values({
+              id: `filler-${index}`,
+              hostId: host,
+              bodyJson: JSON.stringify(body),
+              state: PROBE_STATE.unknown,
+              stateSince: 0,
+              failures: 0,
+              answers: 0,
+              createdAt: 0,
+            })
+            .run();
+      }
+      expect(stored()).toBe(PROBE_LIMITS.total - 1);
+
+      const third = (await admin.post(API_ROUTES.hosts, { label: "Delta" })).json<EnrolledHostView>().host.id;
+      const { made, refused } = await racing(service, third, 4);
+
+      expect(made).toBe(1);
+      expect(stored()).toBe(PROBE_LIMITS.total);
+      expect(refused.map(({ code }) => code)).toEqual(Array.from({ length: 3 }, () => API_ERRORS.probeLimitReached));
+    });
+
+    it("gives a host nothing when it was revoked while its destination was being looked up", async () => {
+      const service = idle();
+      const asked = service.create(hostId, body);
+      // Revoked in the window the look-up leaves open, as another request could.
+      database.database.update(hosts).set({ status: "revoked" }).where(eq(hosts.id, hostId)).run();
+
+      await expect(asked).rejects.toMatchObject({ code: API_ERRORS.hostRevoked });
+      expect(stored()).toBe(0);
+    });
+  });
 
   it("runs no more than its limit at once, the rest waiting for a later tick", async () => {
     let running = 0;

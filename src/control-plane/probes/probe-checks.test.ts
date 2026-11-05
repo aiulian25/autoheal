@@ -5,14 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROBE_SCOPE, PROBE_TEXT, type ProbeBody, type ProbeTarget } from "../../shared/probes.js";
 import { destinationAllowed, runCheck, scopeOfAddress } from "./probe-checks.js";
 
-const lookups = vi.hoisted(() => ({ answer: null as { address: string; family: number }[] | null, asked: 0 }));
+const lookups = vi.hoisted(() => ({
+  answer: null as { address: string; family: number }[] | null,
+  asked: 0,
+  // How long the name takes to resolve, for a check whose time runs out while it waits.
+  delayMilliseconds: 0,
+}));
 vi.mock("node:dns/promises", async (original) => {
   const real = await original<typeof import("node:dns/promises")>();
   return {
     ...real,
     lookup: (host: string, options: { all: true }) => {
       lookups.asked += 1;
-      return lookups.answer === null ? real.lookup(host, options) : Promise.resolve(lookups.answer);
+      const found = lookups.answer === null ? real.lookup(host, options) : Promise.resolve(lookups.answer);
+      if (lookups.delayMilliseconds === 0) return found;
+      return new Promise((done) => setTimeout(done, lookups.delayMilliseconds)).then(() => found);
     },
   };
 });
@@ -22,6 +29,7 @@ afterEach(() => {
   closers.splice(0).forEach((close) => close());
   lookups.answer = null;
   lookups.asked = 0;
+  lookups.delayMilliseconds = 0;
 });
 const never = new AbortController().signal;
 const listening = (server: Server) =>
@@ -45,6 +53,7 @@ const webServer = async (status: number, headers: Record<string, string> = {}) =
 const bodyWith = (target: ProbeTarget, change: Partial<ProbeBody> = {}): ProbeBody => ({
   name: "Wiki",
   scope: PROBE_SCOPE.thisMachine,
+  vantage: null,
   intervalSeconds: 60,
   timeoutSeconds: 1,
   failuresBeforeDown: 3,
@@ -193,6 +202,43 @@ describe("one check of a local service", () => {
     const port = await dnsServer([192, 168, 10, 9]);
     const asked = await runCheck(bodyWith(lookupOf(port), { scope: PROBE_SCOPE.internet }), never);
     expect(asked.problem).toBe(PROBE_TEXT.refused);
+  });
+
+  it("opens nothing once its time is up, even if the name only resolves afterwards", async () => {
+    // A peer that answers the connect and never speaks TLS, so only the check's own time can end this.
+    const reached: unknown[] = [];
+    const stalled = createTcpServer((socket) => reached.push(socket));
+    await new Promise<void>((done) => stalled.listen(0, "127.0.0.1", done));
+    closers.push(() => stalled.close());
+    const stalledPort = (stalled.address() as AddressInfo).port;
+    lookups.answer = [{ address: "127.0.0.1", family: 4 }];
+    lookups.delayMilliseconds = 1200;
+
+    const asked = await runCheck(
+      bodyWith({ kind: "tls", host: "wiki.home.test", port: stalledPort, serverName: null, warnDays: 14, caPem: null }),
+      never,
+    );
+
+    expect(asked.ok).toBe(false);
+    expect(asked.problem).toBe(PROBE_TEXT.timedOut(1));
+    // The name came back after the check was over: nothing was opened on the strength of it.
+    expect(reached).toEqual([]);
+  });
+
+  it("answers at once when it was told to stop before it began, rather than waiting out its time", async () => {
+    // A name server that never answers, and a long time to wait: only being already stopped can end this quickly.
+    const silent = createSocket("udp4");
+    await new Promise<void>((done) => silent.bind(0, "127.0.0.1", done));
+    closers.push(() => silent.close());
+    const body = bodyWith(lookupOf(silent.address().port), { timeoutSeconds: 30 });
+    const startedAt = Date.now();
+
+    const asked = await runCheck(body, AbortSignal.abort());
+
+    expect(asked.ok).toBe(false);
+    expect(asked.problem).toBe(PROBE_TEXT.timedOut(30));
+    // Without this it waits on the resolver for the whole 30 seconds.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
   it("stops at once when told to", async () => {

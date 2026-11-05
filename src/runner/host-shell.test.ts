@@ -16,7 +16,7 @@ describe("a shell on the runner's own host, through a helper", () => {
   afterEach(() => engine.close());
 
   it("runs nsenter as root in a privileged helper of the runner's image in the host's processes, then removes it", async () => {
-    const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "autoheal");
+    const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "autoheal", null);
     const shell = await open(100, 40);
     const [created] = engine.creations;
     expect(created!.name.startsWith(HOST_TERMINAL_HELPER.containerPrefix)).toBe(true);
@@ -26,7 +26,7 @@ describe("a shell on the runner's own host, through a helper", () => {
       HostConfig: { Privileged: true, PidMode: "host", NetworkMode: "none", AutoRemove: true },
     });
     const [exec] = [...engine.execs.values()];
-    expect(exec).toMatchObject({ container: created!.name, command: [...HOST_TERMINAL_HELPER.shell], tty: true });
+    expect(exec).toMatchObject({ container: created!.name, command: HOST_TERMINAL_HELPER.shell(null), tty: true });
     expect(engine.removals).toEqual([]);
 
     const ended = new Promise((resolve) => shell.socket.once("end", resolve));
@@ -37,8 +37,19 @@ describe("a shell on the runner's own host, through a helper", () => {
     await expect.poll(() => engine.removals.some((removal) => removal.startsWith(created!.name))).toBe(true);
   });
 
+  it("logs in as the user the host's .env names, in their home", async () => {
+    const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "autoheal", "alex");
+    const shell = await open(100, 40);
+    const [exec] = [...engine.execs.values()];
+    expect(exec!.command.slice(-3)).toEqual(["su", "-l", "alex"]);
+    const ended = new Promise((resolve) => shell.socket.once("end", resolve));
+    shell.socket.resume();
+    shell.socket.write("exit\r");
+    await ended;
+  });
+
   it("leaves no helper behind when its shell cannot be opened", async () => {
-    const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "not-there");
+    const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "not-there", null);
     await expect(open(100, 40)).rejects.toThrow(/cannot find its own container/);
     expect(engine.creations).toEqual([]);
   });

@@ -86,7 +86,8 @@ function setup(
             : { [COMPOSE_DEPENDS_ON_LABEL]: `${one.dependsOn}:service_started:false` }),
         },
       },
-      State: { Running: running.get(name) === true },
+      // Docker always says which it is; without it a wait for one that is down has nothing to stop it.
+      State: { Running: running.get(name) === true, Status: running.get(name) === true ? "running" : "exited" },
       HostConfig: { RestartPolicy: { Name: policies.get(name), MaximumRetryCount: 0 } },
       Mounts: (one.mounts ?? []).map((mount) => ({
         Type: mount.type,
@@ -1473,8 +1474,13 @@ describe("a stack's Compose files", () => {
     containers: [],
   };
 
-  const withStacks = (currentText: string, saveError: string | null = null) => {
-    const context = setup({ web: WEB }, { answers: readable(manifestWithSettings()) });
+  const withStacks = (
+    currentText: string,
+    saveError: string | null = null,
+    fleet: Record<string, FakeContainer> = { web: WEB },
+    backup: BackupManifest = manifestWithSettings(),
+  ) => {
+    const context = setup(fleet, { answers: readable(backup) });
     const answer = vi.fn(async ({ kind }: { kind: string }) =>
       kind === "save"
         ? { error: saveError }
@@ -1488,7 +1494,12 @@ describe("a stack's Compose files", () => {
             },
           },
     );
-    const run = vi.fn(async () => ({ succeeded: true, outcome: "", output: null }));
+    // Compose really brings its project's containers up; the stub does the same, or nothing runs after it.
+    const run = vi.fn(async () => {
+      context.events.push("stack up");
+      for (const name of Object.keys(fleet)) await context.docker.start(name);
+      return { succeeded: true, outcome: "", output: null };
+    });
     const backups = context.backups as unknown as {
       dependencies: { stacks: unknown; docker: Record<string, unknown> };
     };
@@ -1512,6 +1523,154 @@ describe("a stack's Compose files", () => {
   });
   const target = { container: "web", stack: null };
 
+  // A second service of the same stack, with its own data: nothing of this restore belongs to it.
+  const SIBLING: FakeContainer = {
+    project: PROJECT,
+    service: "api",
+    mounts: [{ type: "bind", source: "/srv/api", target: "/config" }],
+  };
+
+  describe("when the restore is of one service and the stack has others", () => {
+    it("leaves the files alone, brings nothing up, and says which service kept it from happening", async () => {
+      const { context, answer, run } = withStacks("image: wiki:2", null, { web: WEB, api: SIBLING });
+
+      const { succeeded, outcome } = await restore(context, { target });
+
+      expect(succeeded).toBe(true);
+      // Its own data came back; the stack's shared files did not move, and nothing was brought up from them.
+      expect(answer).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "save" }));
+      expect(run).not.toHaveBeenCalled();
+      expect(outcome).toContain(BACKUP_TEXT.settingsWiderThanRestore(PROJECT, "api"));
+      // The sibling was never touched: not stopped, not started, left running as it was.
+      expect(context.events).not.toContain("stop api");
+      expect(context.events).not.toContain("start api");
+      expect(context.running.get("api")).toBe(true);
+    });
+
+    it("names every other service of the stack, not only the first", async () => {
+      const worker: FakeContainer = { ...SIBLING, service: "worker", mounts: [] };
+      const made = withStacks("image: wiki:2", null, { web: WEB, api: SIBLING, worker });
+
+      const { outcome } = await restore(made.context, { target });
+
+      expect(outcome).toContain(BACKUP_TEXT.settingsWiderThanRestore(PROJECT, "api, worker"));
+      expect(made.context.events).not.toContain("stop worker");
+    });
+
+    it("still puts them back when the restore covers the whole stack", async () => {
+      // A backup of the stack itself: both services are in it, so putting the files back covers both.
+      const both = manifest({ name: "web", image: "wiki:1" });
+      const wholeStack = {
+        ...both,
+        hasSettings: true,
+        target: { container: null, stack: PROJECT },
+        members: [both.members[0]!, { ...both.members[0]!, name: "api", image: "api:1", mounts: [], dump: null }],
+      };
+      const { context, answer, run } = withStacks("image: wiki:2", null, { web: WEB, api: SIBLING }, wholeStack);
+
+      const { outcome } = await restore(context, { target: { container: null, stack: PROJECT } });
+
+      expect(answer).toHaveBeenCalledWith(expect.objectContaining({ kind: "save" }));
+      expect(run).toHaveBeenCalledWith(JOB_ACTION.stackUp, { project: PROJECT, removeData: false });
+      expect(outcome).not.toContain("restore the whole stack");
+    });
+
+    it("refuses the files when the backup itself has no copy of a service the stack now runs", async () => {
+      // A backup of the stack from before api joined it. Putting the files back would recreate api from them.
+      const onlyWeb = {
+        ...manifest({ name: "web", image: "wiki:1" }),
+        hasSettings: true,
+        target: { container: null, stack: PROJECT },
+      };
+      const made = withStacks("image: wiki:2", null, { web: WEB, api: SIBLING }, onlyWeb);
+
+      const { outcome } = await restore(made.context, { target: { container: null, stack: PROJECT } });
+
+      expect(made.answer).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "save" }));
+      expect(outcome).toContain(BACKUP_TEXT.settingsWiderThanRestore(PROJECT, "api"));
+    });
+
+    it("leaves them alone for a sibling sharing this one's data, which the job holds but nobody asked about", async () => {
+      const neighbour: FakeContainer = { project: PROJECT, service: "api", mounts: [FOLDER] };
+      const { context, answer, run } = withStacks("image: wiki:2", null, { web: WEB, api: neighbour });
+
+      const { outcome } = await restore(context, { target });
+
+      expect(answer).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "save" }));
+      expect(run).not.toHaveBeenCalled();
+      expect(outcome).toContain(BACKUP_TEXT.settingsWiderThanRestore(PROJECT, "api"));
+    });
+  });
+
+  describe("what starts on the data that just came back", () => {
+    const order = (context: ReturnType<typeof setup>) =>
+      context.events.filter((event) => /^(start|stop) |^stack up$/.test(event));
+
+    it("comes up from the backup's own Compose, never from the image it was running", async () => {
+      const { context } = withStacks("image: wiki:2");
+
+      const { succeeded } = await restore(context, { target });
+
+      expect(succeeded).toBe(true);
+      // Stopped, then brought up by Compose from the files this data belongs with. Nothing started in between:
+      // a start here would be the newer image writing to older data.
+      expect(order(context)).toEqual(["stop web", "stack up", "start web"]);
+    });
+
+    it("starts it as it was when the files did not change, so there is nothing newer to wait for", async () => {
+      const { context, run } = withStacks("image: wiki:1");
+
+      await restore(context, { target });
+
+      expect(run).not.toHaveBeenCalled();
+      expect(order(context)).toEqual(["stop web", "start web"]);
+    });
+
+    it("leaves it stopped and says it is not back when Compose could not bring it up", async () => {
+      const { context, run } = withStacks("image: wiki:2");
+      run.mockImplementation(async () => {
+        context.events.push("stack up");
+        return { succeeded: false, outcome: "no such image wiki:1", output: null };
+      });
+
+      const { succeeded, outcome } = await restore(context, { target });
+
+      // Not started on its current image to paper over it: left as it is, with the safety copy still there.
+      expect(order(context)).toEqual(["stop web", "stack up"]);
+      expect(context.running.get("web")).toBe(false);
+      expect(succeeded).toBe(false);
+      expect(outcome).toContain(BACKUP_TEXT.restoredNotUp("web"));
+    });
+
+    it("says a container of no stack keeps the settings and image it runs now", async () => {
+      const standalone = {
+        ...manifest({ name: "app", image: "app:1" }),
+        hasSettings: true,
+        target: { container: "app", stack: null },
+      };
+      const context = setup({ app: APP }, { answers: readable(standalone) });
+      const backups = context.backups as unknown as {
+        dependencies: { stacks: unknown; docker: Record<string, unknown> };
+      };
+      backups.dependencies.stacks = { answer: vi.fn(), run: vi.fn() };
+      const original = backups.dependencies.docker.streamCommand as (...args: unknown[]) => Promise<unknown>;
+      backups.dependencies.docker.streamCommand = async (
+        reference: string,
+        command: readonly string[],
+        options: { input?: Readable; output: Writable },
+      ) => {
+        if (command[4] !== COPY_COMMAND.reveal) return original(reference, command, options);
+        options.output.end(Buffer.from(JSON.stringify({ projects: [], files: [], containers: [{ name: "app" }] })));
+        return { exitCode: 0, stderr: "" };
+      };
+
+      const { succeeded, outcome } = await restore(context, { target: { container: "app", stack: null } });
+
+      expect(succeeded).toBe(true);
+      expect(outcome).toContain(BACKUP_TEXT.ownSettingsNotRestored("app"));
+    });
+  });
+
   it("are put back only when they differ, and it comes up from them", async () => {
     const { context, answer, run } = withStacks("image: wiki:2");
     const { succeeded } = await restore(context, { target });
@@ -1529,11 +1688,85 @@ describe("a stack's Compose files", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("say so if they could not be, though the data is back", async () => {
+  it("say so if they could not be, and the restore does not pass for having the data back", async () => {
     const { context } = withStacks("image: wiki:2", "the host keeps these to itself");
+
     const { succeeded, outcome } = await restore(context, { target });
-    expect(succeeded).toBe(true);
+
+    // The data really is back, and the outcome says so; what was asked for is not all there, so it is not finished.
     expect(outcome).toContain("left as they are");
+    expect(outcome).toContain("did not finish");
+    expect(succeeded).toBe(false);
+  });
+
+  describe("a part of the restore that was asked for and did not happen", () => {
+    // Compose answers that it failed without throwing, and leaves the container running all the same.
+    const composeRefuses = (made: ReturnType<typeof withStacks>) =>
+      made.run.mockImplementation(async () => {
+        made.context.events.push("stack up");
+        await made.context.docker.start("web");
+        return { succeeded: false, outcome: "no such image wiki:1", output: null };
+      });
+
+    it("fails the restore and says which stack and why, though its container runs", async () => {
+      const made = withStacks("image: wiki:2");
+      composeRefuses(made);
+
+      const { succeeded, outcome } = await restore(made.context, { target });
+
+      expect(made.context.running.get("web")).toBe(true);
+      expect(succeeded).toBe(false);
+      expect(outcome).toContain(BACKUP_TEXT.stackNotUp(PROJECT, "no such image wiki:1"));
+    });
+
+    it("stays on record and leaves its containers alone, so a restart still finds it", async () => {
+      const made = withStacks("image: wiki:2");
+      composeRefuses(made);
+      await restore(made.context, { target });
+
+      expect(made.context.backups.isBlocked("web")).toBe(true);
+      // What a runner coming up again reads: the record is still there, and marked as unfinished.
+      const kept = [...made.context.volumes.entries()].filter(([name]) =>
+        name.startsWith(CONTAINER_BACKUP.journalPrefix),
+      );
+      expect(kept).toHaveLength(1);
+      const record = JSON.parse(kept[0]![1][CONTAINER_BACKUP.journalRecord]!) as { phase: string };
+      expect(record.phase).toBe("incomplete");
+    });
+
+    it("is cleared by a restore that does finish, which closes the record and lets go of them", async () => {
+      const made = withStacks("image: wiki:2");
+      composeRefuses(made);
+      await restore(made.context, { target });
+      expect(made.context.backups.isBlocked("web")).toBe(true);
+
+      made.run.mockImplementation(async () => {
+        made.context.events.push("stack up");
+        await made.context.docker.start("web");
+        return { succeeded: true, outcome: "", output: null };
+      });
+      const { succeeded } = await restore(made.context, { target });
+
+      expect(succeeded).toBe(true);
+      expect(made.context.backups.isBlocked("web")).toBe(false);
+      expect(
+        [...made.context.volumes.keys()].filter((name) => name.startsWith(CONTAINER_BACKUP.journalPrefix)),
+      ).toEqual([]);
+    });
+
+    it("keeps the record when a member did not come back, even with every phase answered", async () => {
+      const made = withStacks("image: wiki:2");
+      made.run.mockImplementation(async () => {
+        made.context.events.push("stack up");
+        return { succeeded: true, outcome: "", output: null };
+      });
+
+      const { succeeded, outcome } = await restore(made.context, { target });
+
+      expect(succeeded).toBe(false);
+      expect(outcome).toContain(BACKUP_TEXT.restoredNotUp("web"));
+      expect(made.context.backups.isBlocked("web")).toBe(true);
+    });
   });
 });
 

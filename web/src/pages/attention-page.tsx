@@ -34,6 +34,7 @@ import {
   PERCENT,
   RESTART_CHOICE,
   TASK_LABEL,
+  HOST_SECTIONS,
   TASK_RESOURCE,
   TASK_STATUS,
   UPDATE_ASSESSMENT,
@@ -60,6 +61,7 @@ import {
 } from "../agent-dispatch.js";
 import { FLEET_STATE, answeringFor, fleetOf, serversFor, type Fleet, type FleetState } from "../ollama-fleet.js";
 import { api } from "../api-client.js";
+import { hostLink, hostSectionLink, taskPlaceLink } from "../host-links.js";
 import { SnoozeChoices } from "../components/snooze-choices.js";
 import { isIncident, isTask, isUpdateTask, whatNeedsYou } from "../board.js";
 import { Bar, ErrorNotice, Loading, PageHeader, TimeAgo } from "../components/common.js";
@@ -87,8 +89,6 @@ import { runLine, stateIn, useUpdateRun } from "../update-runs.js";
 import { healingPaused, hostStateText } from "./fleet-page.js";
 import { ReleaseNotes, homeAssistantProblems } from "./home-assistant-system.js";
 import { diskUsedPercent, fullestDisk } from "./host-stats.js";
-
-const hostLink = (hostId: string) => apiPath(PATHS.host, { hostId });
 
 // How full the host's fullest disk is; 0 before its first report.
 function fullestPercent(host: HostView): number {
@@ -575,7 +575,7 @@ function FixCard({
       )}
       <div className="card-actions">
         {task.hostId !== null && task.hostLabel !== null ? (
-          <Link className="button" to={hostLink(task.hostId)}>
+          <Link className="button" to={taskPlaceLink(task) ?? hostLink(task.hostId)}>
             {TEXT.attention.open(task.hostLabel)}
           </Link>
         ) : (
@@ -695,6 +695,9 @@ function PackageRows({
         {automatic && window !== undefined && (
           <span className="small muted">{TEXT.attention.goesInTonight(window.windowStart, window.windowEnd)}</span>
         )}
+        <Link className="small update-review" to={hostSectionLink(host.id, HOST_SECTIONS.updates)}>
+          {TEXT.attention.review}
+        </Link>
       </HandableRow>
     );
   });
@@ -763,7 +766,9 @@ function UpdateGroup({
           {TEXT.attention.waiting(count)}
         </span>
         {open ? (
-          <Link to={hostLink(group.host.id)}>{TEXT.attention.reviewOn(group.host.label)}</Link>
+          <Link to={hostSectionLink(group.host.id, HOST_SECTIONS.updates)}>
+            {TEXT.attention.reviewOn(group.host.label)}
+          </Link>
         ) : (
           <span className="accent">{TEXT.attention.review}</span>
         )}
@@ -795,6 +800,9 @@ function UpdateGroup({
               </span>
               <MaintenanceBadge hostId={group.host.id} containerName={name ?? undefined} />
               <AdviceBadge advice={task.advice} />
+              <Link className="small update-review" to={taskPlaceLink(task) ?? hostLink(group.host.id)}>
+                {TEXT.attention.review}
+              </Link>
             </HandableRow>
           );
         })}
@@ -804,7 +812,6 @@ function UpdateGroup({
       </ul>
       {admin && runnable.length > 0 && (
         <div className="update-group-foot">
-          <p className="notice warning small">{TEXT.actions.checkpointWarning}</p>
           <button
             type="button"
             className="primary"

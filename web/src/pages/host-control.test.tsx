@@ -738,7 +738,7 @@ describe("a host's containers and what each does", () => {
     show(<HostContainers host={alder(false)} admin />);
 
     const bar = await screen.findByRole("group", { name: "Act on the ticked containers" });
-    expect(screen.queryByText(TEXT.actions.checkpointWarning)).toBeNull();
+    expect(screen.queryByText(/Choosing Update allows/)).toBeNull();
     const hint = "Tick containers to restart, stop, update or remove several at once.";
     expect(within(bar).getByText(hint)).toBeTruthy();
     // What its host keeps to itself has no tick.

@@ -38,6 +38,8 @@ export function sshRunnerConfig(
     containerAccess: settings.containerAccess,
     // ponytail: always on over SSH, the shell being the SSH user's own; a setting on its page if one is ever wanted.
     hostTerminal: true,
+    // Over SSH the shell is the SSH user's own login shell.
+    hostTerminalUser: null,
     // ponytail: always on over SSH, the install being the SSH user's own doing; a setting when someone needs it off.
     hostDeploy: true,
     checkpointLimitBytes: settings.checkpointLimitGigabytes * BYTES_PER_GIGABYTE,

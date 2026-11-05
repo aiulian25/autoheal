@@ -64,6 +64,8 @@ function stacksWith(
     wantedServices?: object | null;
     // Runs as each script arrives, for what must happen while another is under way.
     duringScript?: (script: string) => Promise<void>;
+    // What the deployment script itself answers: a refusal, or a timeout, which has no exit code.
+    deployment?: { exitCode: number | null; output: string };
   } = {},
 ) {
   const scripts: string[] = [];
@@ -71,6 +73,7 @@ function stacksWith(
   const hostScript = vi.fn(async (script: string) => {
     scripts.push(script);
     await overrides.duringScript?.(script);
+    if (overrides.deployment !== undefined && / up -d/.test(script)) return overrides.deployment;
     const mark = MARK.exec(script)?.[1];
     if (mark !== undefined) {
       const paths = [...script.matchAll(/if \[ -f '([^']+)' \]/g)].map((match) => match[1]!);
@@ -273,6 +276,121 @@ describe("a stack's files", () => {
 });
 
 describe("a stack as one thing", () => {
+  describe("while a deployment of it is running", () => {
+    // What happens on the host while the Compose script of `project` is still pending.
+    const during = (meanwhile: (host: ReturnType<typeof stacksWith>) => Promise<unknown>) => {
+      let done = false;
+      const host: ReturnType<typeof stacksWith> = stacksWith({
+        duringScript: async (script) => {
+          if (done || !/ up -d| down| stop| start/.test(script)) return;
+          done = true;
+          await meanwhile(host);
+        },
+      });
+      return host;
+    };
+
+    it("refuses a save of the same stack's files, and writes none of them", async () => {
+      let saved: StackAnswer | undefined;
+      const host = during(async (running) => {
+        const hash = await hashOf(running.ask, COMPOSE);
+        saved = await running.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] });
+      });
+
+      const ran = await host.stacks.run("stack_up", { project: "wiki", removeData: false });
+
+      expect(ran.succeeded).toBe(true);
+      expect(saved!.error).toBe(STACK_OUTCOMES.beingChanged("wiki"));
+      // Nothing of that save reached the files Compose was reading.
+      expect(host.scripts.some((script) => /mv |cp -p/.test(script))).toBe(false);
+    });
+
+    it.each(["stack_up", "stack_rebuild", "stack_stop", "stack_start", "stack_remove"])(
+      "refuses a save through %s too, and gives the stack up again once it ends",
+      async (action) => {
+        let saved: StackAnswer | undefined;
+        const host = during(async (running) => {
+          const hash = await hashOf(running.ask, COMPOSE);
+          saved = await running.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] });
+        });
+
+        await host.stacks.run(action, { project: "wiki", removeData: false });
+
+        expect(saved!.error).toBe(STACK_OUTCOMES.beingChanged("wiki"));
+        // Once it is over the stack is its own again: the next save goes through.
+        const hash = await hashOf(host.ask, COMPOSE);
+        expect(
+          (await host.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] })).error,
+        ).toBeNull();
+      },
+    );
+
+    it("refuses restoring the previous files, and a settings write that would edit them", async () => {
+      let restored: StackAnswer | undefined;
+      const host = during(async (running) => {
+        restored = await running.ask({ kind: "restore" });
+      });
+
+      await host.stacks.run("stack_up", { project: "wiki", removeData: false });
+
+      expect(restored!.error).toBe(STACK_OUTCOMES.beingChanged("wiki"));
+    });
+
+    it("refuses a second deployment of the same stack while the first is still going", async () => {
+      let second: { succeeded: boolean; outcome: string } | undefined;
+      const host = during(async (running) => {
+        second = await running.stacks.run("stack_stop", { project: "wiki", removeData: false });
+      });
+
+      const first = await host.stacks.run("stack_up", { project: "wiki", removeData: false });
+
+      expect(first.succeeded).toBe(true);
+      expect(second).toMatchObject({ succeeded: false, outcome: STACK_OUTCOMES.beingChanged("wiki") });
+    });
+
+    it.each([
+      ["failed", { exitCode: 1, output: "boom" }],
+      ["timed out, so has no exit code of its own", { exitCode: null, output: "" }],
+    ])("gives the stack up again when the deployment %s", async (_case, deployment) => {
+      const host = stacksWith({ deployment });
+      const hash = await hashOf(host.ask, COMPOSE);
+
+      expect(await host.stacks.run("stack_up", { project: "wiki", removeData: false })).toMatchObject({
+        succeeded: false,
+      });
+
+      // Not left held: the editor saves again rather than being locked out until the runner restarts.
+      expect(
+        (await host.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] })).error,
+      ).toBeNull();
+    });
+
+    it("leaves another project on the same host free to deploy while this one is held", async () => {
+      const otherLabels = { ...member("Other", "other", HASH_A).Labels, "com.docker.compose.project": "other" };
+      const elsewhere: ContainerSummary = { ...member("Other", "other", HASH_A), Labels: otherLabels };
+      let alongside: { succeeded: boolean; outcome: string } | undefined;
+      let ownSave: StackAnswer | undefined;
+      const host: ReturnType<typeof stacksWith> = stacksWith({
+        membersBefore: [member("Wiki", "wiki", HASH_A), elsewhere],
+        duringScript: async (script) => {
+          if (alongside !== undefined || !/ up -d/.test(script)) return;
+          alongside = { succeeded: false, outcome: "not asked yet" };
+          alongside = await host.stacks.run("stack_stop", { project: "other", removeData: false });
+          // This stack's own save is still refused meanwhile, so the two are not one lock.
+          const hash = await hashOf(host.ask, COMPOSE);
+          ownSave = await host.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] });
+        },
+      });
+
+      expect(await host.stacks.run("stack_up", { project: "wiki", removeData: false })).toMatchObject({
+        succeeded: true,
+      });
+      // Admitted and carried out, not turned away: the other project's lock is its own.
+      expect(alongside).toMatchObject({ succeeded: true, outcome: STACK_OUTCOMES.stopped("other") });
+      expect(ownSave!.error).toBe(STACK_OUTCOMES.beingChanged("wiki"));
+    });
+  });
+
   it("recreates with the host's own Compose, from the stack's own folder and files", async () => {
     const { stacks, scripts } = stacksWith();
 

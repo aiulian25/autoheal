@@ -53,7 +53,7 @@ import { hostPackageChecks, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
-import { jobViews } from "../jobs/job-views.js";
+import { jobViews, packagesOf } from "../jobs/job-views.js";
 import type { JobsService } from "../jobs/jobs-service.js";
 import type { SettingsStore } from "../settings/settings-store.js";
 import type { TaskAuthor, TasksService } from "../tasks/tasks-service.js";
@@ -145,6 +145,8 @@ export class HostPackagesService {
     }
     if (result.packages !== undefined) {
       this.recordCheck(host.id, jobId, result.packages);
+    } else if (result.succeeded) {
+      this.forgetDone(host.id, job.action, packagesOf(job.packagesJson));
     }
     const autohealsNightly =
       job.action === JOB_ACTION.upgradePackages && job.requestedByAgent === AGENT_AUTOHEAL && job.taskId === null;
@@ -155,6 +157,29 @@ export class HostPackagesService {
     if (isChangingPackageAction(job.action) && result.succeeded && this.openJob(host.id) === null) {
       this.dependencies.jobs.request(AUTOHEAL, host.id, "", JOB_ACTION.checkPackages, null);
     }
+  }
+
+  /**
+   * What a job just did leaves the last check at once, so the lists clear as it ends rather than with the check
+   * asked for after it; that check, a minute on, has the last word on the rest.
+   */
+  private forgetDone(hostId: string, action: string, upgraded: readonly string[]) {
+    const latest = this.latestCheck(hostId);
+    if (latest === null) return;
+    const done = new Set(upgraded);
+    const notDone = (update: { name: string }) => !done.has(update.name);
+    const check: PackageCheck = {
+      ...latest.check,
+      upgradable: latest.check.upgradable.filter(notDone),
+      keptBack: latest.check.keptBack.filter(notDone),
+    };
+    if (action === JOB_ACTION.autoremovePackages) check.removable = [];
+    if (action === JOB_ACTION.repairPackages) check.needsRepair = false;
+    this.database
+      .update(hostPackageChecks)
+      .set({ checkJson: JSON.stringify(check) })
+      .where(eq(hostPackageChecks.hostId, hostId))
+      .run();
   }
 
   private recordCheck(hostId: string, jobId: string, check: PackageCheck) {

@@ -580,11 +580,25 @@ describe("handing work to the Ollama agent", () => {
       },
     );
     renderAttention("admin");
-    const folded = (await screen.findByText("Review")).closest("details")!;
+    // The folded group's summary says Review; each row's own link says it too.
+    const folded = (await screen.findByText("Review", { selector: "summary span" })).closest("details")!;
     expect(folded.open).toBe(false);
 
     fireEvent.click(await screen.findByRole("button", { name: "Select all (4)" }));
     await waitFor(() => expect(folded.open).toBe(true));
+  });
+
+  it("leads each update to its own place on the host: a container's row, the host's updates", async () => {
+    serve("admin", needsYou);
+    renderAttention("admin");
+    const row = (await screen.findAllByText("quantum")).map((found) => found.closest("li")).find(Boolean)!;
+    expect(within(row).getByRole("link", { name: "Review" }).getAttribute("href")).toBe("/hosts/h1?container=quantum");
+    const group = row.closest("details")!;
+    expect(
+      within(group)
+        .getByRole("link", { name: /^Review on / })
+        .getAttribute("href"),
+    ).toMatch(/#updates$/);
   });
 
   it("hands an escalated incident over from its card, and offers a viewer none of it", async () => {

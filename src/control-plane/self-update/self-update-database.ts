@@ -14,6 +14,8 @@ export interface DatabaseSnapshot {
 
 export interface SelfUpdateDatabase {
   snapshot(): Promise<DatabaseSnapshot>;
+  // Whether restoreIfNeeded would put the copy back: asked before it does, so the fence is written first.
+  needsRestore(snapshot: DatabaseSnapshot): boolean;
   restoreIfNeeded(snapshot: DatabaseSnapshot): boolean;
   discard(snapshot: DatabaseSnapshot): void;
 }
@@ -62,12 +64,17 @@ export class SelfUpdateDatabaseFiles implements SelfUpdateDatabase {
     return { path: this.kept, schemaVersion };
   }
 
+  /** A sound file on the same schema is kept, with what was written since: only a migrated or damaged one goes back. */
+  needsRestore(snapshot: DatabaseSnapshot): boolean {
+    return soundVersion(this.database) !== snapshot.schemaVersion;
+  }
+
   /**
-   * Whether it had to go back. A sound file on the same schema is kept, with what was written since: only a migrated
-   * or damaged one costs those changes. Side files go before the move: a stale journal must never meet the old file.
+   * Whether it had to go back; only a migrated or damaged file costs the changes written since the copy.
+   * Side files go before the move: a stale journal must never meet the old file.
    */
   restoreIfNeeded(snapshot: DatabaseSnapshot): boolean {
-    if (soundVersion(this.database) === snapshot.schemaVersion) return false;
+    if (!this.needsRestore(snapshot)) return false;
     const next = `${this.database}${BEING_WRITTEN}`;
     copyFileSync(snapshot.path, next);
     chmodSync(next, OWNER_ONLY);

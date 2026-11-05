@@ -170,6 +170,43 @@ describe("persistent runner safety state", () => {
       await expect(f.reload()).rejects.toThrow("safety state");
     }
   });
+  it("keeps acting when an old snapshot is in use for a moment, and removes it at the next save", async () => {
+    const f = await initialized();
+    f.guard.takeRestart("app");
+    await f.guard.persisted();
+    const remove = f.store.removeVolume;
+    f.store.removeVolume = async () => {
+      throw new Error("volume is in use");
+    };
+    f.guard.takeRestart("app");
+    await f.guard.persisted();
+    expect(f.volumes.size).toBe(2);
+    expect(f.guard.stateBlocked()).toBe(false);
+
+    f.store.removeVolume = remove;
+    f.guard.noteKill("other");
+    await f.guard.persisted();
+    expect(f.volumes.size).toBe(1);
+    expect((await f.reload()).restartsUsed()).toEqual({ app: 2 });
+  });
+  it("stops recovery once old snapshots keep piling up", async () => {
+    const f = await initialized();
+    const remove = f.store.removeVolume;
+    f.store.removeVolume = async () => {
+      throw new Error("volume is in use");
+    };
+    for (let save = 0; save < 40 && !f.guard.stateBlocked(); save += 1) {
+      f.guard.noteKill(`app-${save}`);
+      await f.guard.persisted().catch(() => undefined);
+    }
+    expect(f.guard.stateBlocked()).toBe(true);
+    expect(f.volumes.size).toBeLessThanOrEqual(32);
+    // Whatever held them gone, a restart reads every snapshot left and clears the old ones.
+    f.store.removeVolume = remove;
+    f.restart();
+    expect((await f.reload()).stateBlocked()).toBe(false);
+    expect(f.volumes.size).toBe(1);
+  });
   it("does not discard the previous snapshot or permit recovery on an unverified write", async () => {
     const f = await initialized();
     f.store.createVolume = async () => {};

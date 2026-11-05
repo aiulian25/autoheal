@@ -187,10 +187,18 @@ describe("application backups on a host reached over SSH", () => {
       protectedContainers: new Set(),
       dryRun: () => false,
       client: f.client,
-      helperImage: imageOnHost({ inspectImage: async () => (found === null ? null : { Id: found }) }, REFERENCE),
+      helperImage: imageOnHost(
+        {
+          inspectImage: async () => (found === null ? null : { Id: found }),
+          pull: async () => {
+            throw new Error("pull access denied");
+          },
+        },
+        REFERENCE,
+      ),
     });
 
-  it("without Autoheal's image there, refuses before recording or stopping anything, saying how to load it", async () => {
+  it("without Autoheal's image there and no way to pull it, refuses before recording or stopping anything, saying why", async () => {
     const f = setup(),
       runtime = onHost(f, null);
     await runtime.initialize();
@@ -200,7 +208,7 @@ describe("application backups on a host reached over SSH", () => {
     expect([...f.volumes.keys()]).toEqual(volumes);
     expect(f.results[0]).toMatchObject({
       ok: false,
-      message: APPLICATION_HELPER_ERRORS.imageMissing(REFERENCE),
+      message: APPLICATION_HELPER_ERRORS.imageMissing(REFERENCE, "pull access denied"),
       stopped: [],
     });
     expect(runtime.isBlocked("a")).toBe(false);
@@ -507,5 +515,27 @@ describe("application writer orchestration", () => {
       await app.run(fixture.task);
       expect(fixture.results.at(-1)).toMatchObject({ ok: true, imageId: IMAGE });
     });
+  });
+});
+
+describe("Autoheal's image on a host reached over SSH", () => {
+  const REFERENCE = "ghcr.io/example/autoheal:1";
+  it("is pulled the first time a helper needs it, once for helpers asking together", async () => {
+    let present: string | null = null;
+    const pulls: string[] = [];
+    const image = imageOnHost(
+      {
+        inspectImage: async () => (present === null ? null : { Id: present }),
+        pull: async (reference: string) => {
+          pulls.push(reference);
+          await Promise.resolve();
+          present = "sha256:pulled";
+        },
+      },
+      REFERENCE,
+    );
+    expect(await Promise.all([image(), image()])).toEqual(["sha256:pulled", "sha256:pulled"]);
+    expect(await image()).toBe("sha256:pulled");
+    expect(pulls).toEqual([REFERENCE]);
   });
 });

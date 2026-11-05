@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { ProbeReport, RemoteProbe } from "../../shared/protocol.js";
 import { and, asc, count, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { API_ERRORS } from "../../shared/api.js";
 import { DETECTOR_KEYS, HOST_STATUS_ACTIVE } from "../../shared/constants.js";
@@ -71,7 +72,28 @@ interface ProbeDependencies {
   maintenance: Pick<MaintenanceService, "view">;
   clock: () => number;
   check?: typeof runCheck;
+  // What each host's runner can do and when it last reported: a check made from a host needs both.
+  vantages?: Vantages;
 }
+
+/** What the fleet can tell about a host that is to make its own checks. */
+export interface Vantages {
+  canCheck(hostId: string): boolean;
+  lastReportAt(hostId: string): number | null;
+  labelOf(hostId: string): string | null;
+}
+
+/** A check handed to a host, and when: the deadline its runner has to answer within. */
+interface HandedOut {
+  generation: string;
+  at: number;
+}
+
+/**
+ * Which version of a check was handed out, from the check itself: a changed body is a changed question, so a result
+ * for the old one is not an answer to the new one.
+ */
+const generationOf = (bodyJson: string) => createHash("sha256").update(bodyJson).digest("base64url").slice(0, 16);
 
 /**
  * Checks made from Autoheal itself, by HTTP, TCP or DNS, and what they saw. A sustained change opens or closes a task
@@ -79,6 +101,8 @@ interface ProbeDependencies {
  */
 export class ProbeService {
   private readonly inFlight = new Set<string>();
+  // The checks handed to a host's runner and not yet answered.
+  private readonly waiting = new Map<string, HandedOut>();
   private stopping = new AbortController();
 
   constructor(private readonly dependencies: ProbeDependencies) {}
@@ -102,24 +126,33 @@ export class ProbeService {
   }
 
   async create(hostId: string, body: ProbeBody) {
+    // Said early, so a request that was never going to be taken hears why before the name is looked up.
     this.activeHost(hostId);
     this.checkFull(hostId);
+    // Looking the destination up is not the database's to wait on, so it happens outside what follows.
     if (!(await destinationAllowed(body))) throw new DomainError(API_ERRORS.probeDestinationRefused);
     const now = this.dependencies.clock();
     const id = randomUUID();
-    this.database
-      .insert(serviceProbes)
-      .values({
-        id,
-        hostId,
-        bodyJson: JSON.stringify(body),
-        state: PROBE_STATE.unknown,
-        stateSince: now,
-        failures: 0,
-        answers: 0,
-        createdAt: now,
-      })
-      .run();
+    // What was true before that wait is asked again here, in the same breath as the insert. Two requests that both
+    // saw room take their turn one after the other, and the one that no longer has room is refused rather than
+    // taking the place of a check that is already there; a host revoked meanwhile gains nothing either.
+    this.database.transaction(() => {
+      this.activeHost(hostId);
+      this.checkFull(hostId);
+      this.database
+        .insert(serviceProbes)
+        .values({
+          id,
+          hostId,
+          bodyJson: JSON.stringify(body),
+          state: PROBE_STATE.unknown,
+          stateSince: now,
+          failures: 0,
+          answers: 0,
+          createdAt: now,
+        })
+        .run();
+    });
     return id;
   }
 
@@ -158,8 +191,100 @@ export class ProbeService {
         return next <= now && !this.inFlight.has(probe.id);
       })
       .toSorted((one, other) => (one.probe.lastCheckedAt ?? 0) - (other.probe.lastCheckedAt ?? 0));
+    // A check made from a host is not made here: its runner is given it, and silence past the deadline is unknown.
+    for (const { probe, body } of due.filter(({ body }) => body.vantage !== null)) {
+      const waiting = this.waiting.get(probe.id);
+      const overdue =
+        waiting !== undefined && now - waiting.at >= PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND;
+      const cannot = waiting === undefined && this.dependencies.vantages?.canCheck(body.vantage!) !== true;
+      if (overdue || cannot) {
+        this.waiting.delete(probe.id);
+        this.noteUnknown(probe.id, body.vantage!);
+      }
+    }
+    const here = due.filter(({ body }) => body.vantage === null);
     const free = Math.max(0, PROBE_LIMITS.atOnce - this.inFlight.size);
-    await Promise.all(due.slice(0, free).map(({ probe, body }) => this.checkOne(probe.id, probe.hostId, body)));
+    await Promise.all(here.slice(0, free).map(({ probe, body }) => this.checkOne(probe.id, probe.hostId, body)));
+  }
+
+  /**
+   * The checks a host is to make from where it is, due now. Handing one out starts its deadline: a runner that does
+   * not answer within it leaves the check not known, never answering or not.
+   */
+  probesFor(hostId: string): RemoteProbe[] {
+    // A runner that has not said it can make checks is given none: one that cannot would never answer, and the
+    // waiting would read as silence rather than as the version it runs.
+    if (this.dependencies.vantages?.canCheck(hostId) !== true) return [];
+    const now = this.dependencies.clock();
+    const due = this.rowsOnActiveHosts().filter(({ probe }) => {
+      const body = this.bodyOf(probe.bodyJson);
+      if (body === null || body.vantage !== hostId) return false;
+      const waiting = this.waiting.get(probe.id);
+      if (waiting !== undefined && now - waiting.at < PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND) {
+        return false;
+      }
+      return (probe.lastCheckedAt ?? 0) + body.intervalSeconds * MILLISECONDS_PER_SECOND <= now;
+    });
+    return due.slice(0, PROBE_LIMITS.atOnce).flatMap(({ probe }) => {
+      const body = this.bodyOf(probe.bodyJson);
+      if (body === null) return [];
+      const generation = generationOf(probe.bodyJson);
+      this.waiting.set(probe.id, { generation, at: now });
+      return [{ id: probe.id, generation, body }];
+    });
+  }
+
+  /**
+   * What a host saw for the checks it was given. A report for a check that is not that host's to make, or for a
+   * version of it that has since changed, is no answer to anything asked and is left alone.
+   */
+  recordReports(hostId: string, reports: readonly ProbeReport[]) {
+    for (const report of reports.slice(0, PROBE_LIMITS.resultsPerReport)) {
+      const row = this.database.select().from(serviceProbes).where(eq(serviceProbes.id, report.id)).get();
+      const body = row === undefined ? null : this.bodyOf(row.bodyJson);
+      if (row === undefined || body === null || body.vantage !== hostId) continue;
+      if (generationOf(row.bodyJson) !== report.generation) continue;
+      this.waiting.delete(report.id);
+      const { id: _id, generation: _generation, ...result } = report;
+      this.record(report.id, body, this.inMaintenance(hostId) ? null : result);
+    }
+  }
+
+  /**
+   * A check made from a host whose runner has not answered: not known, with why. Never taken as answering, and
+   * never as not answering either, so no sample is kept and no failure counts towards down.
+   */
+  private noteUnknown(probeId: string, hostId: string) {
+    const vantages = this.dependencies.vantages;
+    const label = vantages?.labelOf(hostId) ?? null;
+    const silent = vantages?.canCheck(hostId) === true;
+    const problem =
+      label === null
+        ? PROBE_TEXT.vantageGone
+        : silent
+          ? PROBE_TEXT.vantageSilent(label)
+          : PROBE_TEXT.vantageUnsupported(label);
+    const at = this.dependencies.clock();
+    const row = this.database.select().from(serviceProbes).where(eq(serviceProbes.id, probeId)).get();
+    if (row === undefined) return;
+    this.database
+      .update(serviceProbes)
+      .set({
+        state: PROBE_STATE.unknown,
+        stateSince: row.state === PROBE_STATE.unknown ? row.stateSince : at,
+        failures: 0,
+        answers: 0,
+        lastCheckedAt: at,
+        lastLatencyMilliseconds: null,
+        lastProblem: problem,
+      })
+      .where(eq(serviceProbes.id, probeId))
+      .run();
+  }
+
+  private bodyOf(bodyJson: string): ProbeBody | null {
+    const parsed = probeBodySchema.safeParse(JSON.parse(bodyJson));
+    return parsed.success ? parsed.data : null;
   }
 
   private async checkOne(probeId: string, hostId: string, body: ProbeBody) {
@@ -295,6 +420,8 @@ export class ProbeService {
     if (row === undefined) return REBOOT_PLAN_TEXT.checkGone;
     const { name, intervalSeconds } = probeBodySchema.parse(JSON.parse(row.bodyJson));
     if (this.inMaintenance(row.hostId)) return REBOOT_PLAN_TEXT.checkHeld(name);
+    // A check made from a host whose runner has gone quiet is not known, which is not the same as not answering.
+    if (row.state === PROBE_STATE.unknown) return REBOOT_PLAN_TEXT.checkUnknown(name);
     if (row.state !== PROBE_STATE.up) return REBOOT_PLAN_TEXT.checkDown(name);
     const recent = this.dependencies.clock() - FRESH_INTERVALS * intervalSeconds * MILLISECONDS_PER_SECOND;
     const answered = row.lastCheckedAt !== null && row.lastLatencyMilliseconds !== null;

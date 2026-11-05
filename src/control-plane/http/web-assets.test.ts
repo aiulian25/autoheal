@@ -42,6 +42,27 @@ describe("serving the dashboard", () => {
     expect(response.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
   });
 
+  it("opens the app for an asset that is not there, rather than failing the page", async () => {
+    const response = await get("/assets/index-gone.js");
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("<title>Autoheal</title>");
+  });
+
+  it("opens the app for a folder, which has no page of its own", async () => {
+    const response = await get("/assets/");
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("<title>Autoheal</title>");
+  });
+
+  it.each(["/../package.json", "/..%2f..%2fetc%2fpasswd", "/assets/..%2F..%2Fpackage.json", "/%2e%2e/package.json"])(
+    "serves nothing outside the built dashboard for %s",
+    async (url) => {
+      const response = await get(url);
+      expect(response.body).not.toContain('"dependencies"');
+      expect(response.body).not.toContain("root:");
+    },
+  );
+
   it("keeps the API's own 404s and its sign-in requirement", async () => {
     expect((await get("/api/nothing-here")).json()).toEqual({ error: "not_found" });
     expect((await get("/api/hosts")).statusCode).toBe(401);

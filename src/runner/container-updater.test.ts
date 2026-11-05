@@ -1,3 +1,9 @@
+import {
+  EMPTY_TRUST_POLICY,
+  PROVENANCE_STATUS,
+  type ImageProvenance,
+  type ImageTrustPolicy,
+} from "../shared/image-provenance.js";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -99,6 +105,8 @@ class InMemoryDocker {
   readonly created: Record<string, unknown>[] = [];
   readonly connected: [string, string, NetworkEndpoint][] = [];
   pulledImage: string = NEW_IMAGE;
+  // What Docker recorded for the image it pulled, which a signature has to be over.
+  pulledDigests: string[] | null = null;
   failPull = false;
   failCreate = false;
   readonly failStops = new Set<string>();
@@ -146,6 +154,7 @@ class InMemoryDocker {
     this.images.set(this.pulledImage, {
       Id: this.pulledImage,
       Config: { ...imageConfig, Env: ["PATH=/usr/bin", "APP_VERSION=2.1.0"] },
+      ...(this.pulledDigests === null ? {} : { RepoDigests: this.pulledDigests }),
     });
     this.tags.set(reference, this.pulledImage);
   }
@@ -498,14 +507,14 @@ describe("ContainerUpdater", () => {
         () => now,
         null,
         undefined,
-        JOB_OUTCOMES.noDataCopyHere,
+        JOB_OUTCOMES.checkpointUnavailable,
       );
 
     it("refuses an automatic update of a container with data before stopping anything, saying why", async () => {
       const result = await withoutCopies().update("app");
       expect(result).toEqual({
         succeeded: false,
-        outcome: JOB_OUTCOMES.refusedWithoutCheckpoint("app", JOB_OUTCOMES.noDataCopyHere),
+        outcome: JOB_OUTCOMES.refusedWithoutCheckpoint("app", JOB_OUTCOMES.checkpointUnavailable),
       });
       expect(docker.calls.filter((call) => /^(stop|create|rename)/.test(call))).toEqual([]);
       expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
@@ -515,20 +524,20 @@ describe("ContainerUpdater", () => {
       const updater = withoutCopies();
       const result = await updater.update("app", false, undefined, { allowWithoutCheckpoint: true });
       expect(result.succeeded).toBe(true);
-      expect(result.outcome).toContain(JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.noDataCopyHere));
+      expect(result.outcome).toContain(JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.checkpointUnavailable));
       expect(app()).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
     });
 
     it("still refuses an automatic update that would undo itself", async () => {
       const result = await withoutCopies().update("app", true);
-      expect(result.outcome).toBe(JOB_OUTCOMES.refusedWithoutCheckpoint("app", JOB_OUTCOMES.noDataCopyHere));
+      expect(result.outcome).toBe(JOB_OUTCOMES.refusedWithoutCheckpoint("app", JOB_OUTCOMES.checkpointUnavailable));
       expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
     });
 
     it("updates by hand one set to undo a failed update, saying its data was not kept", async () => {
       const result = await withoutCopies().update("app", true, undefined, { allowWithoutCheckpoint: true });
       expect(result.succeeded).toBe(true);
-      expect(result.outcome).toContain(JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.noDataCopyHere));
+      expect(result.outcome).toContain(JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.checkpointUnavailable));
       expect(app()).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
     });
 
@@ -545,7 +554,7 @@ describe("ContainerUpdater", () => {
       await updater.update("app", false, undefined, { allowWithoutCheckpoint: true });
       expect(docker.find("app-autoheal-old")).toMatchObject({ Image: OLD_IMAGE });
       expect((await updater.rollBack("app")).outcome).toBe(
-        JOB_OUTCOMES.rollbackRefused("app", JOB_OUTCOMES.noDataCopyHere),
+        JOB_OUTCOMES.rollbackRefused("app", JOB_OUTCOMES.checkpointUnavailable),
       );
       expect(app()).toMatchObject({ Image: NEW_IMAGE });
     });
@@ -1765,5 +1774,151 @@ describe("ContainerUpdater", () => {
         "Refused: qbittorrent shares app's network; update them together with docker compose.",
       );
     });
+  });
+});
+
+describe("an update where a signed image is required", () => {
+  const PULLED = `sha256:${"d".repeat(64)}`;
+  let docker: InMemoryDocker;
+  let policy: ImageTrustPolicy;
+  let found: ImageProvenance | Error;
+  let asked: string[];
+  let clock: number;
+
+  const provenanceSource = {
+    policy: () => policy,
+    read: async (reference: { repository: string }, digest: string) => {
+      asked.push(`${reference.repository}@${digest}`);
+      if (found instanceof Error) throw found;
+      return found;
+    },
+  };
+  // The clock has to move as the updater waits, or waiting for a healthy container never ends.
+  const updaterWith = () =>
+    new ContainerUpdater(
+      docker,
+      async (milliseconds: number) => {
+        clock += milliseconds;
+      },
+      () => clock,
+      {
+        take: async (_name, details) => completeCheckpoint(details),
+        verify: async () => ({ at: null, problem: null }),
+        restore: async () => ({ at: null, problem: null }),
+        discard: async () => {},
+      },
+      undefined,
+      undefined,
+      () => undefined,
+      provenanceSource,
+    );
+  const verified = (digest: string, publisher = "example"): ImageProvenance => ({
+    status: PROVENANCE_STATUS.verified,
+    digest,
+    publisher,
+    checkedAt: 1,
+    problem: null,
+  });
+
+  beforeEach(() => {
+    docker = new InMemoryDocker();
+    docker.add(appContainer());
+    docker.pulledDigests = [`ghcr.io/example/app@${PULLED}`];
+    asked = [];
+    clock = 0;
+    policy = {
+      revision: 1,
+      publishers: [{ name: "example", publicKey: "irrelevant here" }],
+      required: [{ registry: "ghcr.io", repository: "example/app", publishers: [] }],
+    };
+    found = verified(PULLED);
+  });
+
+  it("goes ahead when the digest Docker pulled is the one a trusted publisher signed", async () => {
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(true);
+    expect(asked).toEqual([`example/app@${PULLED}`]);
+    expect(docker.find("app")?.Image).toBe(NEW_IMAGE);
+  });
+
+  it("asks about the digest Docker recorded, not about the tag", async () => {
+    await updaterWith().update("app");
+
+    expect(asked[0]).toContain(PULLED);
+    expect(asked[0]).not.toContain(":2");
+  });
+
+  it("stops nothing when the proof is for another digest", async () => {
+    found = verified(`sha256:${"e".repeat(64)}`);
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(false);
+    expect(result.outcome).toContain("needs a signed image");
+    expect(docker.find("app")?.Image).toBe(OLD_IMAGE);
+    expect(docker.calls.filter((call) => /^(stop|rename|create|remove) /.test(call))).toEqual([]);
+  });
+
+  it("stops nothing when the publisher is not one this scope names", async () => {
+    policy = { ...policy, required: [{ registry: "ghcr.io", repository: "example/app", publishers: ["someone"] }] };
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(false);
+    expect(docker.find("app")?.Image).toBe(OLD_IMAGE);
+  });
+
+  it.each([
+    [PROVENANCE_STATUS.unsigned, "no signature"],
+    [PROVENANCE_STATUS.invalid, "does not hold up"],
+    [PROVENANCE_STATUS.unreachable, "could not be asked"],
+  ])("stops nothing when the image is %s, and says which it was", async (status, problem) => {
+    found = { status, digest: PULLED, publisher: null, checkedAt: 1, problem };
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(false);
+    expect(result.outcome).toContain(problem);
+    expect(docker.find("app")?.Image).toBe(OLD_IMAGE);
+  });
+
+  it("stops nothing when Docker recorded no digest for what it pulled", async () => {
+    docker.pulledDigests = null;
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(false);
+    expect(result.outcome).toContain("needs a signed image");
+    expect(asked).toEqual([]);
+  });
+
+  it("stops nothing when the registry could not be asked at all", async () => {
+    found = new Error("getaddrinfo ENOTFOUND ghcr.io");
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(false);
+    expect(result.outcome).toContain("ENOTFOUND");
+    expect(docker.find("app")?.Image).toBe(OLD_IMAGE);
+  });
+
+  it("asks nothing and changes nothing about an image no rule covers", async () => {
+    policy = { ...policy, required: [{ registry: "ghcr.io", repository: "someone/else", publishers: [] }] };
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(true);
+    expect(asked).toEqual([]);
+  });
+
+  it("updates as it always did where no rule is set up at all", async () => {
+    policy = EMPTY_TRUST_POLICY;
+
+    const result = await updaterWith().update("app");
+
+    expect(result.succeeded).toBe(true);
+    expect(asked).toEqual([]);
+    expect(docker.find("app")?.Image).toBe(NEW_IMAGE);
   });
 });

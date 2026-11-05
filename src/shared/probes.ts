@@ -30,6 +30,10 @@ export const PROBE_LIMITS = {
   hoursKept: 90 * 24,
   warnDays: { minimum: 1, maximum: 365, usual: 30 },
   trustCharacters: 16_384,
+  // A check made from a host: how long its runner has to answer before the check counts as not known, and how
+  // many results one report may carry.
+  vantageDeadlineSeconds: 120,
+  resultsPerReport: 64,
   statusFrom: 100,
   statusTo: 599,
   portTo: 65535,
@@ -99,6 +103,9 @@ export const probeBodySchema = z
   .object({
     name: z.string().trim().min(1).max(PROBE_LIMITS.nameCharacters),
     scope: z.enum(Object.values(PROBE_SCOPE)),
+    // Where the check is made from: null is Autoheal itself, and a host id is that host's runner. Absent from
+    // checks made before this, which were all made from Autoheal.
+    vantage: z.string().nullable().default(null),
     intervalSeconds: z.number().int().min(intervalSeconds.minimum).max(intervalSeconds.maximum),
     timeoutSeconds: z.number().int().min(timeoutSeconds.minimum).max(timeoutSeconds.maximum),
     failuresBeforeDown: z.number().int().min(failuresBeforeDown.minimum).max(failuresBeforeDown.maximum),
@@ -202,4 +209,11 @@ export const PROBE_TEXT = {
   noAnswer: "The name has no address.",
   wrongAnswer: (expected: string) => `The name did not resolve to ${expected}.`,
   refused: "It resolves to an address outside what this check may reach, so it was not contacted.",
+  // Its time ran out, or the probes were stopped, before it was done with: nothing further is opened or waited on.
+  cancelled: "The check was stopped before it finished.",
+  // A check made from a host, and that host's runner did not answer: not known, never taken as answering or not.
+  vantageSilent: (host: string) => `${host} has not reported this check. Nothing is assumed about it.`,
+  vantageUnsupported: (host: string) => `${host} runs a version that cannot make checks itself. Update its runner.`,
+  vantageGone: "The host this check is made from is no longer part of the fleet.",
+  closedEarly: "It closed the connection before the handshake finished.",
 } as const;

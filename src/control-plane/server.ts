@@ -53,6 +53,9 @@ import { registerBoardRoutes } from "./board/board-routes.js";
 import { registerAccountRoutes } from "./account/account-routes.js";
 import { registerIntegrationsRoutes } from "./settings/integrations-routes.js";
 import { registerOllamaSettingsRoutes } from "./settings/ollama-settings-routes.js";
+import { registerRegistryCredentialRoutes } from "./settings/registry-credentials-routes.js";
+import { registerImageTrustRoutes } from "./settings/image-trust-routes.js";
+import { registerAvailabilityGroupRoutes } from "./inventory/availability-groups-routes.js";
 import { registerTrustedProxiesRoutes } from "./settings/trusted-proxies-routes.js";
 import { registerFileRoutes } from "./container-access/file-routes.js";
 import {
@@ -163,6 +166,9 @@ export async function buildUserInterfaceServer(options: UserInterfaceServerOptio
   registerRestoreRoutes(app, options.services.restoreService);
   registerIntegrationsRoutes(app, options.services);
   registerOllamaSettingsRoutes(app, options.services);
+  registerRegistryCredentialRoutes(app, options.services);
+  registerImageTrustRoutes(app, options.services);
+  registerAvailabilityGroupRoutes(app, options.services);
   registerTrustedProxiesRoutes(app, options.services.trustedProxies);
   app.get(API_ROUTES.settings, async (request): Promise<SettingsView> => {
     const view: SettingsView = {

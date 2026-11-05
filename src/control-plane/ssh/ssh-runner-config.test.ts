@@ -40,6 +40,7 @@ describe("an SSH host's runner configuration", () => {
       hostDbusDirectory: "/run/dbus",
       containerAccess: false,
       hostTerminal: true,
+      hostTerminalUser: null,
       hostDeploy: true,
       checkpointLimitBytes: 7 * BYTES_PER_GIGABYTE,
     });
