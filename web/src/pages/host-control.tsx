@@ -52,6 +52,7 @@ import {
   type RestartChoice,
   type UpdateChoice,
   HOST_KIND,
+  isParkedContainer,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
 import { goesAhead } from "../ask-first.js";
@@ -271,29 +272,28 @@ interface Group {
   containers: ContainerView[];
 }
 
-// What needs a look first: a problem, then an update waiting, then by name.
-const attentionOf = (container: ContainerView) => {
-  if (container.problem !== null) {
-    return 0;
-  }
-  return hasUpdate(container) ? 1 : 2;
-};
-const byAttention = (first: ContainerView, second: ContainerView) =>
-  attentionOf(first) - attentionOf(second) || byName(first, second);
-
+/**
+ * The host's containers by stack, each in name order, so a row keeps its place whatever happens to it: an update,
+ * a problem or a restart never moves it. What needs a look has its own filters above the table. A copy an update
+ * keeps aside goes with its container, by its name, and never makes a stack of its own.
+ */
 function groupsOf(containers: readonly ContainerView[]): Group[] {
-  const byProject = new Map<string, ContainerView[]>();
+  const counted = new Map<string, number>();
   for (const container of containers) {
-    if (container.composeProject !== null) {
-      byProject.set(container.composeProject, [...(byProject.get(container.composeProject) ?? []), container]);
-    }
+    if (container.composeProject === null || isParkedContainer(container.name)) continue;
+    counted.set(container.composeProject, (counted.get(container.composeProject) ?? 0) + 1);
   }
-  const stacks = [...byProject.entries()]
-    .filter(([, members]) => members.length > 1)
-    .sort(([first], [second]) => first.localeCompare(second))
-    .map(([stack, members]) => ({ stack, containers: [...members].sort(byAttention) }));
-  const inStacks = new Set(stacks.flatMap((group) => group.containers.map((container) => container.name)));
-  const alone = containers.filter((container) => !inStacks.has(container.name)).sort(byAttention);
+  const stackOf = ({ composeProject }: ContainerView) =>
+    composeProject !== null && (counted.get(composeProject) ?? 0) > 1 ? composeProject : null;
+  const byStack = new Map<string | null, ContainerView[]>();
+  for (const container of [...containers].sort(byName)) {
+    const stack = stackOf(container);
+    byStack.set(stack, [...(byStack.get(stack) ?? []), container]);
+  }
+  const stacks = [...byStack.entries()]
+    .flatMap(([stack, members]) => (stack === null ? [] : [{ stack, containers: members }]))
+    .sort((first, second) => first.stack.localeCompare(second.stack));
+  const alone = byStack.get(null) ?? [];
   return alone.length === 0 ? stacks : [...stacks, { stack: null, containers: alone }];
 }
 

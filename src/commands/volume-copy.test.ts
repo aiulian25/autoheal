@@ -195,6 +195,39 @@ describe("volume-copy", () => {
     expect(readdirSync(at("to", "0"))).toEqual([]);
   });
 
+  it("reads contents only to compare them on a restore, never to fill an empty checkpoint", async () => {
+    mkdirSync(at("from", "0"));
+    mkdirSync(at("to", "0"));
+    writeFileSync(at("from", "0", "state"), "old");
+    writeFileSync(at("to", "0", "state"), "new");
+    const tool = at("fake-recording");
+    const calls = at("calls");
+    writeFileSync(
+      tool,
+      `#!/bin/sh
+case "$1" in
+--version) printf 'rsync  version 3.4.1\nCapabilities: ACLs xattrs hardlinks hardlink-symlinks symtimes atimes\n';;
+*) echo "$*" >> "${calls}";;
+esac
+`,
+    );
+    chmodSync(tool, 0o700);
+
+    expect((await run(["keep", "10000"], undefined, tool)).code).toBe(0);
+    const kept = readFileSync(calls, "utf8").trim().split("\n");
+    expect(kept).toHaveLength(2);
+    expect(kept.every((call) => !call.includes("--checksum"))).toBe(true);
+
+    rmSync(calls);
+    expect((await run(["restore"], undefined, tool)).code).toBe(0);
+    expect(
+      readFileSync(calls, "utf8")
+        .trim()
+        .split("\n")
+        .every((call) => call.includes("--checksum")),
+    ).toBe(true);
+  });
+
   it("treats tool warnings and verification differences as failures without printing their private diagnostics", async () => {
     mkdirSync(at("from", "0"));
     mkdirSync(at("to", "0"));

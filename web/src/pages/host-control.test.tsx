@@ -179,6 +179,47 @@ const sent = (fetch: ReturnType<typeof serve>, path: string, method: string, bod
     expect(fetch).toHaveBeenCalledWith(path, expect.objectContaining({ method, body: JSON.stringify(body) })),
   );
 
+describe("where a container's row sits", () => {
+  const available = { status: "available" as const, checkedAt: 1, policy: "ask" as const, remote: null, reason: null };
+  const rowNames = () =>
+    screen
+      .getAllByRole("row")
+      .map((row) => row.querySelector("button.container-name")?.textContent ?? row.textContent?.split(" ")[0] ?? "")
+      .filter((name) => name !== "");
+
+  it("keeps each row in its place while it updates, a problem shows or its update goes, by name alone", async () => {
+    const routes = {
+      [API_ROUTES.containers]: [
+        container({ name: "calendar", composeProject: null }),
+        container({ name: "agent", composeProject: "agent", update: available }),
+        container({ name: "tunnel", composeProject: null, problem: "restarting" }),
+      ],
+    };
+    serve(routes);
+    const client = show(<HostContainers host={alder(false)} admin />);
+    await screen.findByRole("button", { name: "agent" });
+    const before = rowNames().filter((name) => ["agent", "tunnel", "calendar"].includes(name));
+    expect(before).toEqual(["agent", "calendar", "tunnel"]);
+
+    // Mid-update: the old container is kept aside under the same Compose project. No stack appears for it.
+    routes[API_ROUTES.containers] = [
+      container({ name: "calendar", composeProject: null }),
+      container({ name: "agent", composeProject: "agent" }),
+      container({ name: "agent-autoheal-old", composeProject: "agent", state: "exited" }),
+      container({ name: "tunnel", composeProject: null }),
+    ];
+    await client.invalidateQueries({ queryKey: ["containers"] });
+    await screen.findByRole("button", { name: "agent-autoheal-old" });
+    expect(document.querySelectorAll('th[scope="rowgroup"]')).toHaveLength(0);
+    expect(rowNames().filter((name) => name.startsWith("agent") || name === "tunnel" || name === "calendar")).toEqual([
+      "agent",
+      "agent-autoheal-old",
+      "calendar",
+      "tunnel",
+    ]);
+  });
+});
+
 describe("container CPU and RAM in the host table", () => {
   it.each([true, false])("shows and refreshes each container's usage (admin: %s)", async (admin) => {
     const routes = {

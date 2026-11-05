@@ -120,6 +120,11 @@ export const EVENT_OOM = "oom";
 export const EVENT_UNHEALTHY = "health_status: unhealthy";
 export const EVENT_KILL = "kill";
 export const HEALTH_STARTING = "starting";
+// How Docker writes a health check's command: as arguments, or as one line for the container's shell.
+export const HEALTH_TEST = { command: "CMD", shell: "CMD-SHELL" } as const;
+export const DEFAULT_HEALTH_SHELL = ["/bin/sh", "-c"] as const;
+// A health check run early by Autoheal says only pass or fail: its output is read no further than this.
+export const HEALTH_PROBE_OUTPUT_BYTES = 4 * 1024;
 export const HEALTH_UNHEALTHY = "unhealthy";
 export const HEALTH_HEALTHY = "healthy";
 
@@ -2136,6 +2141,9 @@ export const JOB_OUTCOMES = {
   // a restart in between.
   interruptedByRestart:
     "Its runner restarted before it could say how this went, and the host has no run of it to follow. Ask again if it is still needed.",
+  // An automatic recovery or an approved action cut short the same way, by Docker or its runner restarting.
+  actionInterrupted:
+    "Cut short before it could say how it went: Docker or Autoheal's runner restarted. Look at the container; it can be acted on again.",
   done: (verb: string, name: string) => `${verb} ${name}.`,
   dryRun: (action: string, name: string) => `DRY RUN: would ${wordsOf(action)} ${name}.`,
   failed: (action: string, name: string, error: string) => `Could not ${wordsOf(action)} ${name}: ${error}`,

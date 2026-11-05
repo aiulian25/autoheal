@@ -116,6 +116,9 @@ class InMemoryDocker {
   summaries: ContainerSummary[] = [];
   // What a container's logs read: the same for every one.
   logged = "";
+  // A container's own health check, run by the updater instead of waiting for Docker's: what it ran, and its answer.
+  readonly probed: string[][] = [];
+  probePasses = false;
 
   add(container: ContainerDetails) {
     this.containers.set(container.Id!, structuredClone(container));
@@ -143,6 +146,11 @@ class InMemoryDocker {
 
   async logs() {
     return this.logged;
+  }
+
+  async runCommand(_reference: string, command: readonly string[]) {
+    this.probed.push([...command]);
+    return { exitCode: this.probePasses ? 0 : 1, stdout: "", stderr: "", truncated: false };
   }
 
   async pull(reference: string, onLine: (line: PullLine) => void = () => undefined) {
@@ -813,6 +821,27 @@ describe("ContainerUpdater", () => {
         : container;
     };
     expect(await updater.update("app")).toMatchObject({ succeeded: true, outcome: expect.stringContaining("healthy") });
+  });
+
+  it("counts the new container healthy once its own health check passes, not after Docker's first one", async () => {
+    docker.containers.clear();
+    const healthcheck = { Test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080"], Interval: 30e9 };
+    docker.add(appContainer({ Config: { ...appContainer().Config, Healthcheck: healthcheck } }));
+    docker.afterStart = () => ({ Status: "running", Running: true, Health: { Status: "starting" } });
+    docker.probePasses = true;
+
+    expect(await updater.update("app")).toMatchObject({ succeeded: true, outcome: expect.stringContaining("healthy") });
+    expect(docker.probed).toEqual([["/bin/sh", "-c", "wget -q -O /dev/null http://127.0.0.1:8080"]]);
+  });
+
+  it("keeps waiting while the health check it runs early still fails", async () => {
+    docker.containers.clear();
+    docker.add(appContainer({ Config: { ...appContainer().Config, Healthcheck: { Test: ["CMD", "/healthcheck"] } } }));
+    docker.afterStart = () => ({ Status: "running", Running: true, Health: { Status: "starting" } });
+
+    expect(await updater.update("app")).toMatchObject({ succeeded: false });
+    expect(docker.probed.length).toBeGreaterThan(1);
+    expect(docker.probed[0]).toEqual(["/healthcheck"]);
   });
 
   it("does nothing when the newest image is the one it runs", async () => {

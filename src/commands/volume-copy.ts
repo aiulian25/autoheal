@@ -113,8 +113,19 @@ export async function requireCopier(program: string) {
   }
 }
 
-/** Root attributes are included by trailing-slash directory transfers. Single-file mounts keep their inode. */
-async function copyAndVerify(program: string, pair: CopyRoots, directory: boolean, inPlace: boolean) {
+/**
+ * Root attributes are included by trailing-slash directory transfers. Single-file mounts keep their inode. Into an
+ * empty checkpoint, contents are not compared beforehand: rsync checks each file it sends as it lands, so reading
+ * every byte first, and both copies again after, only makes the update wait. A restore over existing files compares
+ * contents, as a file of the same size and time may still differ.
+ */
+async function copyAndVerify(
+  program: string,
+  pair: CopyRoots,
+  directory: boolean,
+  inPlace: boolean,
+  compareContents: boolean,
+) {
   const args = [
     "--archive",
     "--hard-links",
@@ -123,7 +134,7 @@ async function copyAndVerify(program: string, pair: CopyRoots, directory: boolea
     "--atimes",
     "--open-noatime",
     "--numeric-ids",
-    "--checksum",
+    ...(compareContents ? ["--checksum"] : []),
     "--modify-window=-1",
     "--no-inc-recursive",
     ...(directory ? ["--delete"] : []),
@@ -161,7 +172,7 @@ async function keep(roots: CopyRoots, limit: number, program: string): Promise<V
   if (bytes > availableBytes * CHECKPOINT.freeSpaceShare)
     return reportOf(VOLUME_COPY_OUTCOME.noRoom, bytes, availableBytes);
   await requireCopier(program);
-  for (const { pair, directory } of plan) await copyAndVerify(program, pair, directory, false);
+  for (const { pair, directory } of plan) await copyAndVerify(program, pair, directory, false, false);
   return reportOf(VOLUME_COPY_OUTCOME.kept, bytes, availableBytes);
 }
 
@@ -185,7 +196,7 @@ async function restore(roots: CopyRoots, program: string): Promise<VolumeCopyRep
     // Keep the mounted root itself; rsync restores its attributes and removes replacement-only xattrs.
     if (directory)
       for (const entry of await readdir(pair.to)) await rm(join(pair.to, entry), { recursive: true, force: true });
-    await copyAndVerify(program, pair, directory, !directory);
+    await copyAndVerify(program, pair, directory, !directory, true);
   }
   return reportOf(VOLUME_COPY_OUTCOME.restored);
 }

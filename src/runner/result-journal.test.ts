@@ -436,6 +436,36 @@ it("closes jobs an earlier runner never finished once asked, so their containers
   ]);
 });
 
+it("closes an interrupted recovery or approved action too, so Docker restarting mid-way never locks a container", async () => {
+  const f = guardStateFixture();
+  const before = await ResultJournal.open(f.store);
+  await before.reserve("incident", "restart-redis", "redis");
+  await before.reserve("work", "approved-restart", "recipes");
+  await before.reserve("handled", "decided-here", "library");
+  const journal = await ResultJournal.open(f.store);
+  await expect(journal.reserve("job", "start-redis", "redis")).rejects.toThrow("requires reconciliation");
+
+  await journal.settleInterrupted();
+
+  for (const [id, target] of [
+    ["start-redis", "redis"],
+    ["start-recipes", "recipes"],
+    ["start-library", "library"],
+  ]) {
+    expect(await journal.reserve("job", id!, target!)).toBe(true);
+  }
+  // Never run again by their ids; each that can be told says it needs a person to look.
+  expect(await journal.reserve("incident", "restart-redis", "redis")).toBe(false);
+  expect(await journal.reserve("work", "approved-restart", "recipes")).toBe(false);
+  const sent: ResultReport[] = [];
+  await journal.flush(["incident", "work", "handled"], async (report) => void sent.push(report));
+  const interrupted = { outcome: JOB_OUTCOMES.actionInterrupted, verdict: "needs you", executed: false };
+  expect(sent).toEqual([
+    { kind: "incident", id: "restart-redis", result: interrupted },
+    { kind: "work", id: "approved-restart", result: interrupted },
+  ]);
+});
+
 it("keeps taking actions when an old snapshot is in use for a moment, and removes it at the next change", async () => {
   const f = guardStateFixture();
   const journal = await ResultJournal.open(f.store);

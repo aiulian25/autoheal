@@ -54,7 +54,7 @@ function pulledDigest(image: ImageDetails | null, reference: string): string | n
 }
 import { utcMinute } from "../shared/time-zones.js";
 import { deniedMountOf, withSettings } from "./container-settings.js";
-import { untilSettled } from "./settle-check.js";
+import { healthProbe, untilSettled } from "./settle-check.js";
 import type { PullLine } from "./update-progress.js";
 import { dataMountsOf, unavailableCheckpoint, type VolumeCheckpoints } from "./volume-checkpoints.js";
 import type {
@@ -99,6 +99,7 @@ type UpdaterDocker = Pick<
   | "tag"
   | "removeImage"
   | "logs"
+  | "runCommand"
 >;
 
 // Network modes with no endpoints of their own to recreate.
@@ -1030,6 +1031,7 @@ export class ContainerUpdater {
       VERIFY_PROBLEMS,
       this.wait,
       this.clock,
+      healthProbe(this.docker),
     );
   }
 

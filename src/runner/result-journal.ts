@@ -1,6 +1,6 @@
-import { JOB_OUTCOMES, RUNNER_BODY_LIMIT_BYTES, RUNNER_MESSAGES } from "../shared/constants.js";
+import { JOB_OUTCOMES, RUNNER_BODY_LIMIT_BYTES, RUNNER_MESSAGES, VERDICT_ESCALATED } from "../shared/constants.js";
 import { z } from "zod";
-import { handledIncidentSchema, outcomeSchema, jobResultSchema } from "../shared/protocol.js";
+import { handledIncidentSchema, outcomeSchema, jobResultSchema, type Outcome } from "../shared/protocol.js";
 import { log } from "../shared/log.js";
 import type { DockerClient } from "./docker-client.js";
 
@@ -33,6 +33,24 @@ const schema = z.object({
 type Entry = z.infer<typeof entrySchema>;
 type Store = Pick<DockerClient, "volumes" | "createVolume" | "removeVolume">;
 const keyOf = (entry: Pick<Entry, "kind" | "id">) => `${entry.kind}:${entry.id}`;
+const INTERRUPTED: Outcome = { outcome: JOB_OUTCOMES.actionInterrupted, verdict: VERDICT_ESCALATED, executed: false };
+
+/**
+ * The result an interrupted action is closed with, so its id never runs again and its container may be acted on.
+ * Null for an incident this runner decided alone, which can never be sent again by id: its reservation just goes.
+ */
+function interruptedReport(entry: Entry): ResultReport | null {
+  if (entry.kind === "job") {
+    return {
+      kind: "job",
+      id: entry.id,
+      result: { succeeded: false, outcome: JOB_OUTCOMES.interruptedByRestart, output: null },
+    };
+  }
+  if (entry.kind === "incident") return { kind: "incident", id: entry.id, result: INTERRUPTED };
+  if (entry.kind === "work") return { kind: "work", id: entry.id, result: INTERRUPTED };
+  return null;
+}
 
 /** Result delivery only. Reservations left by interrupted execution are never replayed as actions.
  * Payloads share the existing Docker administrator trust boundary; terminal/file traffic is excluded.
@@ -105,22 +123,20 @@ export class ResultJournal {
   }
 
   /**
-   * Jobs an earlier runner reserved and never finished, once its shutdown journal holds nothing half done: each gets a
-   * result saying its end is unknown. Its id still never runs again, and its container may be acted on again.
-   * ponytail: jobs only; an interrupted incident or approved work still waits for a person, as before.
+   * Actions an earlier runner reserved and never finished, once its shutdown journal holds nothing half done: each
+   * gets a result saying its end is unknown, for a person to look at. Its id still never runs again, and its
+   * container may be acted on again, instead of every later action on it being refused with no way out.
    */
   async settleInterrupted() {
     const interrupted = [...this.entries.values()].filter(
-      (entry) => entry.kind === "job" && entry.report === null && !this.owned.has(keyOf(entry)),
+      (entry) => entry.report === null && !this.owned.has(keyOf(entry)),
     );
     if (interrupted.length === 0) return;
     await this.change(() => {
       for (const entry of interrupted) {
-        entry.report = {
-          kind: "job",
-          id: entry.id,
-          result: { succeeded: false, outcome: JOB_OUTCOMES.interruptedByRestart, output: null },
-        };
+        const report = interruptedReport(entry);
+        if (report === null) this.entries.delete(keyOf(entry));
+        else entry.report = report;
       }
     });
     log(RUNNER_MESSAGES.interruptedJobsSettled(interrupted.length));
