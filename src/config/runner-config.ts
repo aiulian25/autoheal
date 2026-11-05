@@ -56,6 +56,7 @@ import {
   HOST_TERMINAL_SETTINGS,
   HOST_PACKAGES_SETTINGS,
   type HostPackagesSetting,
+  SELF_UPDATE,
 } from "../shared/constants.js";
 import { decodeJoinCode, type JoinDetails } from "../shared/join-code.js";
 import {
@@ -235,7 +236,13 @@ export function loadRunnerConfig(environment: NodeJS.ProcessEnv, joinFile: strin
     ollama,
     gotify: gotifySettings(values[ENV_GOTIFY_URL], values[ENV_GOTIFY_TOKEN]),
     dryRun: values[ENV_DRY_RUN],
-    protectedContainers: new Set([...values[ENV_PROTECTED_CONTAINERS], selfContainerName]),
+    // Itself, and what its own update runs beside it: the helper doing the swap and the copy kept for going back.
+    protectedContainers: new Set([
+      ...values[ENV_PROTECTED_CONTAINERS],
+      selfContainerName,
+      `${selfContainerName}${SELF_UPDATE.previousSuffix}`,
+      SELF_UPDATE.helperName,
+    ]),
     dockerSocketPath: values[ENV_DOCKER_SOCKET_PATH],
     hostRoot,
     hostFilesystems: values[ENV_HOST_FILESYSTEMS],

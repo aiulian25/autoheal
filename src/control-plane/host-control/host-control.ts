@@ -13,7 +13,7 @@ import {
   RESTART_CHOICE,
   UPDATE_CHOICE,
   UPDATE_POLICY,
-  isParkedContainer,
+  isKeptAsideCopy,
   type ControlLock,
   type ImageCleanup,
   type RestartChoice,
@@ -85,7 +85,7 @@ export function controlOf(
   if (isProtected) {
     return bothFixedBy(CONTROL_LOCK.protected);
   }
-  if (isParkedContainer(container.name)) {
+  if (isKeptAsideCopy(container.name)) {
     return bothFixedBy(CONTROL_LOCK.parked);
   }
   const updateLock = updateLockOf(container.image, container.updatePolicy);

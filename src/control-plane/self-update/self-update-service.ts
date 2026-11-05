@@ -18,6 +18,7 @@ import {
   SELF_UPDATE_TEXT,
   SYSTEM_ACTOR_LABEL,
   TARGET_AUTOHEAL,
+  HOST_HELPER,
 } from "../../shared/constants.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import { DomainError } from "../domain-error.js";
@@ -201,6 +202,8 @@ export class SelfUpdateService {
       Cmd: [COMMAND_SELF_UPDATE, original, image, reference],
       User: SELF_UPDATE.user,
       Labels: { [SELF_UPDATE.label]: "1" },
+      // The image's own check is the dashboard's, which the helper is not: with no network it would read unhealthy.
+      Healthcheck: { Test: [HOST_HELPER.noHealthcheck] },
       HostConfig: {
         AutoRemove: true,
         Binds: [

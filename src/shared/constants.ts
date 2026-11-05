@@ -2631,6 +2631,11 @@ export const SHORT_IMAGE_ID_LENGTH = 12;
 export const OLD_CONTAINER_SUFFIX = "-autoheal-old";
 /** The old container an update keeps aside: only rolling back, or a person, may touch it. */
 export const isParkedContainer = (name: string) => name.endsWith(OLD_CONTAINER_SUFFIX);
+/**
+ * Any copy an update keeps aside for going back: a container update's, or Autoheal's own (the control plane's or a
+ * sidecar runner's), which its helper removes once the new one has held. The dashboard offers nothing on either.
+ */
+export const isKeptAsideCopy = (name: string) => isParkedContainer(name) || name.endsWith(SELF_UPDATE.previousSuffix);
 /** The container whose update kept this one aside. */
 export const updatedNameOf = (parked: string) => parked.slice(0, -OLD_CONTAINER_SUFFIX.length);
 // After an update the image the container ran before stays under its tag plus this: going back by

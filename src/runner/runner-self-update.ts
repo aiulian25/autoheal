@@ -3,6 +3,7 @@ import {
   DEFAULT_DATA_DIRECTORY,
   DEFAULT_DOCKER_SOCKET_PATH,
   DIGEST_SEPARATOR,
+  HOST_HELPER,
   IMAGE_ID_PREFIX,
   IMAGE_REFERENCE,
   SELF_UPDATE,
@@ -101,6 +102,8 @@ export async function handOverToRelease(
     Cmd: [COMMAND_SELF_UPDATE, details.Id ?? own.reference, image.Id, reference, SELF_UPDATE.runnerMode],
     User: SELF_UPDATE.user,
     Labels: { [SELF_UPDATE.label]: "1" },
+    // The image's own check is a runner's, which the helper is not: it would only ever read unhealthy.
+    Healthcheck: { Test: [HOST_HELPER.noHealthcheck] },
     HostConfig: {
       AutoRemove: true,
       Binds: [`${socket}:${DEFAULT_DOCKER_SOCKET_PATH}`, `${SELF_UPDATE.runnerVolume}:${DEFAULT_DATA_DIRECTORY}`],

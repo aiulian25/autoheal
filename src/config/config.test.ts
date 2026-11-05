@@ -204,10 +204,16 @@ describe("control plane config", () => {
 });
 
 describe("runner config", () => {
-  it("defaults to dry run and always protects itself", () => {
+  it("defaults to dry run and always protects itself, with what its own update runs beside it", () => {
     const config = loadRunnerConfig(runnerEnvironment({ PROTECTED_CONTAINERS: " npm, newt ,," }), noJoinFile);
     expect(config.dryRun).toBe(true);
-    expect([...config.protectedContainers].sort()).toEqual(["autoheal", "newt", "npm"]);
+    expect([...config.protectedContainers].sort()).toEqual([
+      "autoheal",
+      "autoheal-autoheal-previous",
+      "autoheal-self-update",
+      "newt",
+      "npm",
+    ]);
     expect(config.controlPlane).toBeNull();
     expect(config.gotify).toBeNull();
   });

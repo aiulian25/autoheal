@@ -140,7 +140,12 @@ describe("an SSH host's runner inside the control plane", () => {
     sshHostsService.updateSettings(actor, hostId, { ...settings, protectedContainers: ["tika"] });
     sshHostsService.updateSettings(actor, hostId, { ...settings, protectedContainers: ["paperless"] });
     const view = await until(host, (latest) => latest.protectedContainers.includes("paperless"));
-    expect(view.protectedContainers).toEqual(["autoheal", "paperless"]);
+    expect(view.protectedContainers).toEqual([
+      "autoheal",
+      "autoheal-autoheal-previous",
+      "autoheal-self-update",
+      "paperless",
+    ]);
     // The first runner's late close must not end the session the second one runs on.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     // And the old runner and its session stopped before the next one dialled: never two on one host. The first pair is

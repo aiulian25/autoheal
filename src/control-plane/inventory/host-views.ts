@@ -13,7 +13,7 @@ import {
   HOST_STATE,
   HOST_STATUS_REVOKED,
   RESTART_CHOICE,
-  isParkedContainer,
+  isKeptAsideCopy,
   type HandsOff,
   DEFAULT_AUTOHEAL_IMAGE,
   DEFAULT_SELF_CONTAINER_NAME,
@@ -60,7 +60,7 @@ function handsOffOf(host: HostRow, isProtected: boolean, name: string): HandsOff
   if (isProtected) {
     return HANDS_OFF.protected;
   }
-  if (isParkedContainer(name)) {
+  if (isKeptAsideCopy(name)) {
     return HANDS_OFF.parked;
   }
   return host.dryRun === true ? HANDS_OFF.dryRun : null;

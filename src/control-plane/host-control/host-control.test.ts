@@ -77,13 +77,16 @@ describe("what a container may have Autoheal do on its own", () => {
     expect(policyOf(database)).toBe("ask");
   });
 
-  it("fixes both answers of the old container an update keeps aside, and never updates it", () => {
-    const parked = { ...app, name: "attic-autoheal-old", updatePolicy: "auto" as const };
-    const control = controlOf(parked, false, { restart: "restart", update: "apply" }, BOTH);
+  it.each(["attic-autoheal-old", "autoheal-autoheal-previous"])(
+    "fixes both answers of the old container an update keeps aside (%s), and never updates it",
+    (name) => {
+      const parked = { ...app, name, updatePolicy: "auto" as const };
+      const control = controlOf(parked, false, { restart: "restart", update: "apply" }, BOTH);
 
-    expect(control).toEqual({ restart: "ask", update: "ask", restartLock: "parked", updateLock: "parked" });
-    expect(policyOf(control)).toBe("off");
-  });
+      expect(control).toEqual({ restart: "ask", update: "ask", restartLock: "parked", updateLock: "parked" });
+      expect(policyOf(control)).toBe("off");
+    },
+  );
 
   it("gives the update rules auto only for a container Autoheal may update on its own", () => {
     expect(policyOf(controlOf(app, false, { restart: "ask", update: "apply" }, ASK))).toBe("auto");

@@ -76,6 +76,8 @@ describe("a sidecar runner moving to its control plane's release", () => {
       HostConfig: Record<string, unknown>;
     };
     expect(helper.Image).toBe(NEW);
+    // Never read unhealthy, nor acted on for it: the image's own check is a runner's.
+    expect(world.state.created[0]!.specification).toMatchObject({ Healthcheck: { Test: ["NONE"] } });
     expect(helper.Cmd).toEqual(["self-update", "runner-id", NEW, RELEASE, SELF_UPDATE.runnerMode]);
     expect(helper.HostConfig).toMatchObject({
       Binds: ["/var/run/docker.sock:/var/run/docker.sock", `${SELF_UPDATE.runnerVolume}:/data`],

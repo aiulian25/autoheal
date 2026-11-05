@@ -52,7 +52,7 @@ import {
   type RestartChoice,
   type UpdateChoice,
   HOST_KIND,
-  isParkedContainer,
+  isKeptAsideCopy,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
 import { goesAhead } from "../ask-first.js";
@@ -281,7 +281,7 @@ interface Group {
 function groupsOf(containers: readonly ContainerView[]): Group[] {
   const counted = new Map<string, number>();
   for (const container of containers) {
-    if (container.composeProject === null || isParkedContainer(container.name)) continue;
+    if (container.composeProject === null || isKeptAsideCopy(container.name)) continue;
     counted.set(container.composeProject, (counted.get(container.composeProject) ?? 0) + 1);
   }
   const stackOf = ({ composeProject }: ContainerView) =>

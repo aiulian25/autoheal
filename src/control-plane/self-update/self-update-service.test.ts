@@ -121,7 +121,10 @@ describe("Autoheal updating itself, from the dashboard", () => {
       expect(engine.pulls).not.toContain(REFERENCE);
       expect(view.reference).toBe(COMPOSE_TAG);
       const helper = engine.creations.find(({ name }) => name === SELF_UPDATE.helperName)!.specification;
-      expect(helper).toMatchObject({ Cmd: ["self-update", containerIdOf(NAME), NEW_IMAGE, COMPOSE_TAG] });
+      expect(helper).toMatchObject({
+        Cmd: ["self-update", containerIdOf(NAME), NEW_IMAGE, COMPOSE_TAG],
+        Healthcheck: { Test: ["NONE"] },
+      });
     });
 
     it("is the name the last update noted, where that update left it running by image id", async () => {

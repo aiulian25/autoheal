@@ -5,6 +5,7 @@ import {
   DEFAULT_SELF_CONTAINER_NAME,
   SSH_HOST_FILES,
   SSH_SESSION,
+  SELF_UPDATE,
 } from "../../shared/constants.js";
 import type { SshRunnerDetails } from "./ssh-hosts-service.js";
 
@@ -29,7 +30,13 @@ export function sshRunnerConfig(
     ollama: null,
     gotify: null,
     dryRun: settings.dryRun,
-    protectedContainers: new Set([...settings.protectedContainers, DEFAULT_SELF_CONTAINER_NAME]),
+    // As a runner's own .env gives: Autoheal's container, and what its update runs beside it.
+    protectedContainers: new Set([
+      ...settings.protectedContainers,
+      DEFAULT_SELF_CONTAINER_NAME,
+      `${DEFAULT_SELF_CONTAINER_NAME}${SELF_UPDATE.previousSuffix}`,
+      SELF_UPDATE.helperName,
+    ]),
     dockerSocketPath: SSH_SESSION.dockerSocketPath,
     hostRoot: SSH_HOST_FILES.hostRoot,
     hostFilesystems: [],
