@@ -1,7 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment } from "react";
 import { Link } from "react-router";
-import { API_ROUTES, CONTAINER_QUERY, apiPath, hasUpdate, type ContainerView } from "../../../src/shared/api.js";
+import {
+  API_ROUTES,
+  CONTAINER_QUERY,
+  apiPath,
+  hasNewerVersion,
+  hasUpdate,
+  type ContainerView,
+} from "../../../src/shared/api.js";
 import { CONTAINER_STATE_RUNNING, HOST_STATE } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
 import { Badge, ErrorNotice, Loading, PageHeader, TimeAgo, rowClick } from "../components/common.js";
@@ -93,6 +100,22 @@ function UpdateBadge({ container }: { container: ContainerView }) {
   );
 }
 
+// A newer version than its tag, which only a person can move it to; it leads to the task that says how.
+function NewerVersionBadge({ container }: { container: ContainerView }) {
+  if (!hasNewerVersion(container)) {
+    return null;
+  }
+  const query = new URLSearchParams({
+    [TASK_SEARCH_PARAMETERS.show]: TASK_SHOW.open,
+    [TASK_SEARCH_PARAMETERS.search]: container.name,
+  });
+  return (
+    <Link to={`${PATHS.tasks}?${query}`}>
+      <Badge value={TEXT.updates.newer(container.update.newerTag!)} tone="warning" />
+    </Link>
+  );
+}
+
 // Every column a row has, so the opened stats can span them all.
 const CONTAINER_COLUMNS = 10;
 
@@ -120,7 +143,7 @@ function ContainerRow({
           {container.name}
         </button>{" "}
         {container.protected && <Badge value={TEXT.containers.protected} />} <UpdateBadge container={container} />{" "}
-        <WebLink container={container} />
+        <NewerVersionBadge container={container} /> <WebLink container={container} />
         {compose && <div className="muted small">{compose}</div>}
       </td>
       <td>

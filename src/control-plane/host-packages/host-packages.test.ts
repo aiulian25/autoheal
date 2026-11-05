@@ -217,10 +217,10 @@ describe("a host's own packages", () => {
   });
 
   it.each([
-    [{ setting: "check" as const }, { action: "upgrade_packages", packages: ["openssl"] }, "host_packages_not_allowed"],
+    [{ setting: "off" as const }, { action: "upgrade_packages", packages: ["openssl"] }, "host_packages_not_allowed"],
     // Any admin may reboot or shut down whatever the setting; only a host whose systemd can't be asked refuses.
     [{ unsupported: "no_systemd" as const }, { action: "reboot" }, "host_packages_unsupported"],
-    [{ setting: "check" as const }, { action: "autoremove_packages" }, "host_packages_not_allowed"],
+    [{ setting: "off" as const }, { action: "autoremove_packages" }, "host_packages_not_allowed"],
     [{ setting: "off" as const }, { action: "check_packages" }, "host_packages_not_allowed"],
     [{ unsupported: "no_systemd" as const }, { action: "check_packages" }, "host_packages_unsupported"],
   ])("refuses what the host's own .env or its system does not allow (%o)", async (hostFacts, payload, error) => {
@@ -231,6 +231,16 @@ describe("a host's own packages", () => {
 
     expect(refused.statusCode).toBe(409);
     expect(refused.json()).toMatchObject({ error });
+  });
+
+  it("lets a person install what is listed on a host set to check, but never Autoheal or Ollama by themselves", async () => {
+    await checked();
+    await report({ setting: "check" });
+
+    const upgrade = await ask({ action: "upgrade_packages", packages: ["curl"] });
+
+    expect(upgrade.json()).toMatchObject({ action: "upgrade_packages", status: "pending" });
+    expect(() => controlPlane.services.hostPackages.requireUpgrade(hostId, ["openssl"])).toThrow();
   });
 
   it("checks again by itself after an upgrade, so the page and the task follow at once", async () => {

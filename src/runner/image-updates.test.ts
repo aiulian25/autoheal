@@ -65,6 +65,7 @@ describe("ImageUpdateChecker", () => {
       inspectImage: async (reference) => images.get(reference) ?? null,
     },
     {
+      tags: async () => [],
       digest: async (reference: ImageReference) => {
         asked.push(`${reference.registry}/${reference.repository}:${reference.tag}`);
         if (registryDown || reference.repository === "private") {
@@ -199,6 +200,7 @@ describe("ImageUpdateChecker", () => {
         inspectImage: async (reference) => ({ Id: reference, RepoDigests: [`example/any@${digest("1")}`] }),
       },
       {
+        tags: async () => [],
         digest: async (reference: ImageReference) =>
           reference.tag.startsWith("sha256:") ? reference.tag : newDigests[reference.repository.split("/")[1]!]!,
         labels: async (reference: ImageReference) => {
@@ -235,6 +237,7 @@ it.each([false, true])("keeps different tracked tags on one image independent (r
       inspectImage: async () => ({ Id: id, RepoDigests: [`ghcr.io/example/app@${digest("1")}`] }),
     },
     {
+      tags: async () => [],
       digest: async (reference) => (reference.tag === "canary" ? digest("2") : digest("1")),
       labels: async () => labelled("new"),
     },
@@ -263,6 +266,7 @@ it("deduplicates reference aliases and image inspection while isolating reposito
       },
     },
     {
+      tags: async () => [],
       digest: async (reference) => {
         asked.push(`${reference.registry}/${reference.repository}:${reference.tag}`);
         if (reference.registry === "private.example") throw new Error("refused");
@@ -296,6 +300,7 @@ it("shares concurrent label reads for two tags resolving to one repository diges
       inspectImage: async () => ({ Id: id, RepoDigests: [`ghcr.io/example/app@${digest("1")}`] }),
     },
     {
+      tags: async () => [],
       digest: async (reference) => (reference.tag.startsWith("sha256:") ? reference.tag : digest("2")),
       labels: async () => {
         reads++;
@@ -320,6 +325,7 @@ describe("a tag whose digest moved with nothing new for this machine", () => {
         inspectImage: async () => ({ Id: id, RepoDigests: [`redis@${digest("1")}`] }),
       },
       {
+        tags: async () => [],
         digest: async ({ tag }) => (tag === "latest" ? digest("2") : tag),
         labels: async () => ({ ...labelled("8.2"), configDigest }),
       },
@@ -347,5 +353,54 @@ describe("a tag whose digest moved with nothing new for this machine", () => {
     expect(checker.resultFor(id, reference)?.status).toBe("available");
     checker.confirmCurrent(id, reference);
     expect(checker.resultFor(id, reference)).toMatchObject({ status: "current", remote: null, reason: null });
+  });
+});
+
+describe("a newer version than the tag a container runs", () => {
+  const id = imageId("a");
+  const checkerWith = (listed: string[], pointsTo: Record<string, string> = {}) => {
+    const listings: string[] = [];
+    const checker = new ImageUpdateChecker(
+      {
+        containerSummaries: async () => [
+          summary("one", "ghcr.io/example/app:1.2.0", id),
+          summary("two", "ghcr.io/example/app:1.2.0-alpine", imageId("b")),
+          summary("edge", "ghcr.io/example/app:latest", imageId("c")),
+        ],
+        inspect: async () => null,
+        inspectImage: async (reference) => ({ Id: reference, RepoDigests: [`ghcr.io/example/app@${digest("1")}`] }),
+      },
+      {
+        tags: async (reference) => {
+          listings.push(reference.repository);
+          return listed;
+        },
+        digest: async ({ tag }) => pointsTo[tag] ?? (tag.startsWith("sha256:") ? tag : digest("1")),
+        labels: async () => labelled("new"),
+      },
+    );
+    return { checker, listings };
+  };
+
+  it("is the newest tag of the same line, read from one listing of the repository", async () => {
+    const { checker, listings } = checkerWith(["1.2.0", "1.3.0", "1.10.1", "2.0.0-rc1", "1.3.0-alpine", "latest"], {
+      "1.10.1": digest("3"),
+      "1.3.0-alpine": digest("4"),
+    });
+
+    await checker.checkAll();
+
+    expect(listings).toEqual(["example/app"]);
+    expect(checker.resultFor(id, "ghcr.io/example/app:1.2.0")?.newerTag).toBe("1.10.1");
+    expect(checker.resultFor(imageId("b"), "ghcr.io/example/app:1.2.0-alpine")?.newerTag).toBe("1.3.0-alpine");
+    expect(checker.resultFor(imageId("c"), "ghcr.io/example/app:latest")?.newerTag).toBeUndefined();
+  });
+
+  it("is none when the newer tag is the very image it runs", async () => {
+    const { checker } = checkerWith(["1.2.0", "1.2.1"], { "1.2.1": digest("1") });
+
+    await checker.checkAll();
+
+    expect(checker.resultFor(id, "ghcr.io/example/app:1.2.0")?.newerTag).toBeUndefined();
   });
 });

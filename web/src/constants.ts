@@ -1686,16 +1686,19 @@ export const TEXT = {
     installNow: "Install now",
     whatChanged: "What changed this week",
     allowed: {
-      apply: "Autoheal may check and update this host's packages: HOST_PACKAGES=apply in its .env.",
-      check: "Autoheal may check this host's packages but not change them: HOST_PACKAGES=check in its .env.",
-      off: "Autoheal leaves this host's packages alone, so it cannot list its updates here. To see each one, what it is and where it comes from, and tick which to install, add HOST_PACKAGES=apply to this host's .env (HOST_PACKAGES=check only lists them), then run docker compose up -d there.",
+      apply:
+        "Autoheal lists this host's packages, installs what you tick, and may install security fixes by itself: HOST_PACKAGES=apply in its .env.",
+      check:
+        "Tick what to install and install it from here. Autoheal installs nothing by itself (HOST_PACKAGES=apply in this host's .env lets it put security fixes in at night).",
+      off: "Autoheal leaves this host's packages alone, so it cannot list its updates here. To see each one and tick which to install, add HOST_PACKAGES=check to this host's .env (HOST_PACKAGES=apply also lets Autoheal install security fixes by itself), then run docker compose up -d there.",
     },
     // A host reached over SSH keeps the same choice on its own page, and runs its jobs as root with its saved password.
     allowedOverSsh: {
       apply:
-        "Autoheal may check and update this host's packages, as root with the password saved on its Over SSH card.",
-      check: "Autoheal may check this host's packages but not change them, as chosen on its Over SSH card.",
-      off: "Autoheal leaves this host's packages alone, so it cannot list its updates here. To see each one and tick which to install, choose Check and apply updates in the Settings of its Over SSH card, and save its root password there.",
+        "Autoheal lists this host's packages, installs what you tick, and may install security fixes by itself, as root with the password saved on its Over SSH card.",
+      check:
+        "Tick what to install and install it from here, as root with the password saved on its Over SSH card. Autoheal installs nothing by itself.",
+      off: "Autoheal leaves this host's packages alone, so it cannot list its updates here. To see each one and tick which to install, choose “Check, and install what I tick” in the Settings of its Over SSH card, and save its root password there.",
     },
     unsupported: {
       no_package_manager:
@@ -1915,8 +1918,8 @@ export const TEXT = {
       hostPackages: "Operating system packages",
       packageChoices: {
         [HOST_PACKAGES.off]: "Leave them alone",
-        [HOST_PACKAGES.check]: "Check for updates",
-        [HOST_PACKAGES.apply]: "Check and apply updates",
+        [HOST_PACKAGES.check]: "Check, and install what I tick",
+        [HOST_PACKAGES.apply]: "Also install security fixes by itself",
       } satisfies Record<HostPackagesSetting, string>,
       checkpointLimit: "Data kept aside before an update (GB, 0 for none)",
       save: "Save",
@@ -1929,7 +1932,11 @@ export const TEXT = {
     inPlaceWaiting: "waiting",
     // A runner host whose runner runs another version than Autoheal: what to run in its runner's folder.
     runnerBehind: (runner: string, autoheal: string) =>
-      `Its runner runs ${runner}, and Autoheal ${autoheal}. To update it, run this on that host, in the runner's folder:`,
+      `Its runner runs ${runner}, and Autoheal ${autoheal}. Update it to Autoheal's release, from here or from whatever manages that host's containers.`,
+    updateRunner: "Update runner",
+    updateRunnerAsked:
+      "Asked. The runner pulls Autoheal's release and is replaced in a moment, keeping its settings; it is put back if the new one does not come back healthy. This goes once it reports the new release.",
+    orOnHost: "Or run this on that host, in the runner's folder:",
     states: {
       [SSH_STATE.connecting]: "connecting over SSH",
       [SSH_STATE.connected]: "connected over SSH",
@@ -2713,8 +2720,13 @@ export const TEXT = {
     title: "Container images",
     actionsLabel: "Apply the ticked updates",
     line: (hours: number) =>
-      `Checked every ${hours} hours. Applied by recreating the container with its settings and volumes.`,
+      `Checked every ${hours === 1 ? "hour" : `${hours} hours`}, for a new image behind each tag and a newer version ` +
+      "than it. Applied by recreating the container with its settings and volumes.",
     allCurrent: "Every image here is up to date.",
+    newerTitle: "Newer versions",
+    newerHint:
+      "The tag is yours, so Autoheal does not change it: write the new one where the container is deployed (its " +
+      "compose file or run command), then pull and recreate it.",
     watching: (count: number) =>
       `${count} new ${count === 1 ? "image is" : "images are"} out, but this host only watches. Set ${ENV_DRY_RUN}=0 on it to update from here.`,
     selectOne: (name: string) => `Update ${name}`,
@@ -2723,12 +2735,15 @@ export const TEXT = {
       queued: "next in line",
       current: "updating now…",
       done: "updated",
-      failed: "did not come back healthy",
+      failed: "not updated",
       waits: "waits: one before it went wrong",
     },
     running: (name: string, position: number, count: number) => `Updating ${name}, ${position} of ${count}…`,
     finished: (count: number) => `Updated ${count} ${count === 1 ? "container" : "containers"}.`,
-    stopped: (failed: string) => `${failed} did not come back healthy, so the rest wait for you.`,
+    stopped: (failed: string, outcome: string | null) =>
+      outcome === null
+        ? `${failed} was not updated, so the rest wait for you.`
+        : `${failed} was not updated, so the rest wait for you: ${outcome}`,
   },
   containers: {
     title: "Containers",
@@ -2889,6 +2904,7 @@ export const TEXT = {
       install: "Install",
       uninstall: "Take away",
       uninstall_with_data: "Take away with its data",
+      update_runner: "Update runner",
     } satisfies Record<JobAction, string>,
     recovery: (name: string) =>
       `Data recovery is incomplete. Use Roll back on ${name} to resume it. Other changes are blocked.`,
@@ -2899,13 +2915,11 @@ export const TEXT = {
     confirmRemove: (containers: string) => `Remove ${containers}? Volumes are kept.`,
     by: (who: string) => `for ${who}`,
     waiting: "On its way to the host's runner…",
-    checkHost: "Check for updates",
+    checkImages: "Check images",
+    checkPackages: "Check packages",
     hostCheck: {
       images: "Image check",
       packages: "Package check",
-      retryPackages: "Retry package check",
-      partial:
-        "The image check was accepted. Retry requests only the unconfirmed package check. If a response was lost, check Activity before retrying.",
       unavailable: "Check status is unavailable. Refresh status before requesting another check.",
       refresh: "Refresh check status",
       states: {
@@ -2934,6 +2948,7 @@ export const TEXT = {
   },
   updates: {
     available: "update",
+    newer: (tag: string) => `${tag} out`,
     openLink: "Open",
     versions: (from: string, to: string) => `${from} → ${to}`,
     built: "built",
@@ -4030,6 +4045,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   availability_groups_full: "There are as many groups as Autoheal keeps. Remove one first.",
   availability_gate:
     "This would leave an availability group with less serving than it needs. Its replicas are on the Fleet page.",
+  runner_update_not_here:
+    "Only a runner container on its own host is updated from here. This machine updates with Autoheal itself, and a host reached over SSH already runs Autoheal's own code.",
   registry_scope_taken: "A credential for that registry and repository is already set up. Replace that one instead.",
   registry_credential_not_found: "That credential is no longer set up.",
   registry_repository_needed: "Give a repository to try it against: this credential covers the whole registry.",
@@ -4038,7 +4055,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
     "This credential was sealed with another backup passphrase, so it cannot be read. Give it again.",
   integration_token_required: "Give its token: a token is needed, and a changed address needs it again.",
   integration_not_set: "Set it up first.",
-  host_packages_not_allowed: "This host's own .env does not allow that: HOST_PACKAGES=apply there allows it.",
+  host_packages_not_allowed:
+    "This host does not allow that: HOST_PACKAGES=check lets you do it from here, and apply lets Autoheal do it by itself.",
   host_packages_unsupported: "Autoheal cannot reach this host's packages: see why under OS updates.",
   host_packages_busy: "A package job is already on its way to this host, or running there.",
   packages_not_offered: "Check again first: that is not what the host's last check offered.",

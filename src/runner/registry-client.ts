@@ -5,6 +5,7 @@ import {
   HTTP_HEADERS,
   HTTP_STATUS,
   IMAGE_LABEL_CHARACTERS,
+  IMAGE_TAG_PATTERN,
   IMAGE_REFERENCE,
   LABEL_SCHEMA_LABELS,
   LOOPBACK_HOST_PATTERN,
@@ -114,6 +115,7 @@ export interface SignatureArtifact {
 /** What a manifest, an index or an image configuration holds that is read here; all of it is the registry's word. */
 interface RegistryDocument {
   mediaType?: unknown;
+  tags?: unknown;
   manifests?: { digest?: unknown; platform?: { os?: unknown; architecture?: unknown } }[];
   layers?: { mediaType?: unknown; digest?: unknown; annotations?: Record<string, unknown> | null }[];
   config?: {
@@ -187,6 +189,14 @@ export type RemoteImage = ImageLabels & { configDigest?: string };
 /** What a runner may use right now, which its heartbeat answers keep current. */
 export type RegistryCredentials = () => readonly RegistryAccess[];
 
+// The page a Link header names as next, when it is on the same address as this one.
+function nextPageOf(response: Response, current: string): string | null {
+  const link = response.headers.get(REGISTRY.linkHeader)?.match(REGISTRY.nextLinkPattern)?.[1];
+  if (link === undefined) return null;
+  const next = new URL(link, response.url || current);
+  return next.origin === new URL(current).origin ? next.toString() : null;
+}
+
 export class RegistryClient {
   constructor(
     private readonly fetchImplementation: typeof fetch = fetch,
@@ -246,6 +256,28 @@ export class RegistryClient {
       });
     }
     return artifacts;
+  }
+
+  /**
+   * The tags a repository lists, page by page as its Link header leads, for a newer version than the one a container
+   * runs. Listing tags is no pull on Docker Hub. A next page on another address is not followed: the token is for
+   * this registry alone.
+   */
+  async tags(reference: ImageReference): Promise<string[]> {
+    const found: string[] = [];
+    let url: string | null = `${this.repositoryUrl(reference)}/tags/list?n=${REGISTRY.tagsPageSize}`;
+    let token: string | null = null;
+    // ponytail: bounded pages; a repository with more tags than that is read only as far as they go.
+    for (let page = 0; url !== null && page < REGISTRY.tagsPages; page += 1) {
+      const answer: { response: Response; token: string | null } = await this.authorized(url, "GET", reference, token);
+      token = answer.token;
+      const next = nextPageOf(answer.response, url);
+      const { tags } = await this.documentOf(answer.response);
+      const listed = Array.isArray(tags) ? tags : [];
+      found.push(...listed.filter((tag): tag is string => typeof tag === "string" && IMAGE_TAG_PATTERN.test(tag)));
+      url = next;
+    }
+    return found;
   }
 
   /** What an image's build says it needs, without pulling it: for a machine of this architecture, if it runs there. */

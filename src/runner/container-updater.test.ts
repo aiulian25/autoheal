@@ -510,6 +510,45 @@ describe("ContainerUpdater", () => {
         JOB_OUTCOMES.checkpointUnavailable,
       );
 
+    // A host that has a copy service, whose copy of this container's data does not complete: too much of it, or the
+    // copy failed. What happened to arcane-agent on a real host — refused by hand, though the dialog said it would go.
+    const INCOMPLETE = "more than this host keeps for one container";
+    const withIncompleteCopies = () =>
+      new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (_name, details) => ({ ...completeCheckpoint(details, INCOMPLETE), complete: false }),
+          verify: async () => ({ at: null, problem: null }),
+          restore: async () => ({ at: null, problem: null }),
+          discard: async () => {},
+        },
+      );
+
+    it("updates by hand one set to undo a failed update when its data cannot be copied, as it was told it would", async () => {
+      const result = await withIncompleteCopies().update("app", true, undefined, { allowWithoutCheckpoint: true });
+      expect(result.succeeded).toBe(true);
+      expect(result.outcome).toContain(INCOMPLETE);
+      expect(app()).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
+    });
+
+    it("does not undo by hand one whose data it could not copy, when it starts badly: the old one waits aside", async () => {
+      docker.afterStart = () => ({ Status: "exited", Running: false, ExitCode: 1 });
+      await withIncompleteCopies().update("app", true, undefined, { allowWithoutCheckpoint: true });
+      expect(docker.find("app-autoheal-old")).toMatchObject({ Image: OLD_IMAGE });
+      expect(app()).toMatchObject({ Image: NEW_IMAGE });
+    });
+
+    it("still refuses an automatic update whose data it could not copy, before anything is put in place", async () => {
+      const result = await withIncompleteCopies().update("app", true);
+      expect(result.succeeded).toBe(false);
+      expect(result.outcome).toContain(JOB_OUTCOMES.checkpointRequired);
+      expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+    });
+
     it("refuses an automatic update of a container with data before stopping anything, saying why", async () => {
       const result = await withoutCopies().update("app");
       expect(result).toEqual({

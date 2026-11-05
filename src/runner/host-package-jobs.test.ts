@@ -171,7 +171,6 @@ describe("package jobs on the runner's host", () => {
   it.each([
     ["off", "check_packages", "Refused: this host's HOST_PACKAGES is off. Its own .env allows checks"],
     ["off", "upgrade_packages", "Refused: this host's HOST_PACKAGES is off."],
-    ["check", "upgrade_packages", "Refused: this host's HOST_PACKAGES is check."],
   ] as const)("with HOST_PACKAGES=%s, refuses %s without starting anything", async (setting, action, outcome) => {
     supportedHost();
     const result = await jobsFor({ helperSays: null, running: [] }, setting).run(job({ action }));

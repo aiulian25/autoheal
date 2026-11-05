@@ -717,6 +717,37 @@ describe("detectors", () => {
     ]);
   });
 
+  it("tells of a newer version than a container's tag once per version, and lets the last one go", async () => {
+    const checked = (newerTag?: string) => ({
+      status: "current" as const,
+      checkedAt: 1,
+      remoteDigest: `sha256:${"b".repeat(64)}`,
+      ...(newerTag === undefined ? {} : { newerTag }),
+    });
+    await report([
+      containerSnapshot({ name: "paperless", update: checked("2.14") }),
+      containerSnapshot({ name: "postgres", image: "postgres:16", update: checked("17"), updatePolicy: "off" }),
+    ]);
+    await detector.run();
+    const [first] = await tasks();
+    expect((await tasks()).map((task) => task.title)).toEqual(["2.14 is out for paperless on Alder"]);
+    expect((await detail(first!.id)).description).toContain("ghcr.io/paperless-ngx/paperless-ngx:2.14");
+    expect(first!.assignee).toMatchObject({ kind: "user", name: "admin" });
+
+    // A later release is news of its own: a task of its own, and the earlier one closes.
+    await report([containerSnapshot({ name: "paperless", update: checked("2.15") })]);
+    await detector.run();
+    expect((await tasks()).map((task) => task.title)).toEqual(["2.15 is out for paperless on Alder"]);
+    expect(await detail(first!.id)).toMatchObject({ status: "done" });
+
+    // Moved to it by hand: nothing newer is out, and the task closes.
+    await report([
+      containerSnapshot({ name: "paperless", image: "ghcr.io/paperless-ngx/paperless-ngx:2.15", update: checked() }),
+    ]);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+  });
+
   it("lists Home Assistant's own updates in one task that follows them, and closes it once none is left", async () => {
     const waiting = (...updates: [string, string, string][]) =>
       homeAssistantView({

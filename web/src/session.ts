@@ -48,7 +48,7 @@ export function requiredStep(session: SessionView | null): string | null {
   return null;
 }
 
-export const isAdmin = (session: SessionView | null | undefined) => session?.user.role === ROLE_ADMIN;
+export const isAdmin = (session: SessionView | null | undefined) => session?.user?.role === ROLE_ADMIN;
 
 /** The session inside the signed-in app, where the router guarantees there is one. */
 export const useSignedInSession = (): SessionView => useSession().data!;

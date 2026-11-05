@@ -54,6 +54,8 @@ const STACK_JOB_ACTIONS = [
 ] as const;
 const hostActionBody = z.union([
   z.object({ action: z.literal(JOB_ACTION.checkUpdates) }),
+  // No image: a runner only ever moves to the release its control plane runs.
+  z.object({ action: z.literal(JOB_ACTION.updateRunner) }),
   z.object({
     action: z.literal(JOB_ACTION.removeImages),
     images: z.array(z.string().regex(DIGEST_PATTERN)).min(1).max(REPORT_LIMITS.unusedImages),

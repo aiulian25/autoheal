@@ -1,8 +1,9 @@
 import { RolloutPlan } from "../components/rollout-plan.js";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { hasUpdate, type ContainerView, type HostView } from "../../../src/shared/api.js";
+import { hasNewerVersion, hasUpdate, type ContainerView, type HostView } from "../../../src/shared/api.js";
 import { UPDATE_CHECK_INTERVAL_MILLISECONDS } from "../../../src/shared/constants.js";
+import { imageTag } from "../../../src/shared/image-reference.js";
 import { ErrorNotice } from "../components/common.js";
 import { ImageVersions } from "../components/container-actions.js";
 import { INVENTORY_REFRESH_MILLISECONDS, MILLISECONDS_PER_HOUR, TEXT } from "../constants.js";
@@ -32,6 +33,8 @@ function ContainerImages({
     (container: ContainerView) => hasUpdate(container) && container.handsOff === null,
   );
   const newImages = (containers.data ?? []).filter(hasUpdate).length;
+  const newerVersions = (containers.data ?? []).filter(hasNewerVersion);
+  const allCurrent = containers.data !== undefined && newImages === 0 && newerVersions.length === 0;
   const selected = waiting.map(({ name }) => name).filter((name) => !unticked.has(name));
   const toggle = (name: string) =>
     setUnticked(
@@ -42,7 +45,7 @@ function ContainerImages({
       <div className="update-card-body">
         <h3 id="container-images-title">{text.title}</h3>
         <p className="update-card-line">{text.line(UPDATE_CHECK_INTERVAL_MILLISECONDS / MILLISECONDS_PER_HOUR)}</p>
-        {newImages === 0 && containers.data !== undefined && <p className="muted">{text.allCurrent}</p>}
+        {allCurrent && <p className="muted">{text.allCurrent}</p>}
         {newImages > 0 && host.dryRun === true && <p className="muted">{text.watching(newImages)}</p>}
         {waiting.length > 0 && (
           <ul className="update-rows">
@@ -72,6 +75,25 @@ function ContainerImages({
           </ul>
         )}
         {latest !== null && <p className="small muted">{runLine(latest)}</p>}
+        {newerVersions.length > 0 && (
+          <>
+            <h4>{text.newerTitle}</h4>
+            <ul className="update-rows">
+              {newerVersions.map((container) => (
+                <li key={container.name} className="update-row">
+                  <span className="tick-space" />
+                  <span className="update-what">
+                    <span className="mono">{container.name}</span>
+                    <span className="small">
+                      {TEXT.updates.versions(imageTag(container.image), container.update.newerTag!)}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="small muted">{text.newerHint}</p>
+          </>
+        )}
       </div>
       {admin && waiting.length > 0 && (
         <footer className="update-card-foot">

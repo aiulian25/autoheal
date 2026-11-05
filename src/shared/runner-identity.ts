@@ -35,6 +35,7 @@ const CONTROL_PLANE_MODULES = [
   "commands/restore.js",
   "commands/backup-passphrase.js",
   "commands/self-update.js",
+  "commands/recover.js",
 ];
 
 // Whole statements only, anchored: a string holding the word "from" is not an import.

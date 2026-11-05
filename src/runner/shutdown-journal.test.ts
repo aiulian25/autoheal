@@ -47,7 +47,7 @@ describe("shutdown write-ahead records", () => {
       ]);
       expect(JSON.stringify(pending)).not.toContain("SYNTHETIC_SECRET");
       expect(JSON.stringify(pending)).not.toContain("PRIVATE_COMMAND");
-      await expect(recovered.assertClean()).rejects.toThrow("operator recovery");
+      await expect(recovered.assertClean()).rejects.toThrow("needs clearing before this runner can start");
       gate.release();
       await work;
       await recovered.assertClean();
@@ -80,7 +80,9 @@ describe("shutdown write-ahead records", () => {
         throw new Error("interrupted");
       }),
     ).rejects.toThrow();
-    await expect(new ShutdownJournal(storage).assertClean()).rejects.toThrow("operator recovery");
+    await expect(new ShutdownJournal(storage).assertClean()).rejects.toThrow(
+      "needs clearing before this runner can start",
+    );
     await storage.createVolume("bad", { "autoheal.shutdown.journal": "1", "autoheal.shutdown.record": "{}" });
     await expect(journal.pending()).rejects.toThrow();
   });
@@ -137,11 +139,11 @@ describe("shutdown write-ahead records", () => {
     // Started again in the same boot: the reboot did not happen, so a person decides.
     const sameBoot = new ShutdownJournal(engine, () => "boot-a");
     await sameBoot.settleReboots();
-    await expect(sameBoot.assertClean()).rejects.toThrow("operator recovery");
+    await expect(sameBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
     // Where the boot cannot be read, nothing counts as rebooted.
     const unknownBoot = new ShutdownJournal(engine);
     await unknownBoot.settleReboots();
-    await expect(unknownBoot.assertClean()).rejects.toThrow("operator recovery");
+    await expect(unknownBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
     expect(removed).toEqual([]);
 
     const nextBoot = new ShutdownJournal(engine, () => "boot-b");
@@ -165,7 +167,7 @@ describe("shutdown write-ahead records", () => {
     await entered.promise;
     const nextBoot = new ShutdownJournal(storage, () => "boot-b");
     await nextBoot.settleReboots();
-    await expect(nextBoot.assertClean()).rejects.toThrow("operator recovery");
+    await expect(nextBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
   });
 
   describe("an action interrupted before it changed anything", () => {
@@ -191,7 +193,9 @@ describe("shutdown write-ahead records", () => {
       async (operation) => {
         const storage = store();
         interrupted(storage, operation);
-        await expect((await settled(storage)).assertClean()).rejects.toThrow("operator recovery");
+        await expect((await settled(storage)).assertClean()).rejects.toThrow(
+          "needs clearing before this runner can start",
+        );
       },
     );
 
@@ -200,7 +204,9 @@ describe("shutdown write-ahead records", () => {
       const journal = new ShutdownJournal(storage);
       const docker = journal.docker({ pull: (_image: string) => new Promise(() => undefined) });
       void journal.run("job:job-1:update", "app", () => docker.pull!("redis"));
-      await expect((await settled(storage)).assertClean()).rejects.toThrow("operator recovery");
+      await expect((await settled(storage)).assertClean()).rejects.toThrow(
+        "needs clearing before this runner can start",
+      );
     });
   });
 });

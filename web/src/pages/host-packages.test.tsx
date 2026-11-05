@@ -396,11 +396,13 @@ describe("a host's packages, as drawn, with the details a click away", () => {
     expect(await screen.findByText(/^\.\. It failed: E: Sub-process/)).toBeTruthy();
   });
 
-  it("offers nothing to install where the host allows only checks, and nothing to a viewer", async () => {
-    show(view({ facts: facts({ setting: "check" }) }));
-    expect(await screen.findByText(/Autoheal may check this host's packages but not change them/)).toBeTruthy();
-    expect(screen.queryByRole("checkbox")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Install/ })).toBeNull();
+  it("lets an admin tick and install where the host lists its updates, and offers nothing to a viewer", async () => {
+    const { fetch } = show(view({ facts: facts({ setting: "check" }), automatic: [] }));
+    expect(await screen.findByText(/Tick what to install and install it from here/)).toBeTruthy();
+    expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Install now/ }));
+    await waitFor(() => expect(posted(fetch)).toHaveLength(1));
+    expect(posted(fetch)[0]).toMatchObject({ action: "upgrade_packages" });
     cleanup();
 
     show(view(), false);
@@ -458,7 +460,7 @@ describe("a host's packages, as drawn, with the details a click away", () => {
   it("says how to let Autoheal list the updates where the host's .env keeps its packages off", async () => {
     show(view({ facts: facts({ setting: "off" }), checkedAt: null, packages: [], automatic: [], forPerson: [] }));
 
-    expect(await screen.findByText(/add HOST_PACKAGES=apply to this host's .env/)).toBeTruthy();
+    expect(await screen.findByText(/add HOST_PACKAGES=check to this host's .env/)).toBeTruthy();
     expect(screen.queryByText("Not checked yet.")).toBeNull();
     expect(screen.queryByRole("button", { name: /Install/ })).toBeNull();
   });

@@ -117,12 +117,15 @@ export interface ContainerJobsDependencies {
   reportProgress: (jobId: string, progress: UpdateProgress) => Promise<unknown>;
   // Whether the host's page has an image clean-up clear Docker's build cache too.
   clearBuildCache: () => boolean;
+  // This sidecar runner handing itself over to its control plane's release; absent where it cannot be (in place).
+  updateRunner?: () => Promise<JobResult>;
 }
 
 type ChangingAction = Exclude<
   ContainerAction,
   | typeof JOB_ACTION.logs
   | typeof JOB_ACTION.checkUpdates
+  | typeof JOB_ACTION.updateRunner
   | typeof JOB_ACTION.pruneImages
   | typeof JOB_ACTION.removeImages
   | typeof JOB_ACTION.createNetwork
@@ -341,6 +344,13 @@ export class ContainerJobs {
     if (job.action === JOB_ACTION.checkUpdates) {
       return job.operatorUserId === undefined
         ? this.checkUpdates()
+        : Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
+    }
+    // A person asked, from the dashboard; never on an operator's grant, which is about containers, not this runner.
+    if (job.action === JOB_ACTION.updateRunner) {
+      const update = this.dependencies.updateRunner;
+      return job.operatorUserId === undefined && update !== undefined
+        ? update()
         : Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
     }
     if (

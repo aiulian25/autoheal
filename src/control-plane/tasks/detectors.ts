@@ -1,4 +1,5 @@
 import {
+  hasNewerVersion,
   hasUpdate,
   updateVersions,
   type AssigneeChoice,
@@ -20,6 +21,7 @@ import {
   DETECTOR_THRESHOLDS,
   HOME_ASSISTANT_UPDATES_RESOURCE,
   HOST_STATE,
+  IMAGE_REFERENCE,
   POWER_PHASE,
   IMAGE_CLEANUP,
   LIFECYCLE_STATUS,
@@ -43,6 +45,7 @@ import {
   wordsOf,
 } from "../../shared/constants.js";
 import { driveProblems } from "../../shared/drive-health.js";
+import { imageRepository } from "../../shared/image-reference.js";
 import type { UnusedImage } from "../../shared/protocol.js";
 import { utcMinute } from "../../shared/time-zones.js";
 import { lifecycleOf } from "../host-packages/lifecycle.js";
@@ -179,6 +182,30 @@ function updates(inputs: DetectorInputs): Detection {
   );
   const prefixes = [...online].map((hostId) => keyOf(DETECTOR_KEYS.update, hostId));
   return { problems, judges: (key) => startsWithAny(key, prefixes) && !unknown.has(key) };
+}
+
+/** A newer version than the tag a container runs: a person's to take, as the tag is theirs to write. */
+function newerVersions(inputs: DetectorInputs): Detection {
+  const online = new Set(onlineHosts(inputs).map((host) => host.id));
+  const reported = inputs.containers.filter((container) => online.has(container.hostId));
+  const problems = reported.filter(hasNewerVersion).map((container) => {
+    const tag = container.update.newerTag!;
+    return finding(inputs, {
+      key: keyOf(DETECTOR_KEYS.newerVersion, container.hostId, container.name, tag),
+      title: TASK_TEXT.newerVersion(container.name, container.hostLabel, tag),
+      description: TASK_TEXT.newerVersionDetails(
+        container.image,
+        `${imageRepository(container.image)}${IMAGE_REFERENCE.tagSeparator}${tag}`,
+      ),
+      priority: TASK_PRIORITY.low,
+      hostId: container.hostId,
+      resource: { kind: TASK_RESOURCE.container, id: container.name, label: container.name },
+    });
+  });
+  // Only a host whose check has run says a version is no longer newer.
+  const checked = reported.filter((container) => container.update.status !== null).map(({ hostId }) => hostId);
+  const prefixes = [...new Set(checked)].map((hostId) => keyOf(DETECTOR_KEYS.newerVersion, hostId));
+  return { problems, judges: (key) => startsWithAny(key, prefixes) };
 }
 
 /** True when every reading in the last `window` holds, null when the readings don't go back that far. */
@@ -828,6 +855,7 @@ export function detect(inputs: DetectorInputs): Detection {
   const detections = [
     containers(inputs),
     updates(inputs),
+    newerVersions(inputs),
     hosts(inputs),
     revokedHosts(inputs),
     ollama(inputs),

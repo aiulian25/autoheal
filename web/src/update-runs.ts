@@ -45,7 +45,7 @@ export function runLine(run: UpdateRunView): string {
     return text.finished(run.done.length);
   }
   if (run.status === UPDATE_RUN_STATUS.stopped) {
-    return text.stopped(run.failed ?? "");
+    return text.stopped(run.failed ?? "", run.failedOutcome ?? null);
   }
   const current = run.current ?? run.names[run.done.length] ?? "";
   return text.running(current, run.done.length + 1, run.names.length);

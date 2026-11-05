@@ -134,6 +134,7 @@ export function containerViewsOf(
         remote: update?.remote ?? null,
         reason: update?.reason ?? null,
         provenance: update?.provenance ?? null,
+        newerTag: update?.newerTag ?? null,
       },
       // The inventory is newer than the stats when a container has just stopped.
       usage: container.state === CONTAINER_STATE_RUNNING ? (usage.get(container.name) ?? null) : null,

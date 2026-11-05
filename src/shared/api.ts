@@ -453,6 +453,8 @@ export const API_ERRORS = {
   integrationNotSet: "integration_not_set",
   // One credential per registry and repository scope, so which one a pull uses is never a question of order.
   registryScopeTaken: "registry_scope_taken",
+  // Only a sidecar runner can be updated on its own: the control plane's machine and SSH hosts move with it.
+  runnerUpdateNotHere: "runner_update_not_here",
   // An application's replicas across the fleet, and how much of it must keep serving.
   availabilityNameTaken: "availability_name_taken",
   availabilityGroupNotFound: "availability_group_not_found",
@@ -672,6 +674,8 @@ export interface ContainerUpdateView {
   reason: string | null;
   // Who published the newer image, where a trust rule asks for proof; null where nothing asks.
   provenance?: ImageProvenance | null;
+  // A newer version's tag than the one it runs (1.2.0 → 1.3.0); null when none is out, or its tag is no version.
+  newerTag?: string | null;
 }
 
 /** An SSH host's session: where it is, since when, and why when it is not connected. */
@@ -944,8 +948,11 @@ export interface UpdateRunView {
   status: UpdateRunStatus;
   current: string | null;
   done: string[];
-  // The one that did not come back healthy; the ones after it wait.
+  // The one that stopped the run; the ones after it wait.
   failed: string | null;
+  // What actually happened to it, in its runner's own words: refused before anything stopped, or started badly.
+  // Null while nothing has gone wrong. Absent from control planes before it.
+  failedOutcome?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -984,6 +991,10 @@ export interface AgentDispatchView {
 /** A newer image waits behind its tag, and its label lets someone update it. */
 export const hasUpdate = (container: ContainerView) =>
   container.update.status === UPDATE_STATUS.available && container.update.policy !== UPDATE_POLICY.off;
+
+/** A newer version than the tag it runs is out, unless its label turns updates off. */
+export const hasNewerVersion = (container: ContainerView) =>
+  container.update.newerTag != null && container.update.policy !== UPDATE_POLICY.off;
 
 export interface UpdateVersions {
   from: string;

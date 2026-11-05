@@ -222,13 +222,14 @@ export class HostPackageJobs {
     return this.follow(job.id, verb, permission.manager, job.packages, false);
   }
 
-  // Only the host's own .env lets a package job through, only on a host whose systemd can be asked, and a reboot or
-  // a shutdown, which any admin may ask for, never while a person's container action is still going on.
+  // Only the host's own .env lets a package job through (any setting but off: the control plane keeps the jobs
+  // Autoheal and Ollama start themselves to apply), only on a host whose systemd can be asked, and a reboot or a
+  // shutdown, which any admin may ask for, never while a person's container action is still going on.
   private async permission(verb: HostPackageVerb): Promise<Permission> {
     const { hostPackages, hostRoot } = this.dependencies.settings;
     const powering = isPowerVerb(verb);
     const checking = verb === HOST_PACKAGE_VERB.check;
-    const allowed = powering || (checking ? hostPackages !== HOST_PACKAGES.off : hostPackages === HOST_PACKAGES.apply);
+    const allowed = powering || hostPackages !== HOST_PACKAGES.off;
     if (!allowed) {
       return {
         refusal: checking ? HOST_PACKAGE_OUTCOMES.checkNotAllowed : HOST_PACKAGE_OUTCOMES.notAllowed(hostPackages),

@@ -20,6 +20,17 @@ export interface SelfUpdateDatabase {
   discard(snapshot: DatabaseSnapshot): void;
 }
 
+/**
+ * A sidecar runner keeps no database: nothing to copy before its container is replaced, nothing to put back after.
+ * Everything else about the swap — the recreate, the health watch, the roll-back — is the same as the control plane's.
+ */
+export const NO_DATABASE: SelfUpdateDatabase = {
+  snapshot: async () => ({ path: "", schemaVersion: 0 }),
+  needsRestore: () => false,
+  restoreIfNeeded: () => false,
+  discard: () => undefined,
+};
+
 function verified(path: string): number {
   const { integrity, schemaVersion } = inspectSnapshot(path);
   if (integrity !== INTEGRITY_OK) throw new Error(`database check failed: ${integrity}`);

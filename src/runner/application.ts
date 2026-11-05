@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { handOverToRelease } from "./runner-self-update.js";
 import type { VolumeReport } from "../shared/volumes.js";
 import { RUNNING_VERSION } from "../shared/build-version.js";
 import { containerResources } from "./operation-coordinator.js";
@@ -30,6 +32,8 @@ import {
   JOB_OUTCOMES,
   NVIDIA_SMI,
   ALIVE_FILE_PATH,
+  DEFAULT_DOCKER_SOCKET_PATH,
+  RUNNER_UPDATE_TEXT,
   EDIT_OUTCOMES,
   EVENT_STREAM_RETRY_MILLISECONDS,
   EXEC_EVENT_PREFIX,
@@ -75,7 +79,7 @@ import { ImageUpdateChecker } from "./image-updates.js";
 import { EMPTY_TRUST_POLICY, type ImageTrustPolicy } from "../shared/image-provenance.js";
 import { ImageProvenanceReader } from "./image-provenance.js";
 import { PROBE_LIMITS } from "../shared/probes.js";
-import type { ProbeReport } from "../shared/protocol.js";
+import type { JobResult, ProbeReport } from "../shared/protocol.js";
 import { ServiceProbes } from "./service-probes.js";
 import type { ProvenanceSource } from "./image-updates.js";
 import type { RegistryAccess } from "../shared/registry-credentials.js";
@@ -241,6 +245,22 @@ async function tellPeople(runtime: RunnerRuntime, notice: IncidentNotice) {
     return;
   }
   await postToGotify(config.gotify, message.title, message.body, message.priority);
+}
+
+/**
+ * This sidecar runner handing itself over to the release its control plane runs: the job's outcome says whether it
+ * was handed over, or why nothing changed. Its own container is the one its settings name, as for every other
+ * job that needs it: a hostname is not the container's id on the host's network or with a hostname of its own.
+ */
+async function updateThisRunner(
+  docker: DockerClient,
+  selfContainerName: string,
+  release: string | null,
+): Promise<JobResult> {
+  if (release === null) return { succeeded: false, outcome: RUNNER_UPDATE_TEXT.noRelease, output: null };
+  const socketGroup = statSync(DEFAULT_DOCKER_SOCKET_PATH).gid;
+  const handed = await handOverToRelease(docker, { reference: selfContainerName, socketGroup }, release);
+  return { succeeded: handed.handedOver || handed.upToDate === true, outcome: handed.outcome, output: null };
 }
 
 export async function createRuntime(
@@ -426,10 +446,19 @@ export async function createRuntime(
   runtime.containerBackups = containerBackups;
   guard.externalRecoveryBlocked = (name, id) =>
     applicationBackups.isBlocked(name, id) || containerBackups.isBlocked(name);
+  // Only a runner container of its own can be replaced from here: not the control plane looking after its own machine
+  // (in place, with its own alive file), nor a host reached over SSH (no local host, and no container of its own).
+  const isSidecar = ports.localHost?.aliveFile === ALIVE_FILE_PATH;
   const jobs = new ContainerJobs({
     installs,
     backups: containerBackups,
     stacks,
+    ...(isSidecar
+      ? {
+          updateRunner: () =>
+            updateThisRunner(docker, config.selfContainerName, runtime.fromControlPlane?.release?.image ?? null),
+        }
+      : {}),
     installSpecOf: (jobId) =>
       controlPlane === null ? Promise.reject(new Error(INSTALL_OUTCOMES.gone)) : controlPlane.jobInstall(jobId),
     authorizeOperator: (jobId, members) => controlPlane?.authorizeOperatorJob(jobId, members) ?? Promise.resolve(false),

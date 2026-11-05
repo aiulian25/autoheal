@@ -109,14 +109,35 @@ export class ShutdownJournal {
     }
   }
 
-  async assertClean() {
-    const pending = (await this.pending()).filter(
+  /**
+   * What stands between this runner and starting: operations interrupted part-way, which it will not step over on
+   * its own because one of them may have half-applied something destructive. A hand-over to systemd is not one.
+   */
+  async blocking(): Promise<ShutdownRecord[]> {
+    return (await this.pending()).filter(
       (record) => record.phase !== "delegated" || !record.operation.startsWith("host:"),
     );
-    if (pending.length)
-      throw new Error(
-        `Unfinished runner operations require operator recovery before startup: ${JSON.stringify(pending)}`,
+  }
+
+  async assertClean() {
+    const pending = await this.blocking();
+    if (pending.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(pending));
+  }
+
+  /**
+   * Give up on what was interrupted, because a person has looked and said so: each record is dropped and the
+   * runner may start. Nothing is undone or re-applied — the record is a note that something was in flight, so
+   * dropping it only says "I have checked". Returns what it let go of.
+   */
+  async clearBlocking(): Promise<ShutdownRecord[]> {
+    const pending = await this.blocking();
+    for (const record of pending) {
+      const volumes = (await this.store.volumes(LABEL)).filter((volume) =>
+        volume.Name.startsWith(`autoheal-shutdown-${record.id}-`),
       );
+      for (const volume of volumes) await this.store.removeVolume(volume.Name);
+    }
+    return pending;
   }
 
   async run<Result>(

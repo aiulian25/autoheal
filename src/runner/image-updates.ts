@@ -10,6 +10,7 @@ import {
   type UpdateStatus,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
+import { isVersionTag, newerTags } from "../shared/image-versions.js";
 import type { ImageLabels } from "../shared/protocol.js";
 import type { ContainerSummary, DockerClient } from "./docker-client.js";
 import { ruleForImage, type ImageProvenance, type ImageTrustPolicy } from "../shared/image-provenance.js";
@@ -31,6 +32,9 @@ export interface UpdateCheck {
   remote: ImageLabels | null;
   // Why it could not be checked; null when it was.
   reason: string | null;
+  // The newest tag on the line of the one it runs (1.2.0 → 1.3.0), which only a person can move it to, as the tag
+  // is theirs to write. Left out when none is newer, or its tag is no version (latest).
+  newerTag?: string;
 }
 
 // What one check may still read from Docker Hub, where a manifest GET counts as a pull.
@@ -38,6 +42,8 @@ interface LabelBudget {
   dockerHub: number;
   reads: Map<string, Promise<RemoteImage | null>>;
   ancestry: Map<string, Promise<boolean>>;
+  // Each repository's tags, listed once a check, whichever containers run it.
+  tagLists: Map<string, Promise<string[]>>;
 }
 
 export interface UpdateSummary {
@@ -69,7 +75,7 @@ export class ImageUpdateChecker {
 
   constructor(
     private readonly docker: Pick<DockerClient, "containerSummaries" | "inspect" | "inspectImage">,
-    private readonly registry: Pick<RegistryClient, "digest" | "labels">,
+    private readonly registry: Pick<RegistryClient, "digest" | "labels" | "tags">,
     private readonly clock: () => number = Date.now,
     // Who published a newer image, read only for the scopes a trust rule covers.
     private readonly provenance: ProvenanceSource | null = null,
@@ -110,7 +116,12 @@ export class ImageUpdateChecker {
         images.set(resultKey(summary.ImageID, reference), { imageId: summary.ImageID, reference });
     }
     const entries = [...images];
-    const budget: LabelBudget = { dockerHub: REGISTRY.dockerHubLabelReads, reads: new Map(), ancestry: new Map() };
+    const budget: LabelBudget = {
+      dockerHub: REGISTRY.dockerHubLabelReads,
+      reads: new Map(),
+      ancestry: new Map(),
+      tagLists: new Map(),
+    };
     const local = new Map<string, Promise<string[]>>();
     for (let start = 0; start < entries.length; start += REGISTRY.concurrency) {
       await Promise.all(
@@ -214,6 +225,24 @@ export class ImageUpdateChecker {
     return request;
   }
 
+  /**
+   * The newest tag on this one's line that is a different image from the one running: a newer tag that points at
+   * the running image (a retag) brings nothing. A list that cannot be read says nothing, so it offers none.
+   */
+  private async newerTag(reference: ImageReference, local: readonly string[], budget: LabelBudget) {
+    if (!isVersionTag(reference.tag)) return null;
+    const repository = JSON.stringify([reference.registry, reference.repository]);
+    let listing = budget.tagLists.get(repository);
+    if (listing === undefined) {
+      listing = this.registry.tags(reference).catch(() => []);
+      budget.tagLists.set(repository, listing);
+    }
+    const [newest] = newerTags(reference.tag, await listing);
+    if (newest === undefined) return null;
+    const digest = await this.registry.digest({ ...reference, tag: newest }).catch(() => null);
+    return digest === null || local.includes(digest) ? null : newest;
+  }
+
   /** Who published an image an update would bring, where a rule asks for proof; null where none does. */
   private async whoPublished(reference: ImageReference, digest: string): Promise<ImageProvenance | null> {
     const source = this.provenance;
@@ -244,6 +273,7 @@ export class ImageUpdateChecker {
       const { configDigest: _configDigest, ...remote } = remoteImage ?? {};
       const offered = !sameImage && status === UPDATE_STATUS.available;
       const provenance = offered ? await this.whoPublished(reference, remoteDigest) : null;
+      const newerTag = await this.newerTag(reference, local, budget);
       this.results.set(key, {
         status: sameImage ? UPDATE_STATUS.current : status,
         checkedAt,
@@ -252,6 +282,7 @@ export class ImageUpdateChecker {
         reason: status === UPDATE_STATUS.unknown ? REGISTRY_MESSAGES.unknownImage : null,
         // Left out where nothing asked, so a check says exactly what it always did.
         ...(provenance === null ? {} : { provenance }),
+        ...(newerTag === null ? {} : { newerTag }),
       });
     } catch (error) {
       // A registry that is down or private says nothing about the image; the last answer stays useful.

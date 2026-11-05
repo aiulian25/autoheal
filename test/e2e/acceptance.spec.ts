@@ -553,7 +553,7 @@ test.describe("Autoheal, end to end on the real image", () => {
       expect(released.status).toBe(201);
 
       await openHost("e2e-host");
-      await admin.getByRole("button", { name: "Check for updates" }).click();
+      await admin.getByRole("button", { name: "Check images" }).click();
       const images = admin.getByRole("region", { name: "Container images" });
       await expect(images.getByRole("checkbox", { name: `Update ${E2E_APP}` })).toBeVisible({ timeout: SLOW });
       // What it brings, as both images say, and where to read what changed.
@@ -1009,7 +1009,7 @@ test.describe("Autoheal, end to end on the real image", () => {
 
       // An interrupted dpkg, found by the next check and repaired from the card.
       docker("exec", FIXTURE_HOST, "dpkg", "--unpack", "/srv/old/autoheal-half-done_1.0_all.deb");
-      await admin.getByRole("button", { name: "Check for updates" }).click();
+      await admin.getByRole("button", { name: "Check packages" }).click();
       await expect(card).toContainText("dpkg was left half-done", { timeout: SLOW });
       await card.getByRole("button", { name: "Repair dpkg" }).click();
       await expect(terminal).toContainText("Now finishing what dpkg left half-done ..");

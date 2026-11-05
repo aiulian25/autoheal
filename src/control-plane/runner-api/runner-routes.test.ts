@@ -1,3 +1,4 @@
+import { APP_VERSION } from "../../shared/constants.js";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -64,6 +65,8 @@ describe("host enrolment and the runner API", () => {
     expect(answer.json()).toEqual({
       publicBaseUrl: "https://localhost",
       ollama: { url: "https://localhost:1", model: "qwen3:4b-instruct", contextTokens: 16_384 },
+      // The exact release this control plane runs, which "Update runner" moves a sidecar to: never a moving tag.
+      release: { image: `ghcr.io/aiulian25/autoheal:${APP_VERSION}`, version: expect.stringMatching(/^\d+\.\d+\.\d+/) },
       // A host added now asks first for everything, until its page says otherwise.
       control: {
         restartByDefault: false,

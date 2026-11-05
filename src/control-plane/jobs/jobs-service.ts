@@ -24,6 +24,7 @@ import {
   AGENT_NAMES,
   AUDIT_ACTIONS,
   DIGEST_PATTERN,
+  HOST_KIND,
   HOST_PACKAGE_ACTIONS,
   HOST_PACKAGE_ANSWER_MILLISECONDS,
   HOST_STATUS_ACTIVE,
@@ -672,7 +673,18 @@ export class JobsService {
 
   // A container action needs the container to exist; an update, a container that allows one; a removal, images
   // the host's runner reported unused.
+  // Only a sidecar runner has a container of its own to replace: the control plane's own machine updates with the
+  // control plane, and a host reached over SSH runs the control plane's code already.
+  private requireSidecar(hostId: string) {
+    const kind = this.database.select({ kind: hosts.kind }).from(hosts).where(eq(hosts.id, hostId)).get()?.kind;
+    if (kind !== HOST_KIND.runner) throw new DomainError(API_ERRORS.runnerUpdateNotHere);
+  }
+
   private requireActionable(hostId: string, containerName: string, action: JobAction, images: readonly string[]) {
+    if (action === JOB_ACTION.updateRunner) {
+      this.requireSidecar(hostId);
+      return;
+    }
     // A host that reports no Docker has only its own packages to act on, until Docker is there.
     if (!isHostPackageAction(action) && this.reportsNoDocker(hostId)) {
       throw new DomainError(API_ERRORS.hostHasNoDocker);

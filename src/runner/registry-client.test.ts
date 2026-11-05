@@ -402,3 +402,50 @@ describe("RegistryClient with a stored credential", () => {
     expect(await refused).toContain("not public");
   });
 });
+
+describe("RegistryClient.tags", () => {
+  let server: Server;
+  let base: string;
+  let asked: string[];
+  let nextLink: string;
+
+  beforeEach(async () => {
+    asked = [];
+    nextLink = '</v2/team/app/tags/list?last=1.1.0&n=1000>; rel="next"';
+    server = createServer((request, response) => {
+      asked.push(request.url!);
+      if (request.headers.authorization !== "Bearer anonymous-token" && !request.url!.startsWith("/token")) {
+        response.writeHead(401, {
+          "www-authenticate": `Bearer realm="http://${base}/token",service="registry",scope="repository:team/app:pull"`,
+        });
+        return response.end();
+      }
+      response.writeHead(200, {
+        "content-type": "application/json",
+        ...(request.url!.includes("last=") ? {} : { link: nextLink }),
+      });
+      if (request.url!.startsWith("/token")) return response.end(JSON.stringify({ token: "anonymous-token" }));
+      const tags = request.url!.includes("last=") ? ["1.2.0", "latest"] : ["1.0.0", "1.1.0", "bad tag", 7];
+      return response.end(JSON.stringify({ name: "team/app", tags }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  it("reads every page its Link header leads to, keeping only well-formed tags", async () => {
+    const tags = await new RegistryClient().tags({ registry: base, repository: "team/app", tag: "1.0.0" });
+
+    expect(tags).toEqual(["1.0.0", "1.1.0", "1.2.0", "latest"]);
+    expect(asked.filter((url) => url.startsWith("/v2/") && url.includes("last="))).toHaveLength(1);
+  });
+
+  it("does not follow a next page on another address, which would be handed the token", async () => {
+    nextLink = '<http://elsewhere.invalid/v2/team/app/tags/list?last=1.1.0>; rel="next"';
+
+    const tags = await new RegistryClient().tags({ registry: base, repository: "team/app", tag: "1.0.0" });
+
+    expect(tags).toEqual(["1.0.0", "1.1.0"]);
+  });
+});

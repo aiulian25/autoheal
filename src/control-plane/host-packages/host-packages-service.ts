@@ -277,17 +277,19 @@ export class HostPackagesService {
     packages: readonly string[],
     taskId: string | null = null,
   ): JobView {
-    this.requireJob(hostId, action, packages);
+    this.requireJob(hostId, action, packages, author.kind === "user");
     const named = action === JOB_ACTION.upgradePackages ? packages : [];
     return this.dependencies.jobs.request(author, hostId, "", action, taskId, { packages: named });
   }
 
-  /** What `request` checks before an upgrade of these packages, without asking for it. */
+  /** What `request` checks before Autoheal or Ollama upgrades these packages, without asking for it. */
   requireUpgrade(hostId: string, packages: readonly string[]) {
-    this.requireJob(hostId, JOB_ACTION.upgradePackages, packages);
+    this.requireJob(hostId, JOB_ACTION.upgradePackages, packages, false);
   }
 
-  private requireJob(hostId: string, action: HostPackageAction, packages: readonly string[]) {
+  // A person may change a host's packages wherever they are listed (check or apply); Autoheal and Ollama only where
+  // the host allows them to on their own (apply).
+  private requireJob(hostId: string, action: HostPackageAction, packages: readonly string[], byPerson: boolean) {
     const facts = this.hostView(hostId).health?.packages ?? null;
     // A reboot or a shutdown needs the host's systemd, not a package manager, and any admin may ask for one.
     const powering = isPowerAction(action);
@@ -297,11 +299,9 @@ export class HostPackagesService {
     if (facts === null || !reachable) {
       throw new DomainError(API_ERRORS.hostPackagesUnsupported);
     }
-    const allowed =
-      powering ||
-      (action === JOB_ACTION.checkPackages
-        ? facts.setting !== HOST_PACKAGES.off
-        : facts.setting === HOST_PACKAGES.apply);
+    const listed = facts.setting !== HOST_PACKAGES.off;
+    const changeAllowed = facts.setting === HOST_PACKAGES.apply || (byPerson && listed);
+    const allowed = powering || (action === JOB_ACTION.checkPackages ? listed : changeAllowed);
     if (!allowed) {
       throw new DomainError(API_ERRORS.hostPackagesNotAllowed);
     }

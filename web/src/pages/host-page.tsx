@@ -1,6 +1,6 @@
 import { DependencyMap } from "../components/dependency-map.js";
 import { ServiceProbes } from "../components/service-probes.js";
-import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import {
@@ -59,11 +59,6 @@ const packagesCheckable = (view: HostPackagesView | undefined) =>
 
 type CheckAction = typeof JOB_ACTION.checkUpdates | typeof JOB_ACTION.checkPackages;
 
-/**
- * Asks the host's runner to check every image for updates now, and its own packages where its .env lets
- * them be listed, instead of at their next scheduled checks.
- */
-// Its images are checked only where it runs Docker: an SSH host without it has its packages alone.
 // The terminal and xterm.js load when a shell first opens: most visits never need them.
 const HostTerminal = lazy(() =>
   import("../components/shell-terminal.js").then((module) => ({ default: module.HostTerminal })),
@@ -94,89 +89,78 @@ function TerminalButton({ host, open, onToggle }: { host: HostView; open: boolea
   );
 }
 
-function CheckUpdates({ hostId, docker }: { hostId: string; docker: boolean }) {
+/**
+ * Asks the host's runner to check now, instead of at its next scheduled check: its containers' images, or its own
+ * packages. Each button follows its own job, by its id: the host's bounded recent-jobs list may no longer hold it.
+ */
+function CheckButton({
+  hostId,
+  action,
+  disabled = false,
+}: {
+  hostId: string;
+  action: CheckAction;
+  disabled?: boolean;
+}) {
   const queryClient = useQueryClient();
-  const packages = useQuery(hostPackagesQuery(hostId));
-  const packagesBusy = useHostPackageBusy(hostId, packages.data, packages.isError);
-  const [accepted, setAccepted] = useState<JobView[]>([]);
-  const [remaining, setRemaining] = useState<readonly CheckAction[]>([]);
-  // Follow exact IDs: the host's bounded recent-jobs list may no longer contain a long-running check.
-  const results = useQueries({
-    queries: accepted.map((job) =>
-      queryOptions({
-        queryKey: ["job", job.id],
-        queryFn: () => api<JobView>("GET", apiPath(API_ROUTES.job, { jobId: job.id })),
-        initialData: job,
-        staleTime: 0,
-        refetchInterval: (query) =>
-          query.state.data === undefined || isWaiting(query.state.data) ? JOB_REFRESH_MILLISECONDS : false,
-      }),
-    ),
+  const [accepted, setAccepted] = useState<JobView | null>(null);
+  const forPackages = action === JOB_ACTION.checkPackages;
+  const result = useQuery({
+    queryKey: ["job", accepted?.id],
+    queryFn: () => api<JobView>("GET", apiPath(API_ROUTES.job, { jobId: accepted!.id })),
+    enabled: accepted !== null,
+    initialData: accepted ?? undefined,
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data === undefined || isWaiting(query.state.data) ? JOB_REFRESH_MILLISECONDS : false,
   });
-  const jobs = accepted.map((job, index) => results[index]?.data ?? job);
-  const busy = jobs.some(isWaiting);
-  const statusUnavailable = results.some((result, index) => result.isError && isWaiting(jobs[index]!));
   const check = useMutation({
-    mutationKey: hostPackageJobKey(hostId),
-    mutationFn: async (actions: readonly CheckAction[]) => {
-      for (const [index, action] of actions.entries()) {
-        const job = await api<JobView>("POST", apiPath(API_ROUTES.hostActions, { hostId }), { action });
-        setAccepted((current) => [...current, job]);
-        // Retain each accepted ID even if the next submission fails. Retrying submits only the remainder.
-        setRemaining(actions.slice(index + 1));
-      }
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: hostPackagesQuery(hostId).queryKey }),
+    // A package check is one of the host's package jobs, which hold one another back.
+    mutationKey: forPackages ? hostPackageJobKey(hostId) : undefined,
+    mutationFn: () => api<JobView>("POST", apiPath(API_ROUTES.hostActions, { hostId }), { action }),
+    onSuccess: setAccepted,
+    onSettled: () =>
+      forPackages ? queryClient.invalidateQueries({ queryKey: hostPackagesQuery(hostId).queryKey }) : undefined,
   });
-  const start = () => {
-    const actions =
-      remaining.length > 0
-        ? remaining
-        : [
-            ...(docker ? [JOB_ACTION.checkUpdates] : []),
-            ...(packagesCheckable(packages.data) ? [JOB_ACTION.checkPackages] : []),
-          ];
-    if (remaining.length === 0) setAccepted([]);
-    setRemaining(actions);
-    check.mutate(actions);
-  };
-  const partial = check.isError && accepted.length > 0;
-  // A host without Docker whose packages cannot be checked (yet) has nothing to check.
-  const nothingToCheck = !docker && !packagesCheckable(packages.data);
+  const job = accepted === null ? null : (result.data ?? accepted);
+  const busy = job !== null && isWaiting(job);
   const words = TEXT.actions.hostCheck;
   return (
     <div className="header-action stack">
-      {jobs.map((job) => (
-        <span key={job.id} className="small muted" role="status">
-          {job.action === JOB_ACTION.checkUpdates ? words.images : words.packages}: {words.states[job.status]}
-        </span>
-      ))}
-      <button type="button" disabled={check.isPending || busy || packagesBusy || nothingToCheck} onClick={start}>
-        {partial ? words.retryPackages : TEXT.actions.checkHost}
-      </button>
-      {partial && (
+      {job !== null && (
         <span className="small muted" role="status">
-          {words.partial}
+          {forPackages ? words.packages : words.images}: {words.states[job.status]}
         </span>
       )}
+      <button type="button" disabled={disabled || check.isPending || busy} onClick={() => check.mutate()}>
+        {forPackages ? TEXT.actions.checkPackages : TEXT.actions.checkImages}
+      </button>
       <ErrorNotice error={check.error} />
-      {statusUnavailable && (
+      {busy && result.isError && (
         <>
           <p className="notice error small" role="alert">
             {words.unavailable}
           </p>
-          <button
-            type="button"
-            disabled={results.some((result) => result.isFetching)}
-            onClick={() => {
-              for (const result of results) void result.refetch();
-            }}
-          >
+          <button type="button" disabled={result.isFetching} onClick={() => void result.refetch()}>
             {words.refresh}
           </button>
         </>
       )}
     </div>
+  );
+}
+
+// Its images are checked only where it runs Docker, and its packages only where its .env lets them be listed.
+function CheckUpdates({ hostId, docker }: { hostId: string; docker: boolean }) {
+  const packages = useQuery(hostPackagesQuery(hostId));
+  const packagesBusy = useHostPackageBusy(hostId, packages.data, packages.isError);
+  return (
+    <>
+      {docker && <CheckButton hostId={hostId} action={JOB_ACTION.checkUpdates} />}
+      {packagesCheckable(packages.data) && (
+        <CheckButton hostId={hostId} action={JOB_ACTION.checkPackages} disabled={packagesBusy} />
+      )}
+    </>
   );
 }
 

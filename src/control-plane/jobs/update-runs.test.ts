@@ -124,7 +124,14 @@ describe("updating several containers one at a time", () => {
       outcome: "radicale did not settle: it keeps restarting.",
       output: null,
     });
-    expect(await latest()).toMatchObject({ status: "stopped", current: null, done: [], failed: "radicale" });
+    expect(await latest()).toMatchObject({
+      status: "stopped",
+      current: null,
+      done: [],
+      failed: "radicale",
+      // What its runner said, not a guess: a refusal before anything stopped reads as one.
+      failedOutcome: "radicale did not settle: it keeps restarting.",
+    });
     expect(await takeWork()).toEqual([]);
     expect(await openTitles()).toEqual(
       expect.arrayContaining(["Update radicale on Alder", "Update quantum on Alder", "Update whoami on Alder"]),

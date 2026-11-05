@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_ROUTES,
   apiPath,
+  type ContainerView,
   type HostPackagesView,
   type HostView,
   type JobView,
@@ -121,6 +122,8 @@ let localHostId: string | null = "h0";
 // What the host's open tasks are, and the changes asked of them.
 let openTasks: Record<string, unknown>[] = [];
 let taskChanges: [string, string][] = [];
+// The host's containers, as its runner last reported them.
+let hostContainers: ContainerView[] = [];
 function show(packages = packageView, browserHash?: string, shownHost = host) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(SESSION_QUERY_KEY, session);
@@ -141,6 +144,7 @@ function show(packages = packageView, browserHash?: string, shownHost = host) {
       return json({});
     }
     if (url.startsWith(`${API_ROUTES.tasks}?`)) return json(openTasks);
+    if (url.startsWith(`${API_ROUTES.containers}?`)) return json(hostContainers);
     if (url === API_ROUTES.hosts) return json([shownHost]);
     if (url === apiPath(API_ROUTES.hostPackages, { hostId: host.id })) return json(packages);
     if (url === apiPath(API_ROUTES.hostControl, { hostId: host.id }))
@@ -190,15 +194,19 @@ function show(packages = packageView, browserHash?: string, shownHost = host) {
 }
 afterEach(() => {
   localHostId = "h0";
+  hostContainers = [];
   cleanup();
   client?.clear();
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
 });
 
-it("re-enables Check updates after its accepted job finishes and submits another check without unmounting", async () => {
+const IMAGES = "Check images";
+const PACKAGES = "Check packages";
+
+it("re-enables Check images after its accepted job finishes and submits another check without unmounting", async () => {
   const { records, posts, refresh } = show();
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: IMAGES });
   fireEvent.click(button);
   await waitFor(() => expect(posts).toEqual(["check_updates"]));
   await waitFor(() => expect(button.disabled).toBe(true));
@@ -222,74 +230,44 @@ const checkable: HostPackagesView = {
   },
 };
 
-it("disables the host-wide check button while another package operation runs", async () => {
+it("holds the package check back while another package job runs, and leaves the image check free", async () => {
   const running = job("upgrade", "upgrade_packages", "delivered");
   const { posts } = show({ ...checkable, running, recent: [running] });
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-  await waitFor(() => expect(button.disabled).toBe(true));
-  fireEvent.click(button);
+  const packages = await screen.findByRole<HTMLButtonElement>("button", { name: PACKAGES });
+  await waitFor(() => expect(packages.disabled).toBe(true));
+  fireEvent.click(packages);
   expect(posts).toEqual([]);
+  fireEvent.click(screen.getByRole("button", { name: IMAGES }));
+  await waitFor(() => expect(posts).toEqual(["check_updates"]));
 });
 
 it.each(["succeeded", "failed", "expired"] as const)(
-  "waits for both exact jobs and releases the button when the last job is %s",
+  "checks images and packages apart, each button following its own job until it is %s",
   async (status) => {
     const { records, posts, refresh } = show(checkable);
-    const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-    await waitFor(() => expect(client.getQueryData(["host-packages", host.id])).toEqual(checkable));
-    fireEvent.click(button);
-    await waitFor(() => expect(posts).toEqual(["check_updates", "check_packages"]));
-    expect(await screen.findByText("Image check: Queued")).toBeTruthy();
+    const images = await screen.findByRole<HTMLButtonElement>("button", { name: IMAGES });
+    const packages = await screen.findByRole<HTMLButtonElement>("button", { name: PACKAGES });
+    fireEvent.click(packages);
+    await waitFor(() => expect(posts).toEqual(["check_packages"]));
     expect(await screen.findByText("Package check: Queued")).toBeTruthy();
-    records.set("j1", job("j1", "check_updates", "succeeded"));
-    records.set("j2", job("j2", "check_packages", "delivered"));
+    expect(screen.queryByText(/^Image check/)).toBeNull();
+    expect(images.disabled).toBe(false);
+    fireEvent.click(images);
+    await waitFor(() => expect(posts).toEqual(["check_packages", "check_updates"]));
+    records.set("j1", job("j1", "check_packages", "delivered"));
+    records.set("j2", job("j2", "check_updates", "succeeded"));
     await refresh();
     expect(await screen.findByText("Image check: Completed")).toBeTruthy();
     expect(await screen.findByText("Package check: Under way")).toBeTruthy();
-    expect(button.disabled).toBe(true);
-    fireEvent.click(button);
-    expect(posts).toHaveLength(2);
-    records.set("j2", job("j2", "check_packages", status));
+    await waitFor(() => expect(images.disabled).toBe(false));
+    expect(packages.disabled).toBe(true);
+    records.set("j1", job("j1", "check_packages", status));
     await refresh();
-    await waitFor(() => expect(button.disabled).toBe(false));
+    await waitFor(() => expect(packages.disabled).toBe(false));
   },
 );
 
-it("retains the accepted image job on package submission failure and retries only the package check", async () => {
-  const { records, posts, fetch, refresh } = show(checkable);
-  const base = fetch.getMockImplementation()!;
-  let rejectPackage = true;
-  fetch.mockImplementation(async (url, init) => {
-    if (init?.method === "POST" && JSON.parse(String(init.body)).action === "check_packages" && rejectPackage) {
-      posts.push("check_packages");
-      return json({ error: "internal_error" }, 503);
-    }
-    return base(url, init);
-  });
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-  await waitFor(() => expect(client.getQueryData(["host-packages", host.id])).toEqual(checkable));
-  fireEvent.click(button);
-  const retry = await screen.findByRole<HTMLButtonElement>("button", { name: "Retry package check" });
-  expect(screen.getByText(/The image check was accepted/)).toBeTruthy();
-  expect(retry.disabled).toBe(true);
-  records.set("j1", job("j1", "check_updates", "succeeded"));
-  await refresh();
-  await waitFor(() => expect(retry.disabled).toBe(false));
-  rejectPackage = false;
-  fireEvent.click(retry);
-  await waitFor(() => expect(posts).toEqual(["check_updates", "check_packages", "check_packages"]));
-  expect(await screen.findByText("Package check: Queued")).toBeTruthy();
-  records.set("j3", job("j3", "check_packages", "succeeded"));
-  await refresh();
-  const again = screen.getByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-  await waitFor(() => expect(again.disabled).toBe(false));
-  fireEvent.click(again);
-  await waitFor(() =>
-    expect(posts).toEqual(["check_updates", "check_packages", "check_packages", "check_updates", "check_packages"]),
-  );
-});
-
-it("keeps a status-read failure separate from action retry and recovers by refreshing the same job", async () => {
+it("keeps a status-read failure separate from asking again and recovers by refreshing the same job", async () => {
   const { records, posts, fetch } = show();
   const base = fetch.getMockImplementation()!;
   let unavailable = true;
@@ -298,7 +276,7 @@ it("keeps a status-read failure separate from action retry and recovers by refre
       ? Promise.resolve(json({ error: "internal_error" }, 503))
       : base(url, init),
   );
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: IMAGES });
   fireEvent.click(button);
   expect(
     await screen.findByText("Check status is unavailable. Refresh status before requesting another check."),
@@ -311,27 +289,26 @@ it("keeps a status-read failure separate from action retry and recovers by refre
   expect(posts).toEqual(["check_updates"]);
 });
 
-it("allows submission retry when the first request was refused without a confirmed accepted job", async () => {
-  const { posts, fetch } = show(checkable);
+it("allows asking again when the first request was refused, with no job accepted", async () => {
+  const { posts, fetch } = show();
   const base = fetch.getMockImplementation()!;
   let refused = true;
   fetch.mockImplementation((url, init) =>
     init?.method === "POST" && refused ? Promise.resolve(json({ error: "internal_error" }, 503)) : base(url, init),
   );
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-  await waitFor(() => expect(client.getQueryData(["host-packages", host.id])).toEqual(checkable));
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: IMAGES });
   fireEvent.click(button);
   await screen.findByRole("alert");
   await waitFor(() => expect(button.disabled).toBe(false));
   expect(posts).toEqual([]);
   refused = false;
   fireEvent.click(button);
-  await waitFor(() => expect(posts).toEqual(["check_updates", "check_packages"]));
+  await waitFor(() => expect(posts).toEqual(["check_updates"]));
 });
 
 it("observes completion through fallback polling without an SSE event", async () => {
   const { records, posts } = show();
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: IMAGES });
   fireEvent.click(button);
   await screen.findByText("Image check: Queued");
   records.set("j1", job("j1", "check_updates", "succeeded"));
@@ -342,13 +319,11 @@ it("observes completion through fallback polling without an SSE event", async ()
 it.each([
   { ...checkable, facts: { ...checkable.facts!, setting: "off" as const } },
   { ...checkable, facts: { ...checkable.facts!, unsupported: "no_systemd" as const } },
-])("omits package submission when the host does not permit checking its packages", async (view) => {
-  const { posts } = show(view);
-  const button = await screen.findByRole("button", { name: "Check for updates" });
+])("offers no package check when the host does not permit checking its packages", async (view) => {
+  show(view);
+  await screen.findByRole("button", { name: IMAGES });
   await waitFor(() => expect(client.getQueryData(["host-packages", host.id])).toEqual(view));
-  fireEvent.click(button);
-  await screen.findByText("Image check: Queued");
-  expect(posts).toEqual(["check_updates"]);
+  expect(screen.queryByRole("button", { name: PACKAGES })).toBeNull();
 });
 
 it("derives the host's active tab from a same-page router navigation", async () => {
@@ -464,11 +439,53 @@ it("tells how to bring a runner on another version level with Autoheal", async (
   expect(screen.getByText(RUNNER_UPDATE_COMMAND)).toBeTruthy();
 });
 
+it("lists a newer version than a container's tag apart, as the person's to take, not one to tick", async () => {
+  const container = (name: string, image: string, newerTag: string, policy: "ask" | "off" = "ask"): ContainerView => ({
+    hostId: host.id,
+    hostLabel: host.label,
+    hostState: "online",
+    name,
+    containerId: "0123456789ab",
+    image,
+    state: "running",
+    health: "healthy",
+    startedAt: 1,
+    finishedAt: null,
+    exitCode: null,
+    oomKilled: false,
+    restartCount: 0,
+    restartPolicy: "unless-stopped",
+    composeProject: null,
+    composeService: null,
+    link: null,
+    version: null,
+    ports: null,
+    hostNetwork: false,
+    update: { status: "current", checkedAt: 1, policy, remote: null, reason: null, newerTag },
+    usage: null,
+    byItself: { restart: "ask", update: "ask", restartLock: null, updateLock: null },
+    protected: false,
+    handsOff: null,
+    problem: null,
+  });
+  hostContainers = [
+    container("paperless", "ghcr.io/paperless-ngx/paperless-ngx:2.13", "2.14"),
+    container("redis", "redis:7.2", "7.4", "off"),
+  ];
+  show();
+
+  expect(await screen.findByRole("heading", { name: TEXT.containerImages.newerTitle })).toBeTruthy();
+  expect(screen.getByText(TEXT.updates.versions("2.13", "2.14"))).toBeTruthy();
+  expect(screen.queryByText(TEXT.updates.versions("7.2", "7.4"))).toBeNull();
+  expect(screen.queryByText(TEXT.containerImages.allCurrent)).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: TEXT.containerImages.selectOne("paperless") })).toBeNull();
+});
+
 it("checks only the packages of a host without Docker: it has no images to check", async () => {
   const { posts } = show(checkable, undefined, { ...host, kind: "ssh", docker: false });
-  const button = await screen.findByRole<HTMLButtonElement>("button", { name: "Check for updates" });
-  // Nothing to ask for until its packages are known to be checkable.
-  await waitFor(() => expect(button.disabled).toBe(false));
+  // Offered once its packages are known to be checkable; it has no images to check.
+  const button = await screen.findByRole<HTMLButtonElement>("button", { name: PACKAGES });
+  expect(screen.queryByRole("button", { name: IMAGES })).toBeNull();
   fireEvent.click(button);
   await waitFor(() => expect(posts).toEqual(["check_packages"]));
   expect(await screen.findByText("Package check: Queued")).toBeTruthy();

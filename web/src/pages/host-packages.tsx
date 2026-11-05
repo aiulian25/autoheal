@@ -86,10 +86,9 @@ export function useHostPackageBusy(hostId: string, view: HostPackagesView | unde
 
 // Authority is separate from busy state: keep permitted controls visible, but disabled during work.
 const reachable = (view: HostPackagesView) => view.facts !== null && view.facts.unsupported === null;
-const mayCheck = (view: HostPackagesView, admin: boolean) =>
+// A person may check, install, repair or clean wherever the host lets its packages be listed.
+const mayAct = (view: HostPackagesView, admin: boolean) =>
   admin && reachable(view) && view.facts?.setting !== HOST_PACKAGES.off;
-const mayChange = (view: HostPackagesView, admin: boolean) =>
-  mayCheck(view, admin) && view.facts?.setting === HOST_PACKAGES.apply;
 
 /** The host says a reboot is needed, or names a package or a kernel that waits for one. */
 const rebootWaitingOf = (view: HostPackagesView) =>
@@ -152,7 +151,7 @@ export function RebootWarning({ hostId, hostLabel, admin }: { hostId: string; ho
         <ErrorNotice error={run.error} />
       </div>
       <div className="banner-actions">
-        {mayChange(view, admin) && (
+        {mayAct(view, admin) && (
           <button type="button" disabled={busy} onClick={reboot}>
             {TEXT.hostPackages.rebootNow}
           </button>
@@ -509,7 +508,7 @@ export function HostPackages({
   };
   // Just asked for: the job the request answered with, until the list has it.
   const followedJob = view.recent.find((job) => job.id === followed) ?? (run.data?.id === followed ? run.data : null);
-  const canChange = mayChange(view, admin);
+  const canChange = mayAct(view, admin);
   const selected = view.packages.map(({ name }) => name).filter((name) => !unticked.has(name));
   const selection: Selection | null =
     canChange && view.packages.length > 0

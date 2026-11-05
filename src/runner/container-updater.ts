@@ -119,6 +119,8 @@ interface ReplaceMode {
   keepData: boolean;
   startAlways: boolean;
   requireCheckpoint?: boolean;
+  // Set once a copy of the data did not complete, so nothing may be put back over data that was never kept.
+  dataUnkept?: boolean;
 }
 const UPDATING: ReplaceMode = { keepData: true, startAlways: false };
 const EDITING: ReplaceMode = { keepData: false, startAlways: false };
@@ -466,19 +468,23 @@ export class ContainerUpdater {
     const specification = recreateSpecification(details, configOf(oldImage), reference);
     const dataUnkept =
       this.checkpoints === null && [details, ...dependents].some((member) => dataMountsOf(member).length > 0);
-    const undoes = undoIfUnhealthy && !(dataUnkept && options.allowWithoutCheckpoint === true);
+    // A person may go ahead though its data cannot be copied first; an automatic update may not. Whether it is
+    // then undone is known only once the copy has been tried: nothing is put back over data that was never kept.
+    const mode: ReplaceMode = { ...UPDATING, requireCheckpoint: options.allowWithoutCheckpoint !== true, dataUnkept };
+    const undoing = () => undoIfUnhealthy && mode.dataUnkept !== true;
     const wording: ReplaceWording = {
       ...JOB_OUTCOMES,
-      // Undone at once, its group started again with it: nothing waits for a roll back.
-      ...(undoes ? { startedBadly: JOB_OUTCOMES.undone, dependentsStopped: () => "" } : {}),
+      // Undone at once, its group started again with it: nothing waits for a roll back. Asked when it happens, so a
+      // copy that did not complete is never reported as undone.
+      startedBadly: (badName, problem, parked) =>
+        (undoing() ? JOB_OUTCOMES.undone : JOB_OUTCOMES.startedBadly)(badName, problem, parked),
+      dependentsStopped: (stopped) => (undoing() ? "" : JOB_OUTCOMES.dependentsStopped(stopped)),
       finished: async (healthy) => {
         const kept = await this.keepPrevious(details).catch(() => null);
         const updated = updatedWording(name, reference, details.State.Running === true, healthy);
         return kept === null ? updated : `${updated}${JOB_OUTCOMES.keptImage(kept)}`;
       },
     };
-    // Unknown/older senders fail closed; a human update may waive protection only without automatic undo.
-    const mode = { ...UPDATING, requireCheckpoint: undoes || options.allowWithoutCheckpoint !== true };
     // With nowhere to keep its data, one that needs it kept is refused before anything stops, not after.
     if (mode.requireCheckpoint && dataUnkept) {
       return failed(JOB_OUTCOMES.refusedWithoutCheckpoint(name, this.withoutCheckpoints));
@@ -505,7 +511,7 @@ export class ContainerUpdater {
         : await this.updateGroup(name, details, specification, dependents, mode, wording, steps, authorize);
     // Kept aside only when the new version started badly: undone at once, with its data.
     const aside = !result.succeeded && (await this.docker.inspect(parkedNameOf(name)))?.Id !== undefined;
-    if (!undoes || !aside) {
+    if (!undoing() || !aside) {
       return result;
     }
     // What the new version said before it goes: why it did not hold.
@@ -973,6 +979,7 @@ export class ContainerUpdater {
           }
         }
         warning = complete ? "" : kept;
+        if (!complete) mode.dataUnkept = true;
       }
       steps.enter(UPDATE_PHASE.starting);
       await this.docker.rename(oldId, parked);
@@ -1109,8 +1116,10 @@ export class ContainerUpdater {
         ) {
           throw new Error(`${dependentName}: ${JOB_OUTCOMES.checkpointRequired}.${taken.outcome}`);
         }
-        if (!taken.complete)
+        if (!taken.complete) {
           checkpointWarnings.push(`${dependentName}: ${taken.outcome || JOB_OUTCOMES.checkpointRequired}`);
+          mode.dataUnkept = true;
+        }
         if (mode.requireCheckpoint && this.checkpoints !== null) {
           const verified = await this.checkpoints.verify(dependentName, dependent);
           if (verified.problem !== null) throw new Error(`${dependentName}: ${verified.problem}`);

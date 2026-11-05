@@ -13,7 +13,7 @@ import {
 } from "../../shared/constants.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { updateRuns } from "../database/schema.js";
+import { jobs, updateRuns } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import { updateTaskKey } from "../tasks/detectors.js";
@@ -117,7 +117,7 @@ export class UpdateRunsService {
       return;
     }
     if (!succeeded) {
-      this.end(run, UPDATE_RUN_STATUS.stopped);
+      this.end(run, UPDATE_RUN_STATUS.stopped, jobId);
       return;
     }
     this.next({ ...run, doneCount: run.doneCount + 1 });
@@ -159,10 +159,11 @@ export class UpdateRunsService {
     ).id;
   }
 
-  private end(run: UpdateRunRow, status: UpdateRunStatus) {
+  // A run that stopped keeps the job that stopped it, so the page can say what happened; a finished one keeps none.
+  private end(run: UpdateRunRow, status: UpdateRunStatus, stoppedBy: string | null = null) {
     this.database
       .update(updateRuns)
-      .set({ status, doneCount: run.doneCount, currentJobId: null, updatedAt: this.clock() })
+      .set({ status, doneCount: run.doneCount, currentJobId: stoppedBy, updatedAt: this.clock() })
       .where(eq(updateRuns.id, run.id))
       .run();
   }
@@ -197,6 +198,13 @@ export class UpdateRunsService {
     }
   }
 
+  // The words its runner gave for the job that stopped the run, so the page says what happened rather than a guess.
+  private outcomeOf(jobId: string | null): string | null {
+    if (jobId === null) return null;
+    const job = this.database.select({ outcome: jobs.outcome }).from(jobs).where(eq(jobs.id, jobId)).get();
+    return job?.outcome ?? null;
+  }
+
   private view(run: UpdateRunRow): UpdateRunView {
     const names = namesOf(run);
     const waitingOn = names[run.doneCount] ?? null;
@@ -208,6 +216,7 @@ export class UpdateRunsService {
       current: run.status === UPDATE_RUN_STATUS.running ? waitingOn : null,
       done: names.slice(0, run.doneCount),
       failed: run.status === UPDATE_RUN_STATUS.stopped ? waitingOn : null,
+      failedOutcome: run.status === UPDATE_RUN_STATUS.stopped ? this.outcomeOf(run.currentJobId) : null,
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
     };

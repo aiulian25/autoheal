@@ -575,6 +575,21 @@ export const RUNNER_MESSAGES = {
   systemOnlyFailed: (host: string, problem: string) => `${host}: its system could not be reported: ${problem}`,
   interruptedJobsSettled: (count: number) =>
     `${count} ${count === 1 ? "job" : "jobs"} an earlier runner never finished left nothing half done: closed as unknown, so their containers can be acted on again.`,
+  // Said when a runner will not start, so it must read as a sentence a person can act on, not as a dump.
+  recoverySaid: (record: { operation: string; target: string; step: number; at: number }) => {
+    const what = record.operation.replace(/^job:[^:]+:/, "");
+    const on = record.target === "" ? "" : ` on ${record.target}`;
+    return `${what}${on} (step ${record.step}, ${new Date(record.at).toISOString().slice(0, 16).replace("T", " ")})`;
+  },
+  recoveryNeeded: (records: readonly { operation: string; target: string; step: number; at: number }[]) =>
+    `${records.length} unfinished ${records.length === 1 ? "operation needs" : "operations need"} clearing before this runner can start: ` +
+    `${records.map((record) => RUNNER_MESSAGES.recoverySaid(record)).join("; ")}. ` +
+    "Each was interrupted part-way; none is undone or retried by clearing it. Run `recover --clear` here once you have looked.",
+  recoveryCleared: (count: number) =>
+    `${count} unfinished ${count === 1 ? "operation" : "operations"} cleared; the runner may start.`,
+  recoveryNothing: "Nothing is unfinished here: the runner is not held back by its journal.",
+  recoveryHowTo:
+    "Look at each, then run this again with --clear to let the runner start. Nothing is undone or retried.",
   untouchedSettled: (operation: string, target: string) =>
     `${operation} on ${target} was interrupted before it changed anything: cleared, and it will not run again.`,
   rebootSettled: (operation: string) =>
@@ -1631,6 +1646,8 @@ export const DETECTOR_KEYS = {
   // A server beside the default, by its id.
   ollamaServerDown: "ollama-server:",
   update: "update",
+  // By the version too, so each newer release opens a task of its own, and is told once.
+  newerVersion: "newer-version",
   homeAssistantUpdates: "ha-updates",
   oomLoop: "oom-loop",
 } as const;
@@ -1803,6 +1820,11 @@ export const TASK_TEXT = {
   updateTo: (name: string, host: string, from: string, to: string) => `Update ${name} on ${host}: ${from} → ${to}`,
   updateDetails: (image: string) =>
     `A newer image is behind ${image}. Updating pulls it and recreates the container with the same settings.`,
+  newerVersion: (name: string, host: string, tag: string) => `${tag} is out for ${name} on ${host}`,
+  newerVersionDetails: (image: string, newer: string) =>
+    `${image} has a newer version: ${newer}. The tag is yours to choose, so Autoheal does not change it: write ` +
+    "the new one where the container is deployed (its compose file or run command), then pull and recreate it. " +
+    "This task closes at the next check after.",
   updateByHand: (image: string, name: string, host: string, reason: HandsOff) =>
     `A newer image is behind ${image}. ${HANDS_OFF_PHRASES[reason](name, host)} Update it the way you deployed ` +
     "it (for example docker compose pull, then docker compose up -d); this task closes at the next check after.",
@@ -1836,6 +1858,8 @@ export const JOB_ACTION = {
   pruneImages: "prune_images",
   // The unused images a person ticked on the host's page.
   removeImages: "remove_images",
+  // A sidecar runner moving to the release its control plane runs, asked for by a person.
+  updateRunner: "update_runner",
   // A new Docker network, and those a person or the nightly clean-up takes away.
   createNetwork: "create_network",
   removeNetworks: "remove_networks",
@@ -2047,6 +2071,7 @@ export type JobAction = (typeof JOB_ACTION)[keyof typeof JOB_ACTION];
 // About the host's Docker as a whole: no one container to name.
 export const WHOLE_HOST_ACTIONS: ReadonlySet<JobAction> = new Set([
   JOB_ACTION.checkUpdates,
+  JOB_ACTION.updateRunner,
   JOB_ACTION.pruneImages,
   JOB_ACTION.removeImages,
   JOB_ACTION.createNetwork,
@@ -2424,7 +2449,10 @@ export const IMAGE_CLEANUP_LOOKAHEAD_DAYS = 70;
 export const UPDATE_STATUS = { current: "current", available: "available", unknown: "unknown" } as const;
 export const UPDATE_STATUSES = Object.values(UPDATE_STATUS);
 export type UpdateStatus = (typeof UPDATE_STATUS)[keyof typeof UPDATE_STATUS];
-export const UPDATE_CHECK_INTERVAL_MILLISECONDS = 6 * 60 * 60 * 1000;
+// Hourly, so a release shows within the hour; a check reads a digest per tag and one tag list per repository.
+export const UPDATE_CHECK_INTERVAL_MILLISECONDS = 60 * 60 * 1000;
+// A tag as Docker allows one: a word character, then up to 127 of word characters, dots and dashes.
+export const IMAGE_TAG_PATTERN = /^\w[\w.-]{0,127}$/;
 // The first check waits for the host to settle after the runner starts.
 export const UPDATE_FIRST_CHECK_MILLISECONDS = 2 * 60 * 1000;
 export const REGISTRY = {
@@ -2462,6 +2490,11 @@ export const REGISTRY = {
   // Docker Hub counts a manifest GET as a pull, against the same anonymous limit as `docker pull` from this
   // address: a check reads at most this many new images' labels there, the rest at the checks after.
   dockerHubLabelReads: 3,
+  // A repository's tags, read page by page as its Link header leads, up to this many of them.
+  tagsPageSize: 1000,
+  tagsPages: 10,
+  linkHeader: "link",
+  nextLinkPattern: /<([^>]+)>\s*;\s*rel="?next"?/i,
 } as const;
 /**
  * Reading who published an image: the one proof Autoheal reads is a cosign signature made with a key, kept beside
@@ -2618,6 +2651,13 @@ export const IMAGE_DEFAULT_SETTINGS = [
   "Shell",
 ] as const;
 export const IMAGE_REFERENCE = { tagSeparator: ":", pathSeparator: "/", localHost: "localhost" } as const;
+// How a tag is read as a version: its number runs, and the text around them with each run replaced by a placeholder.
+// A run of seven or more hex characters mixing letters and digits is a commit hash, never a version.
+export const TAG_VERSION = {
+  numberRun: /\d+/g,
+  placeholder: "#",
+  commitLike: /(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}/i,
+} as const;
 export const URL_PROTOCOL_SUFFIX = ":";
 export const ANONYMOUS_VOLUME_PATTERN = /^[0-9a-f]{64}$/;
 export const UPDATE_ASSESSMENT = { update: "update", hold: "hold" } as const;
@@ -4449,7 +4489,7 @@ const listed = (names: readonly string[]) => names.join(", ");
 const MINUTES_PER_MILLISECOND = 1 / (60 * 1000);
 export const HOST_PACKAGE_OUTCOMES = {
   notAllowed: (setting: HostPackagesSetting) =>
-    `Refused: this host's HOST_PACKAGES is ${setting}. Only its own .env can allow this, with HOST_PACKAGES=apply.`,
+    `Refused: this host's HOST_PACKAGES is ${setting}. Only its own .env can allow this, with HOST_PACKAGES=check or apply.`,
   checkNotAllowed: "Refused: this host's HOST_PACKAGES is off. Its own .env allows checks with HOST_PACKAGES=check.",
   noRootPassword:
     "Refused: Autoheal runs package jobs on this host as root, with its root (or sudo) password: save it on the host's page first.",
@@ -4686,6 +4726,7 @@ export const COMMAND_RESET_ADMIN = "reset-admin";
 export const COMMAND_RESTORE = "restore";
 export const COMMAND_BACKUP_PASSPHRASE = "backup-passphrase";
 export const COMMAND_HOST_HELPER = "host-helper";
+export const COMMAND_RECOVER = "recover";
 export const COMMAND_BACKUP_COPY = "backup-copy";
 export const SELF_TEST_SAMPLE = "autoheal-self-test";
 export const MODE_CONTROL_PLANE = "control-plane";
@@ -4703,6 +4744,7 @@ export const USAGE = `Usage: main.js <command>
   ${COMMAND_RESET_ADMIN} [username]            lockout recovery: new one-time password, TOTP cleared
   ${COMMAND_RESTORE} <backup.sqlite.age>         restore when the dashboard cannot start (stop the control plane first)
   ${COMMAND_BACKUP_PASSPHRASE}                 print the passphrase backups are encrypted with
+  ${COMMAND_RECOVER} [--clear]                what holds this host's runner back from starting, and clearing it
   ${COMMAND_BACKUP_COPY} <what>                  started by the runner itself, to copy a container's data
   ${COMMAND_HOST_HELPER} <verb> <job> [packages]  started by the runner itself, to run a package job on its host
   ${COMMAND_VOLUME_COPY} <keep <limit>|restore>   started by the runner itself, to keep a container's data before an update
@@ -5119,6 +5161,10 @@ export const LOCAL_HOST = {
 // Autoheal updating itself: a one-shot helper of the new image recreates the control plane's container and watches it.
 export const SELF_UPDATE = {
   helperName: "autoheal-self-update",
+  // The helper's last argument for a sidecar runner, which keeps no database; and where its progress is kept, since
+  // a sidecar has no data directory of its own that outlives its container.
+  runnerMode: "runner",
+  runnerVolume: "autoheal-runner-update",
   // The container it replaced, kept to roll back to until the new one has held.
   previousSuffix: "-autoheal-previous",
   label: "autoheal.self-update",
@@ -5173,6 +5219,19 @@ export const SELF_UPDATE_FINAL: readonly SelfUpdateStatus[] = [
 // A helper left in one of these has nothing in hand, so it may be cleared. Any other state may yet be replacing the
 // control plane, and is left alone.
 export const SELF_UPDATE_CLEARABLE_HELPER: readonly string[] = ["created", "exited"];
+
+/** A sidecar runner moving to its control plane's release, as its job's outcome says it. */
+export const RUNNER_UPDATE_TEXT = {
+  handedOver: (reference: string) =>
+    `Handed over to ${reference}: this runner is replaced in a moment, and put back if the new one does not come back healthy.`,
+  alreadyThere: (reference: string) => `This runner already runs ${reference}: nothing to do.`,
+  pullFailed: (reference: string, problem: string) => `Could not pull ${reference}, so nothing was changed: ${problem}`,
+  notThereAfterPull: "the image was not there after the pull",
+  helperBusy: "An update of this runner is already under way; nothing new was started.",
+  ownContainerUnknown: "This runner could not find its own container, so nothing was changed.",
+  noSocket: "This runner's container has no Docker socket mounted, so it cannot be replaced from here.",
+  noRelease: "Its control plane has not said which release it runs yet; ask again in a moment.",
+} as const;
 export const SELF_UPDATE_TEXT = {
   started: "Updating: the new container is being made.",
   watching: "The new version is healthy; the old container is kept for 10 minutes in case it does not hold.",

@@ -35,6 +35,7 @@ import {
   SMART_WARNING_KINDS,
   ERROR_TEXT_LIMIT,
   IMAGE_LABEL_CHARACTERS,
+  IMAGE_TAG_PATTERN,
   CONTAINER_DETAILS,
   HOST_PROFILE,
   GPU_LIMIT,
@@ -200,6 +201,9 @@ export const containerSnapshotSchema = z.object({
       // Who published the newer image, where a trust rule asks for proof. Absent from runners from before it,
       // and null where nothing asks.
       provenance: provenanceSchema.nullable().optional(),
+      // The newest tag on the line of the one it runs, when a newer one is out. Absent with none, and from runners
+      // from before it.
+      newerTag: z.string().regex(IMAGE_TAG_PATTERN).optional(),
     })
     .nullable(),
 });
@@ -477,6 +481,9 @@ export interface HeartbeatResponse {
   imageTrust?: ImageTrustPolicy;
   // The service checks this host is to make from where it is, due now. Absent where it has none.
   probes?: RemoteProbe[];
+  // The exact release its control plane runs, which an "Update runner" job moves a sidecar runner pinned to an older release to. Absent from
+  // control planes before it, whose runners are then never asked to update themselves.
+  release?: { image: string; version: string };
 }
 
 /** One check a host is asked to make: which check it is, which version of it, and what to do. */
