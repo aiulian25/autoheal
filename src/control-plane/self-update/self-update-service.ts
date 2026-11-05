@@ -79,12 +79,18 @@ export class SelfUpdateService {
     const own = docker === null ? null : await docker.inspect(this.ownContainer);
     const record = this.dependencies.outcomes.read();
     const blocked = unreadableReason(record);
+    const last = await this.lastSeen(docker, record);
+    // An update from here that went well, to an image replaced since by hand, is history: it is not the last update.
+    const replacedSince =
+      last?.status === SELF_UPDATE_STATUS.succeeded && own?.Image !== undefined && last.to !== own.Image;
+    const created = own?.Created === undefined ? Number.NaN : Date.parse(own.Created);
     return {
       unavailable: this.unavailable(docker, own),
       runningImage: own?.Image ?? null,
+      runningSince: Number.isNaN(created) ? null : created,
       reference: this.referenceOf(own),
       recoveryBlocked: blocked === null ? null : SELF_UPDATE_TEXT.recoveryBlocked(blocked),
-      last: await this.lastSeen(docker, record),
+      last: replacedSince ? null : last,
     };
   }
 

@@ -126,7 +126,7 @@ describe("VolumeCheckpoints", () => {
       HostConfig: {
         ReadonlyRootfs: true,
         CapDrop: ["ALL"],
-        CapAdd: ["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER"],
+        CapAdd: ["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID"],
         NetworkMode: "none",
       },
     });

@@ -4450,8 +4450,9 @@ export const CHECKPOINT = {
   toTarget: "/to",
   // Never more than this share of the free space, so a checkpoint cannot fill the disk.
   freeSpaceShare: 0.5,
-  // Existing file-access/ownership capabilities only; inaccessible privileged metadata is outside the contract.
-  capabilities: ["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER"],
+  // File access and ownership only; inaccessible privileged metadata is outside the contract. FSETID keeps a
+  // set-group-ID or set-user-ID bit through the copy: without it Linux clears the bit, and the check then fails.
+  capabilities: ["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID"],
   memoryBytes: 128 * 1024 * 1024,
   exitDeadlineMilliseconds: 30 * 60 * 1000,
   // Docker's socket is no data.

@@ -912,7 +912,14 @@ function SelfUpdateCard() {
       {view.unavailable === null && (
         <>
           <p className="small muted">{words.explanation(view.reference)}</p>
-          {view.runningImage !== null && <p className="small mono">{words.runs(shortImageId(view.runningImage))}</p>}
+          {view.runningImage !== null && (
+            <p className="small mono">
+              {words.runs(
+                shortImageId(view.runningImage),
+                view.runningSince === null ? null : timeAgo(view.runningSince),
+              )}
+            </p>
+          )}
           <button
             type="button"
             className="primary"

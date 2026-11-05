@@ -719,7 +719,10 @@ export interface SelfUpdateView {
   recoveryBlocked: string | null;
   // The image the control plane runs, and the one an update would run: AUTOHEAL_IMAGE.
   runningImage: string | null;
+  // When this container was made on that image, however it was updated: from here, or by hand. Null when unknown.
+  runningSince: number | null;
   reference: string;
+  // The last update asked from here, unless it put in an image this container no longer runs.
   last: SelfUpdateOutcome | null;
 }
 

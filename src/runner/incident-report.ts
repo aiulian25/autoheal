@@ -91,6 +91,8 @@ export interface ContainerDetails {
   Name: string;
   // The image it runs, by id.
   Image?: string;
+  // When Docker made it, which is when it was last created on an image, whoever did it.
+  Created?: string;
   RestartCount?: number;
   State: ContainerState;
   Config: ContainerConfig;

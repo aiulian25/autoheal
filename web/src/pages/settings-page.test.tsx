@@ -89,6 +89,7 @@ const selfUpdate: SelfUpdateView = {
   unavailable: null,
   recoveryBlocked: null,
   runningImage: RUNNING_IMAGE,
+  runningSince: Date.now() - 20 * 60 * 1000,
   reference: "ghcr.io/owner/autoheal:2",
   last: null,
 };
@@ -663,7 +664,8 @@ describe("the settings page", () => {
     renderSettings("admin");
     const card = (await screen.findByRole("heading", { name: words.title })).closest("section")!;
     expect(within(card).getByText(words.explanation(selfUpdate.reference))).toBeTruthy();
-    expect(within(card).getByText(words.runs("aaaaaaaaaaaa"))).toBeTruthy();
+    // Started on that image 20 minutes ago, however it was updated.
+    expect(within(card).getByText(words.runs("aaaaaaaaaaaa", "20 minutes ago"))).toBeTruthy();
 
     fireEvent.click(within(card).getByRole("button", { name: words.update }));
     await waitFor(() => expect(sent(fetch, "POST", API_ROUTES.selfUpdate)).toHaveLength(1));

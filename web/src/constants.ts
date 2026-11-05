@@ -3761,7 +3761,8 @@ export const TEXT = {
       title: "Updating Autoheal",
       explanation: (reference: string) =>
         `Runs ${reference} in place of this container, pulled first where it comes from a registry. The old container is kept for 10 minutes, and comes back by itself if the new one does not hold.`,
-      runs: (image: string) => `Running image ${image}.`,
+      runs: (image: string, since: string | null) =>
+        since === null ? `Running image ${image}.` : `Running image ${image}, started ${since}.`,
       update: "Update Autoheal",
       last: "Last update",
     },

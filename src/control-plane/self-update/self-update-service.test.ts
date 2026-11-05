@@ -414,6 +414,32 @@ describe("Autoheal updating itself, from the dashboard", () => {
     });
   });
 
+  it("says since when this container runs its image, and leaves out an update from here that was replaced since", async () => {
+    const container = engine.containers.get(NAME)! as { Image?: string; Created?: string };
+    container.Created = "2026-11-05T12:00:00Z";
+    const went = (to: string) =>
+      outcomes.write({
+        status: SELF_UPDATE_STATUS.succeeded,
+        from: `sha256:${"0".repeat(64)}`,
+        to,
+        reference: REFERENCE,
+        startedAt: 1,
+        finishedAt: 2,
+        message: SELF_UPDATE_TEXT.succeeded,
+      });
+
+    // Updated from here to the image it still runs: that is its last update.
+    went(container.Image!);
+    expect(await service().view()).toMatchObject({
+      runningSince: Date.parse("2026-11-05T12:00:00Z"),
+      last: { status: SELF_UPDATE_STATUS.succeeded },
+    });
+
+    // Updated from here to an image it no longer runs: someone updated it since, by hand.
+    went(NEW_IMAGE);
+    expect((await service().view()).last).toBeNull();
+  });
+
   it("puts a finished update in the audit log once, whichever control plane reads it first", async () => {
     outcomes.write({
       status: SELF_UPDATE_STATUS.rolledBack,
