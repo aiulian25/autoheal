@@ -16,6 +16,7 @@ import type { DatabaseHandle } from "../database/connection.js";
 import { jobs, updateRuns } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
+import type { TopologyService } from "../inventory/topology-service.js";
 import { updateTaskKey } from "../tasks/detectors.js";
 import type { TaskAuthor, TasksService } from "../tasks/tasks-service.js";
 import type { JobsService } from "./jobs-service.js";
@@ -28,15 +29,31 @@ export interface UpdateRunsDependencies {
   jobs: Pick<JobsService, "request" | "onFinished">;
   inventory: Pick<InventoryService, "containers">;
   tasks: Pick<TasksService, "openFor">;
+  // A fresh review of what updating a container touches; absent where no host can give one.
+  topology?: Pick<TopologyService, "refresh">;
   clock?: () => number;
+}
+
+/** What a person reviewed before a container's update: its fingerprint, and the containers it touches by name. */
+export interface ReviewedUpdate {
+  fingerprint: string;
+  members: readonly string[];
 }
 
 const AUTOHEAL: TaskAuthor = { kind: "agent", agent: AGENT_AUTOHEAL };
 const storedNames = z.array(z.string().min(1).max(REPORT_LIMITS.nameCharacters));
-const fingerprintsOf = (run: UpdateRunRow): Record<string, string> =>
+const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
+// Runs kept before reviews named their members hold the fingerprint alone.
+const storedReview = z.union([
+  fingerprint.transform((value): ReviewedUpdate => ({ fingerprint: value, members: [] })),
+  z.object({ fingerprint, members: storedNames }),
+]);
+const reviewsOf = (run: UpdateRunRow): Record<string, ReviewedUpdate> =>
   run.expectedResourcesJson === null
     ? {}
-    : z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/)).parse(JSON.parse(run.expectedResourcesJson));
+    : z.record(z.string(), storedReview).parse(JSON.parse(run.expectedResourcesJson));
+const sameNames = (first: readonly string[], second: readonly string[]) =>
+  JSON.stringify([...first].sort()) === JSON.stringify([...second].sort());
 const namesOf = (run: UpdateRunRow) => storedNames.parse(JSON.parse(run.namesJson));
 
 /**
@@ -60,7 +77,7 @@ export class UpdateRunsService {
     actor: Actor,
     hostId: string,
     names: readonly string[],
-    expectedResources?: Readonly<Record<string, string>>,
+    reviews?: Readonly<Record<string, ReviewedUpdate>>,
   ): UpdateRunView {
     const ordered = [...new Set(names)];
     if (this.runningOn(hostId) !== undefined) {
@@ -68,7 +85,7 @@ export class UpdateRunsService {
     }
     this.requireWaiting(hostId, ordered);
     // Sent before the run is kept: a host that can't take it says so to the person asking.
-    const first = this.request({ kind: "user", actor }, hostId, ordered[0]!, expectedResources?.[ordered[0]!]);
+    const first = this.request({ kind: "user", actor }, hostId, ordered[0]!, reviews?.[ordered[0]!]?.fingerprint);
     const now = this.clock();
     const run = this.database
       .insert(updateRuns)
@@ -76,7 +93,7 @@ export class UpdateRunsService {
         id: randomUUID(),
         hostId,
         namesJson: JSON.stringify(ordered),
-        expectedResourcesJson: expectedResources === undefined ? null : JSON.stringify(expectedResources),
+        expectedResourcesJson: reviews === undefined ? null : JSON.stringify(reviews),
         status: UPDATE_RUN_STATUS.running,
         doneCount: 0,
         currentJobId: first,
@@ -120,18 +137,40 @@ export class UpdateRunsService {
       this.end(run, UPDATE_RUN_STATUS.stopped, jobId);
       return;
     }
-    this.next({ ...run, doneCount: run.doneCount + 1 });
+    void this.next({ ...run, doneCount: run.doneCount + 1 }).catch(() => this.end(run, UPDATE_RUN_STATUS.stopped));
+  }
+
+  /**
+   * The fingerprint the next update must still match. The containers before it in this run were replaced by it, so
+   * the review a person made names containers that are now new instances: a fresh review that touches the very same
+   * containers, by name, stands in for it. One that touches others, or that the host cannot give, keeps the first,
+   * and the update refuses as before.
+   */
+  private async fingerprintFor(run: UpdateRunRow, name: string): Promise<string | undefined> {
+    const reviewed = reviewsOf(run)[name];
+    const topology = this.dependencies.topology;
+    if (reviewed === undefined || reviewed.members.length === 0 || topology === undefined) return reviewed?.fingerprint;
+    const fresh = await topology.refresh(run.hostId, name);
+    const stillTheSame =
+      fresh !== null &&
+      fresh.refusals.length === 0 &&
+      sameNames(
+        fresh.members.map((member) => member.name),
+        reviewed.members,
+      );
+    return stillTheSame ? fresh.fingerprint : reviewed.fingerprint;
   }
 
   // Asks for the next one, or ends the run when none is left.
-  private next(run: UpdateRunRow) {
+  private async next(run: UpdateRunRow) {
     const name = namesOf(run)[run.doneCount];
     if (name === undefined) {
       this.end(run, UPDATE_RUN_STATUS.finished);
       return;
     }
+    const expected = await this.fingerprintFor(run, name);
     try {
-      const jobId = this.request(AUTOHEAL, run.hostId, name, fingerprintsOf(run)[name]);
+      const jobId = this.request(AUTOHEAL, run.hostId, name, expected);
       this.database
         .update(updateRuns)
         .set({ doneCount: run.doneCount, currentJobId: jobId, updatedAt: this.clock() })

@@ -777,6 +777,8 @@ export interface HostView {
 
 export interface ContainerView {
   recovery?: { owner: string };
+  // The sidecar runner's own container, which updates itself with an "Update runner" job, never a container update.
+  ownRunner?: boolean;
   hostId: string;
   hostLabel: string;
   // A silent host's containers are as they were at its last report.

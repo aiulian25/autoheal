@@ -481,6 +481,46 @@ it("lists a newer version than a container's tag apart, as the person's to take,
   expect(screen.queryByRole("checkbox", { name: TEXT.containerImages.selectOne("paperless") })).toBeNull();
 });
 
+it("shows three newer tag versions to begin with, and the rest on a click", async () => {
+  const container = (name: string): ContainerView => ({
+    hostId: host.id,
+    hostLabel: host.label,
+    hostState: "online",
+    name,
+    containerId: "0123456789ab",
+    image: `example/${name}:1.0`,
+    state: "running",
+    health: "healthy",
+    startedAt: 1,
+    finishedAt: null,
+    exitCode: null,
+    oomKilled: false,
+    restartCount: 0,
+    restartPolicy: "unless-stopped",
+    composeProject: null,
+    composeService: null,
+    link: null,
+    version: null,
+    ports: null,
+    hostNetwork: false,
+    update: { status: "current", checkedAt: 1, policy: "ask", remote: null, reason: null, newerTag: "1.1" },
+    usage: null,
+    byItself: { restart: "ask", update: "ask", restartLock: null, updateLock: null },
+    protected: false,
+    handsOff: null,
+    problem: null,
+  });
+  hostContainers = ["alpha", "bravo", "charlie", "delta", "echo"].map(container);
+  show();
+
+  expect(await screen.findByRole("heading", { name: "Newer TAG versions" })).toBeTruthy();
+  expect(screen.getAllByText(TEXT.updates.versions("1.0", "1.1"))).toHaveLength(3);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.containerImages.newerShowAll(5) }));
+  expect(screen.getAllByText(TEXT.updates.versions("1.0", "1.1"))).toHaveLength(5);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.containerImages.newerShowFewer }));
+  expect(screen.getAllByText(TEXT.updates.versions("1.0", "1.1"))).toHaveLength(3);
+});
+
 it("checks only the packages of a host without Docker: it has no images to check", async () => {
   const { posts } = show(checkable, undefined, { ...host, kind: "ssh", docker: false });
   // Offered once its packages are known to be checkable; it has no images to check.

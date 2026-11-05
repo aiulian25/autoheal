@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   runnerTokenOf,
   startTestControlPlane,
@@ -14,8 +15,9 @@ import {
   type TaskSummaryView,
   type UpdateRunView,
 } from "../../shared/api.js";
-import { JOB_ANSWER_MILLISECONDS } from "../../shared/constants.js";
+import { HTTP_HEADERS, JOB_ANSWER_MILLISECONDS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type ContainerSnapshot, type WorkResponse } from "../../shared/protocol.js";
+import { hosts, users } from "../database/schema.js";
 
 const update = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"c".repeat(64)}` };
 const healthy = (name: string) => ({ succeeded: true, outcome: `Updated ${name}, and it is healthy.`, output: null });
@@ -62,12 +64,16 @@ describe("updating several containers one at a time", () => {
   const runs = () => apiPath(API_ROUTES.containerUpdates, { hostId });
   const start = (names: string[], client = admin) => client.post(runs(), { names });
   const latest = async () => (await admin.get(runs())).json<UpdateRunView | null>();
-  const takeWork = async () =>
+  // A runner says what it can do with each call; one that reviews what an operation touches says so.
+  const takeWork = async (capabilities?: string) =>
     (
       await controlPlane.runnerApp.inject({
         method: "GET",
         url: RUNNER_ROUTES.work,
-        headers: { authorization: `Bearer ${token}` },
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(capabilities === undefined ? {} : { [HTTP_HEADERS.runnerCapabilities]: capabilities }),
+        },
       })
     ).json<WorkResponse>().jobs;
   const answer = (jobId: string, result: object) =>
@@ -114,6 +120,63 @@ describe("updating several containers one at a time", () => {
     expect(open).not.toContain("Update quantum on Alder");
     expect(open).toContain("Update whoami on Alder");
     expect(controlPlane.stdout.join("")).toContain('"action":"container.update_run_started"');
+  });
+
+  describe("reviewed beforehand", () => {
+    const sha = (character: string) => character.repeat(64);
+    const touching = (...names: string[]) => ({
+      ok: true as const,
+      fingerprint: sha("b"),
+      members: names.map((name) => ({ name, protected: false })),
+      resources: [],
+      refusals: [],
+    });
+    const reviews = {
+      radicale: { fingerprint: sha("a"), members: ["radicale"] },
+      // Its data is radicale's too: updating radicale gives that container a new id.
+      quantum: { fingerprint: sha("c"), members: ["quantum", "radicale"] },
+    };
+    const startReviewed = () => {
+      const database = controlPlane.services.databaseHandle.database;
+      database.update(hosts).set({ operationPreviews: true }).where(eq(hosts.id, hostId)).run();
+      const { id: userId } = database.select().from(users).where(eq(users.username, "admin")).get()!;
+      const actor = { userId, username: "admin", ip: "127.0.0.1", requestId: "test" };
+      controlPlane.services.updateRuns.start(actor, hostId, ["radicale", "quantum"], reviews);
+    };
+    const nextJob = () =>
+      vi.waitFor(async () => {
+        const [job] = await takeWork(RUNNER_CAPABILITIES);
+        if (job === undefined) throw new Error("not yet");
+        return job;
+      });
+
+    it("goes on after it replaced a container the next one's review named, when a fresh review names the same", async () => {
+      const refreshed: string[] = [];
+      controlPlane.services.topology.refresh = async (_hostId, name) => {
+        refreshed.push(name);
+        return touching("radicale", "quantum");
+      };
+      startReviewed();
+
+      const first = await nextJob();
+      expect((first as { expectedResourcesFingerprint?: string }).expectedResourcesFingerprint).toBe(sha("a"));
+      await answer(first.id, healthy("radicale"));
+      const second = await nextJob();
+
+      expect(second).toMatchObject({ containerName: "quantum", expectedResourcesFingerprint: sha("b") });
+      expect(refreshed).toEqual(["quantum"]);
+    });
+
+    it("keeps what was reviewed when the fresh review names other containers, so the update refuses as before", async () => {
+      controlPlane.services.topology.refresh = async () => touching("quantum", "radicale", "caddy");
+      startReviewed();
+
+      await answer((await nextJob()).id, healthy("radicale"));
+
+      expect((await nextJob()) as { expectedResourcesFingerprint?: string }).toMatchObject({
+        expectedResourcesFingerprint: sha("c"),
+      });
+    });
   });
 
   it("stops at the first that does not come back healthy, and the ones after it wait", async () => {

@@ -87,7 +87,7 @@ export function registerJobsRoutes(
   updateRuns: UpdateRunsService,
   stackRestarts: StackRestartsService,
   stackDrift: StackDriftService,
-  topology?: Pick<TopologyService, "consume">,
+  topology?: Pick<TopologyService, "consume" | "consumeImpact">,
 ) {
   app.post(API_ROUTES.containerActions, { config: { access: ACCESS_FULL } }, async (request) => {
     const { hostId, containerName } = parseBody(containerParameters, request.params);
@@ -144,15 +144,21 @@ export function registerJobsRoutes(
       (!topology || Object.keys(previews).length !== new Set(names).size || names.some((name) => !previews[name]))
     )
       throw new DomainError(API_ERRORS.topologyPreviewExpired);
-    const fingerprints = previews
+    const reviews = previews
       ? Object.fromEntries(
-          [...new Set(names)].map((name) => [
-            name,
-            topology!.consume(request.authSession!.tokenHash, hostId, name, JOB_ACTION.update, previews[name]!),
-          ]),
+          [...new Set(names)].map((name) => {
+            const { answer } = topology!.consumeImpact(
+              request.authSession!.tokenHash,
+              hostId,
+              name,
+              JOB_ACTION.update,
+              previews[name]!,
+            );
+            return [name, { fingerprint: answer.fingerprint, members: answer.members.map((member) => member.name) }];
+          }),
         )
       : undefined;
-    return updateRuns.start(actorOf(request), hostId, names, fingerprints);
+    return updateRuns.start(actorOf(request), hostId, names, reviews);
   });
 
   app.get(API_ROUTES.containerUpdates, async (request) =>

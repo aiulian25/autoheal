@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { heartbeatWith } from "../../../test/support/inventory.js";
+import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
-import { API_ROUTES, apiPath, type EnrolledHostView, type HostView } from "../../shared/api.js";
+import { API_ROUTES, apiPath, type ContainerView, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { HOST_KIND, HTTP_STATUS, JOB_ACTION } from "../../shared/constants.js";
 import { decodeJoinCode } from "../../shared/join-code.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
@@ -77,6 +77,35 @@ describe("updating a sidecar runner from the dashboard", () => {
       expect(controlPlane.services.databaseHandle.database.select().from(jobs).all()).toEqual([]);
     },
   );
+
+  it("marks the runner's own row, the one container whose update is an Update runner, on a sidecar's host only", async () => {
+    await runnerSays(
+      RUNNER_ROUTES.heartbeat,
+      heartbeatWith({
+        hostLabel: "Alder",
+        containers: [
+          containerSnapshot({ name: "autoheal", image: "ghcr.io/aiulian25/autoheal:1" }),
+          containerSnapshot({ name: "npm", image: "jc21/nginx-proxy-manager:latest" }),
+          containerSnapshot({ name: "paperless" }),
+        ],
+      }),
+    );
+    const own = async () =>
+      (await admin.get(`${API_ROUTES.containers}?hostId=${hostId}`))
+        .json<ContainerView[]>()
+        .filter((container) => container.ownRunner === true)
+        .map(({ name }) => name);
+
+    // npm is protected too, but it is not the runner.
+    expect(await own()).toEqual(["autoheal"]);
+
+    controlPlane.services.databaseHandle.database
+      .update(hosts)
+      .set({ kind: HOST_KIND.ssh })
+      .where(eq(hosts.id, hostId))
+      .run();
+    expect(await own()).toEqual([]);
+  });
 
   it("is a person's decision: one who may not change the host is refused", async () => {
     const viewer = (await fullySignedInUser(controlPlane, admin, "mira", "viewer")).client;

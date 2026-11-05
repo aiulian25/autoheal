@@ -776,6 +776,7 @@ export function createControlPlaneServices(
         jobs: jobsService,
         inventory: inventoryService,
         tasks: tasksService,
+        topology,
         clock,
       }),
     ),

@@ -1,5 +1,5 @@
 import { HOST_SILENT_AFTER_MILLISECONDS } from "../../shared/constants.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   startTestControlPlane,
   runnerTokenOf,
@@ -146,10 +146,26 @@ describe("host topology and reviewed operation scope", () => {
       headers: headers(),
       payload: { succeeded: true, outcome: "Updated", output: null },
     });
-    work = (
-      await plane.runnerApp.inject({ method: "GET", url: RUNNER_ROUTES.work, headers: headers() })
-    ).json<WorkResponse>();
-    expect(work.jobs[0]).toMatchObject({ expectedResourcesFingerprint: "b".repeat(64) });
+    // The run replaced app, so it asks again what updating worker touches; the same containers keep it going.
+    let asked: ContainerAccessWork["previews"] = [];
+    for (let attempt = 0; attempt < 50 && (asked?.length ?? 0) === 0; attempt += 1) {
+      asked = (
+        await plane.runnerApp.inject({ method: "GET", url: RUNNER_ROUTES.containerAccess, headers: headers() })
+      ).json<ContainerAccessWork>().previews;
+    }
+    expect(asked).toEqual([expect.objectContaining({ containerName: "worker", action: "update" })]);
+    await plane.runnerApp.inject({
+      method: "POST",
+      url: apiPath(RUNNER_ROUTES.operationPreviewAnswer, { requestId: asked![0]!.id }),
+      headers: headers(),
+      payload: { ...answer, ok: true, fingerprint: "d".repeat(64), members: [{ name: "worker", protected: false }] },
+    });
+    await vi.waitFor(async () => {
+      work = (
+        await plane.runnerApp.inject({ method: "GET", url: RUNNER_ROUTES.work, headers: headers() })
+      ).json<WorkResponse>();
+      expect(work.jobs[0]).toMatchObject({ expectedResourcesFingerprint: "d".repeat(64) });
+    });
     const expired = await reviewed();
     plane.clock.now += TOPOLOGY_LIMITS.previewTtl;
     expect((await admin.post(actionPath(), { action: "update", previewId: expired.id })).statusCode).toBe(409);

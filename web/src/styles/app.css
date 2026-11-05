@@ -5229,7 +5229,8 @@ button.primary.danger {
   position: absolute;
   top: 0;
   right: 0;
-  z-index: 3;
+  /* Over the host's sticky tabs, which come after it on the page; under a terminal filling the window. */
+  z-index: 10;
   width: min(470px, 86vw);
   padding: 14px 16px;
   background: var(--surface);

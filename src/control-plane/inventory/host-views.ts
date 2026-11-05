@@ -15,8 +15,12 @@ import {
   RESTART_CHOICE,
   isParkedContainer,
   type HandsOff,
+  DEFAULT_AUTOHEAL_IMAGE,
+  DEFAULT_SELF_CONTAINER_NAME,
+  HOST_KIND,
 } from "../../shared/constants.js";
 import { containerProblem } from "../../shared/container-problem.js";
+import { imageRepository } from "../../shared/image-reference.js";
 import type { ContainerSnapshot, RecoveryHold, RestartWait } from "../../shared/protocol.js";
 import { controlOf, policyOf, type SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
@@ -102,6 +106,18 @@ export function toHostView(
   };
 }
 
+const AUTOHEAL_REPOSITORY = imageRepository(DEFAULT_AUTOHEAL_IMAGE);
+
+/**
+ * Whether a container is a sidecar runner's own: it always protects itself, under the name its settings give
+ * (autoheal unless changed) and from Autoheal's image. ponytail: matched by that default name or the published
+ * image; a runner renamed and run from a mirror is not, and keeps the "runner behind" notice only.
+ */
+const isOwnRunner = (host: HostRow, container: { name: string; image: string }, isProtected: boolean) =>
+  host.kind === HOST_KIND.runner &&
+  isProtected &&
+  (container.name === DEFAULT_SELF_CONTAINER_NAME || imageRepository(container.image) === AUTOHEAL_REPOSITORY);
+
 /** `saved`: the ticks someone set on the host's page, by container name. */
 export function containerViewsOf(
   host: HostRow,
@@ -121,6 +137,7 @@ export function containerViewsOf(
     );
     return {
       ...container,
+      ...(isOwnRunner(host, container, isProtected) ? { ownRunner: true } : {}),
       hostId: host.id,
       hostLabel: host.label,
       hostState,

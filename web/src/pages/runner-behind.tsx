@@ -10,17 +10,31 @@ import { CommandBlock } from "./ssh-setup.js";
 
 export const isRunnerHost = (host: HostView) => (host.kind ?? HOST_KIND.runner) === HOST_KIND.runner;
 
+/** Asks a sidecar runner to replace itself with the newest image behind its own tag; what happens next once asked. */
+export function UpdateRunnerButton({ hostId, asked }: { hostId: string; asked: string }) {
+  const update = useMutation({
+    mutationFn: () => api("POST", apiPath(API_ROUTES.hostActions, { hostId }), { action: JOB_ACTION.updateRunner }),
+  });
+  if (update.isSuccess) {
+    return <span className="small">{asked}</span>;
+  }
+  return (
+    <>
+      <button type="button" disabled={update.isPending} onClick={() => update.mutate()}>
+        {TEXT.ssh.updateRunner}
+      </button>
+      <ErrorNotice error={update.error} />
+    </>
+  );
+}
+
 /**
  * A runner on another version than Autoheal, and the ways to bring it level: from here, which has it replace itself
- * with Autoheal's own release, or by hand on that host, as any other container manager would.
+ * with the newest image behind its tag, or by hand on that host, as any other container manager would.
  */
 export function RunnerBehind({ host, warning }: { host: HostView; warning?: string }) {
   const autoheal = useQuery(settingsQuery).data?.version;
   const admin = isAdmin(useSession().data);
-  const update = useMutation({
-    mutationFn: () =>
-      api("POST", apiPath(API_ROUTES.hostActions, { hostId: host.id }), { action: JOB_ACTION.updateRunner }),
-  });
   const runner = host.runnerVersion;
   if (autoheal === undefined || runner === null || runner === autoheal) {
     return null;
@@ -29,15 +43,11 @@ export function RunnerBehind({ host, warning }: { host: HostView; warning?: stri
     <div className="notice small stack" role="status">
       {warning !== undefined && <strong>{warning}</strong>}
       <p>{TEXT.ssh.runnerBehind(runner, autoheal)}</p>
-      {admin && !update.isSuccess && (
+      {admin && (
         <div className="card-actions">
-          <button type="button" disabled={update.isPending} onClick={() => update.mutate()}>
-            {TEXT.ssh.updateRunner}
-          </button>
+          <UpdateRunnerButton hostId={host.id} asked={TEXT.ssh.updateRunnerAsked} />
         </div>
       )}
-      {update.isSuccess && <p>{TEXT.ssh.updateRunnerAsked}</p>}
-      <ErrorNotice error={update.error} />
       <p className="muted">{TEXT.ssh.orOnHost}</p>
       <CommandBlock command={RUNNER_UPDATE_COMMAND} />
     </div>

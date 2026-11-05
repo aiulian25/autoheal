@@ -94,6 +94,7 @@ import { StackHead } from "../components/stack-head.js";
 import { updateRunQuery, waitInRun } from "../update-runs.js";
 import { AddContainer } from "./add-container.js";
 import { ContainerInspector, type InspectorTabRequest } from "./host-stats.js";
+import { UpdateRunnerButton } from "./runner-behind.js";
 
 // The terminal and xterm.js load when a shell first opens: most visits never need them.
 const ContainerTerminal = lazy(() =>
@@ -386,9 +387,26 @@ const isPersonsUpdate = (task: TaskSummaryView) =>
   task.resource?.kind === TASK_RESOURCE.container &&
   task.assignee?.kind === ASSIGNEE_KINDS.user;
 
-function ImageCell({ container, held }: { container: ContainerView; held: TaskSummaryView | undefined }) {
+function ImageCell({
+  container,
+  held,
+  admin,
+}: {
+  container: ContainerView;
+  held: TaskSummaryView | undefined;
+  admin: boolean;
+}) {
   const { status, policy, reason } = container.update;
   const text = TEXT.hostContainers;
+  // The runner's own container updates itself, protected as it is: the one action that reaches it.
+  if (container.ownRunner === true && status === UPDATE_STATUS.available) {
+    return (
+      <span className="row">
+        <span className="muted">{text.updateReady}</span>
+        {admin && <UpdateRunnerButton hostId={container.hostId} asked={text.runnerUpdating} />}
+      </span>
+    );
+  }
   if (policy === UPDATE_POLICY.off) {
     return <span className="muted">{text.updatesOff}</span>;
   }
@@ -1421,7 +1439,7 @@ export function HostContainers({
                             </td>
                             <UpForCell container={container} />
                             <td>
-                              <ImageCell container={container} held={heldUpdates.get(container.name)} />
+                              <ImageCell container={container} held={heldUpdates.get(container.name)} admin={admin} />
                             </td>
                             <td>
                               <PortsCell container={container} address={address} />

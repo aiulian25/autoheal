@@ -282,6 +282,8 @@ export const REFRESH_MILLISECONDS = 15_000;
 // A reset reaches the runner with the answer to its next report, and the report after it shows it: until then it waits.
 export const RESET_HEARD_MILLISECONDS = 2 * HEARTBEAT_INTERVAL_MILLISECONDS;
 // The inventory follows runners' event-driven reports and Home Assistant's live states.
+// Newer tag versions listed before "Show all": the rest wait for a click.
+export const NEWER_VERSIONS_SHOWN = 3;
 export const INVENTORY_REFRESH_MILLISECONDS = 5_000;
 // A container's timeline shows its newest few at first, so the rows under its opened one stay in reach.
 export const CONTAINER_TIMELINE_SHOWN = 10;
@@ -2443,6 +2445,7 @@ export const TEXT = {
     notChecked: "not checked yet",
     unknown: "could not check",
     updateReady: "update ready",
+    runnerUpdating: "updating itself: back in a minute",
     updateWatching: "host only watches",
     updateBox: {
       icon: (name: string) => `Update ${name}`,
@@ -2723,7 +2726,9 @@ export const TEXT = {
       `Checked every ${hours === 1 ? "hour" : `${hours} hours`}, for a new image behind each tag and a newer version ` +
       "than it. Applied by recreating the container with its settings and volumes.",
     allCurrent: "Every image here is up to date.",
-    newerTitle: "Newer versions",
+    newerTitle: "Newer TAG versions",
+    newerShowAll: (count: number) => `Show all ${count}`,
+    newerShowFewer: "Show fewer",
     newerHint:
       "The tag is yours, so Autoheal does not change it: write the new one where the container is deployed (its " +
       "compose file or run command), then pull and recreate it.",

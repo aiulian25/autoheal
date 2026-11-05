@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { API_ERRORS } from "../../shared/api.js";
-import { HOST_SILENT_AFTER_MILLISECONDS, HOST_STATUS_ACTIVE } from "../../shared/constants.js";
+import { HOST_SILENT_AFTER_MILLISECONDS, HOST_STATUS_ACTIVE, JOB_ACTION } from "../../shared/constants.js";
 import { sha256Hex } from "../../shared/hash.js";
 import {
   operationPreviewAnswerSchema,
@@ -136,6 +136,23 @@ export class TopologyService {
       };
       if (answer.ok && answer.refusals.length === 0) this.prepared.set(id, { session, createdAt: at, view });
       return structuredClone(view);
+    } finally {
+      this.pending--;
+    }
+  }
+  /**
+   * The runner's word now on what updating a container would touch, for an update run reaching it after the run
+   * itself replaced some of the containers a person reviewed. Null where the host cannot say now.
+   */
+  async refresh(hostId: string, containerName: string): Promise<Extract<OperationPreviewAnswer, { ok: true }> | null> {
+    if (!this.host(hostId).operationPreviews || this.pending >= TOPOLOGY_LIMITS.relayPending) return null;
+    this.pending++;
+    try {
+      const request = { id: randomUUID(), containerName, action: JOB_ACTION.update };
+      const answer = operationPreviewAnswerSchema.parse(await this.relay.ask(hostId, request));
+      return answer.ok ? answer : null;
+    } catch {
+      return null;
     } finally {
       this.pending--;
     }

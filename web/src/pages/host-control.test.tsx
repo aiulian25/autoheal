@@ -220,6 +220,42 @@ describe("where a container's row sits", () => {
   });
 });
 
+describe("the sidecar runner's own row", () => {
+  const ready = { status: "available" as const, checkedAt: 1, policy: "ask" as const, remote: null, reason: null };
+  const runner = container({
+    name: "autoheal",
+    composeProject: null,
+    protected: true,
+    handsOff: "protected",
+    ownRunner: true,
+    update: ready,
+    byItself: { restart: "ask", update: "ask", restartLock: "protected", updateLock: "protected" },
+  });
+
+  it("lets an admin update the runner from its row, protected as it is", async () => {
+    const fetch = serve({ [API_ROUTES.containers]: [runner] });
+    show(<HostContainers host={alder(false)} admin />);
+    const row = (await screen.findByRole("button", { name: "autoheal" })).closest("tr")!;
+
+    fireEvent.click(within(row).getByRole("button", { name: TEXT.ssh.updateRunner }));
+
+    await sent(fetch, apiPath(API_ROUTES.hostActions, { hostId: "h1" }), "POST", { action: "update_runner" });
+    expect(await within(row).findByText(TEXT.hostContainers.runnerUpdating)).toBeTruthy();
+  });
+
+  it("only says an update is ready to a viewer", async () => {
+    serve({ [API_ROUTES.containers]: [runner] });
+    show(<HostContainers host={alder(false)} admin={false} />, {
+      ...session,
+      user: { ...session.user, role: "viewer" },
+    });
+    const row = (await screen.findByRole("button", { name: "autoheal" })).closest("tr")!;
+
+    expect(within(row).getByText(TEXT.hostContainers.updateReady)).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: TEXT.ssh.updateRunner })).toBeNull();
+  });
+});
+
 describe("container CPU and RAM in the host table", () => {
   it.each([true, false])("shows and refreshes each container's usage (admin: %s)", async (admin) => {
     const routes = {
