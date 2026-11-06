@@ -105,6 +105,15 @@ describe("a stack's Compose file", () => {
     expect((screen.getByRole("textbox", { name: ".env" }) as HTMLTextAreaElement).value).toContain("hunter2");
   });
 
+  it("opens the hidden .env for editing when its values are clicked, as a person reaches for them", async () => {
+    show();
+    await editor();
+
+    fireEvent.click(screen.getByLabelText(".env"));
+
+    expect((screen.getByRole("textbox", { name: ".env" }) as HTMLTextAreaElement).value).toContain("hunter2");
+  });
+
   it("says what an edit would change, and saves without recreating anything", async () => {
     check = { ...CALM, recreate: ["Wiki"], unchanged: ["Wiki-DB"] };
     show();

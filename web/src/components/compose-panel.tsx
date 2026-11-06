@@ -113,8 +113,12 @@ function EnvFile({
     );
   }
   const name = file.path.split("/").at(-1) ?? file.path;
+  // Above the file, which fills the pane: below it, the way in was out of sight.
   return (
     <div className="compose-env">
+      <button type="button" className="link small" onClick={() => setShown(!shown)}>
+        {shown ? text.hide : `${text.show} / ${text.editable}`}
+      </button>
       {shown ? (
         <textarea
           className="mono compose-text"
@@ -125,13 +129,11 @@ function EnvFile({
           onChange={(event) => onChange(event.target.value)}
         />
       ) : (
-        <pre className="mono compose-text" aria-label={name}>
+        // A click on the hidden values opens them too, where a person reaches for them first.
+        <pre className="mono compose-text compose-masked" aria-label={name} onClick={() => setShown(true)}>
           {masked(value)}
         </pre>
       )}
-      <button type="button" className="link small" onClick={() => setShown(!shown)}>
-        {shown ? text.hide : `${text.show} / ${text.editable}`}
-      </button>
     </div>
   );
 }

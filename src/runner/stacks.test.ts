@@ -1076,6 +1076,7 @@ exec /usr/bin/mv "$@"
       saveBoth,
       contents,
       leftovers,
+      hostScript,
       failRenames: (what: string) => writeFileSync(plan, what),
       healRenames: () => writeFileSync(plan, ""),
       holdChecks: () => {
@@ -1105,6 +1106,22 @@ exec /usr/bin/mv "$@"
     expect(host.contents()).toEqual(OLD);
     expect(host.leftovers()).toEqual([]);
     expect(statSync(host.envFile).mode & 0o777).toBe(0o640);
+  });
+
+  it("asks the host as few times as it safely can, as each trip starts a helper container on a slow host", async () => {
+    const host = onDisk();
+    const hash = await host.hashes();
+
+    host.hostScript.mockClear();
+    await host.ask({ kind: "read" });
+    // Its Compose file and its .env in one trip.
+    expect(host.hostScript).toHaveBeenCalledTimes(1);
+
+    host.hostScript.mockClear();
+    expect((await host.saveBoth(hash)).error).toBeNull();
+    // An unfinished save, the files, Compose's word, the files again just before writing, and the write.
+    expect(host.hostScript).toHaveBeenCalledTimes(5);
+    expect(host.contents()).toEqual(NEW);
   });
 
   it("makes a new .env readable only by its owner", async () => {

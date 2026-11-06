@@ -96,7 +96,9 @@ export function downScript(folder: string, removeData: boolean): string {
  */
 export function parseComposeScript(text: string, settings: string | null = null): string {
   const encoded = Buffer.from(text).toString("base64");
-  const config = "docker compose -f compose.yml config --no-path-resolution --no-env-resolution --format json";
+  // An older Compose (Synology's 2.20) has no --no-env-resolution: it reads the file without it, as it can.
+  const older = "docker compose -f compose.yml config --no-path-resolution --format json";
+  const config = `${older} --no-env-resolution`;
   return [
     PATH_LINE,
     "work=$(mktemp -d) || exit 1",
@@ -106,7 +108,7 @@ export function parseComposeScript(text: string, settings: string | null = null)
     ...(settings === null
       ? []
       : [`printf %s ${shellQuoted(Buffer.from(settings).toString("base64"))} | base64 -d > .env`]),
-    `read=$(${config} 2>/dev/null) || read=$(${config} --no-interpolate 2>&1)`,
+    `read=$(${config} 2>/dev/null) || read=$(${older} 2>/dev/null) || read=$(${config} --no-interpolate 2>/dev/null) || read=$(${older} --no-interpolate 2>&1)`,
     `printf %s "$read" | tr -d '\\n'`,
   ].join("\n");
 }

@@ -256,6 +256,24 @@ describe("the sidecar runner's own row", () => {
   });
 });
 
+describe("a newer version of a container's tag", () => {
+  it("says so in the Image column, where an up-to-date tag would, leading to the host's updates", async () => {
+    const current = { status: "current" as const, checkedAt: 1, policy: "ask" as const, remote: null, reason: null };
+    serve({
+      [API_ROUTES.containers]: [
+        container({ name: "notes", composeProject: null, update: { ...current, newerTag: "3.4.2" } }),
+        container({ name: "wiki", composeProject: null, update: current }),
+      ],
+    });
+    show(<HostContainers host={alder(false)} admin />);
+    const notes = (await screen.findByRole("button", { name: "notes" })).closest("tr")!;
+    const wiki = screen.getByRole("button", { name: "wiki" }).closest("tr")!;
+
+    expect(within(notes).getByRole("link", { name: "3.4.2 out" }).getAttribute("href")).toBe("#updates");
+    expect(within(wiki).getByText(TEXT.hostContainers.upToDate)).toBeTruthy();
+  });
+});
+
 describe("container CPU and RAM in the host table", () => {
   it.each([true, false])("shows and refreshes each container's usage (admin: %s)", async (admin) => {
     const routes = {

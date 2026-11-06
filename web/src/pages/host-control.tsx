@@ -13,6 +13,7 @@ import { Link } from "react-router";
 import {
   API_ROUTES,
   apiPath,
+  hasNewerVersion,
   hasUpdate,
   updateVersions,
   type ContainerControlChange,
@@ -424,6 +425,10 @@ function ImageCell({
         )}
       </>
     );
+  }
+  // Up to date behind its tag, with a newer version of that tag out: the person's to take, told where they look.
+  if (!hasUpdate(container) && hasNewerVersion(container)) {
+    return <a href={`#${HOST_SECTIONS.updates}`}>{TEXT.updates.newer(container.update.newerTag!)}</a>;
   }
   if (!hasUpdate(container)) {
     return <span className="muted">{text.upToDate}</span>;

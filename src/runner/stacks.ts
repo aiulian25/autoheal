@@ -401,7 +401,13 @@ export class Stacks {
   private async read(stack: Stack, recovering = true): Promise<StackAnswer> {
     const { hostScript } = this.dependencies;
     const mark = `AUTOHEAL-${randomUUID()}`;
-    const first = await hostScript(readFilesScript(mark, stack.composeFiles, stack.folder), READ_TIMEOUT_MILLISECONDS);
+    // Its usual settings file comes with its Compose files: on a slow host each trip starts a helper container.
+    const defaultEnv = stack.environmentFile ?? `${stack.folder}/${DEFAULT_ENV_FILE}`;
+    const firstEnv = isInside(defaultEnv, stack.folder) ? [defaultEnv] : [];
+    const first = await hostScript(
+      readFilesScript(mark, [...stack.composeFiles, ...firstEnv], stack.folder),
+      READ_TIMEOUT_MILLISECONDS,
+    );
     // Nobody should open a mix of two versions. Within a change this is that change's own journal, or already handled.
     if (recovering && !this.changing.has(stack.project) && first.output.includes(`${mark} ${JOURNAL_SEEN_LINE}`)) {
       await this.whileChanging(
@@ -412,20 +418,24 @@ export class Stacks {
       return this.read(stack, false);
     }
     if (first.exitCode !== 0) return refused(STACK_OUTCOMES.notRead(stack.project, tail(first.output)));
-    const composes = parseFiles(mark, first.output);
-    if ([...composes.values()].some((file) => file.big)) return refused(STACK_OUTCOMES.tooBig(stack.project));
-    const composeTexts = stack.composeFiles.map((_, index) => composes.get(index)?.text ?? null);
+    const firstFiles = parseFiles(mark, first.output);
+    if (stack.composeFiles.some((_, index) => firstFiles.get(index)?.big === true))
+      return refused(STACK_OUTCOMES.tooBig(stack.project));
+    const composeTexts = stack.composeFiles.map((_, index) => firstFiles.get(index)?.text ?? null);
     if (composeTexts.every((text) => text === null)) return refused(STACK_OUTCOMES.fileGone(stack.composeFiles[0]!));
     const named = composeTexts.flatMap((text) => (text === null ? [] : envFilesNamedIn(text)));
-    const envPaths = [
-      ...new Set([
-        stack.environmentFile ?? `${stack.folder}/${DEFAULT_ENV_FILE}`,
-        ...named.map((path) => `${stack.folder}/${path}`),
-      ]),
-    ].filter((path) => isInside(path, stack.folder));
-    const second = await hostScript(readFilesScript(mark, envPaths), READ_TIMEOUT_MILLISECONDS);
-    if (second.exitCode !== 0) return refused(STACK_OUTCOMES.notRead(stack.project, tail(second.output)));
-    const envs = parseFiles(mark, second.output);
+    const envPaths = [...new Set([defaultEnv, ...named.map((path) => `${stack.folder}/${path}`)])].filter((path) =>
+      isInside(path, stack.folder),
+    );
+    // A second trip only for settings files the Compose files name beyond the usual one.
+    const unread = envPaths.filter((path) => !firstEnv.includes(path));
+    const second =
+      unread.length === 0 ? null : await hostScript(readFilesScript(mark, unread), READ_TIMEOUT_MILLISECONDS);
+    if (second !== null && second.exitCode !== 0)
+      return refused(STACK_OUTCOMES.notRead(stack.project, tail(second.output)));
+    const later = second === null ? new Map() : parseFiles(mark, second.output);
+    const envFileOf = (path: string) =>
+      firstEnv.includes(path) ? firstFiles.get(stack.composeFiles.length) : later.get(unread.indexOf(path));
     const entry = (
       path: string,
       kind: StackFile["kind"],
@@ -438,10 +448,10 @@ export class Stacks {
       hasPrevious: file?.hasPrevious ?? false,
     });
     const files = [
-      ...stack.composeFiles.map((path, index) => entry(path, STACK_FILE_KIND.compose, composes.get(index))),
+      ...stack.composeFiles.map((path, index) => entry(path, STACK_FILE_KIND.compose, firstFiles.get(index))),
       // Big settings files are left out rather than cut short.
-      ...envPaths.flatMap((path, index) =>
-        envs.get(index)?.big === true ? [] : [entry(path, STACK_FILE_KIND.env, envs.get(index))],
+      ...envPaths.flatMap((path) =>
+        envFileOf(path)?.big === true ? [] : [entry(path, STACK_FILE_KIND.env, envFileOf(path))],
       ),
     ];
     return {
@@ -456,9 +466,9 @@ export class Stacks {
   }
 
   /** Has the host's own Compose read the edited files, without touching the real ones, and says what would change. */
-  private async check(stack: Stack, edited: readonly EditedStackFile[]): Promise<StackCheck> {
+  private async check(stack: Stack, edited: readonly EditedStackFile[], read?: StackAnswer): Promise<StackCheck> {
     const { hostScript } = this.dependencies;
-    const allowed = await this.allowedPaths(stack);
+    const allowed = await this.allowedPaths(stack, read);
     const usable = edited.filter(({ path }) => allowed.has(path));
     const overrides = new Map(usable.map(({ path }, index) => [path, `"$work/${index}"`]));
     const writes = usable.map(
@@ -474,7 +484,9 @@ export class Stacks {
       ...writes,
       `$compose ${this.composeArguments(stack, overrides)} config --hash '*' 2>&1 || exit 9`,
       `echo "${mark}"`,
-      `$compose ${this.composeArguments(stack, overrides)} config --no-env-resolution --format json 2>/dev/null | base64 | tr -d '\\n'`,
+      // An older Compose (Synology's 2.20) has no --no-env-resolution: then it reads them as it can.
+      `{ $compose ${this.composeArguments(stack, overrides)} config --no-env-resolution --format json 2>/dev/null || ` +
+        `$compose ${this.composeArguments(stack, overrides)} config --format json 2>/dev/null; } | base64 | tr -d '\\n'`,
     ].join("\n");
     const ran = await hostScript(script, READ_TIMEOUT_MILLISECONDS);
     const empty = { recreate: [], unchanged: [], added: [], removed: [], warnings: [] };
@@ -555,8 +567,9 @@ export class Stacks {
     return [...new Set(warnings)];
   }
 
-  private async allowedPaths(stack: Stack): Promise<ReadonlySet<string>> {
-    const read = await this.read(stack);
+  // The files a read found: the one just made, where a caller has it, so the host is not asked twice.
+  private async allowedPaths(stack: Stack, given?: StackAnswer): Promise<ReadonlySet<string>> {
+    const read = given ?? (await this.read(stack));
     const known = new Set((read.files?.files ?? []).map(({ path }) => path));
     known.add(stack.environmentFile ?? `${stack.folder}/${DEFAULT_ENV_FILE}`);
     return known;
@@ -575,7 +588,7 @@ export class Stacks {
       if ((file?.hash ?? null) !== hash)
         return refused(STACK_OUTCOMES.changedMeanwhile(relativeTo(stack.folder, path)));
     }
-    const check = await this.check(stack, edited);
+    const check = await this.check(stack, edited, current);
     if (check.problem !== null) return refused(STACK_OUTCOMES.notSaved(check.problem));
     // Compose took its time, and someone at the host may have saved meanwhile.
     const latest = await this.read(stack);
@@ -584,7 +597,7 @@ export class Stacks {
       ({ path, hash }) => (latest.files?.files.find((file) => file.path === path)?.hash ?? null) !== hash,
     );
     if (moved !== undefined) return refused(STACK_OUTCOMES.changedMeanwhile(relativeTo(stack.folder, moved.path)));
-    return this.commit(stack, {
+    return this.commit({
       folder: stack.folder,
       writes: edited.map(({ path, text }) => ({ path, text })),
       forgetPrevious: latest.files.files
@@ -598,7 +611,7 @@ export class Stacks {
     const read = await this.read(stack);
     const kept = (read.files?.files ?? []).filter((file) => file.hasPrevious);
     if (kept.length === 0) return refused(STACK_OUTCOMES.nothingKept);
-    return this.commit(stack, {
+    return this.commit({
       folder: stack.folder,
       writes: kept.map(({ path }) => ({ path, copyOf: `${path}${PREVIOUS_SUFFIX}` })),
       forgetPrevious: [],
@@ -606,11 +619,12 @@ export class Stacks {
     });
   }
 
-  private async commit(stack: Stack, commit: StackCommit): Promise<StackAnswer> {
+  private async commit(commit: StackCommit): Promise<StackAnswer> {
     const written = await this.dependencies.hostScript(commitScript(commit), READ_TIMEOUT_MILLISECONDS);
     if (written.exitCode === EXIT_BLOCKED) return refused(STACK_OUTCOMES.unfinishedSave(tail(written.output)));
     if (written.exitCode !== 0) return refused(STACK_OUTCOMES.notWritten(tail(written.output)));
-    return this.read(stack);
+    // The page reads the files again itself: one trip fewer to a host where each starts a helper container.
+    return { error: null };
   }
 
   // Every container's last lines, in time order: a stack fails between its containers.
@@ -813,7 +827,7 @@ export class Stacks {
       ...envEdits.map(({ path, text, file }) => ({ path, text, hash: file!.hash })),
     ];
     const saved = await this.save(stack, edited);
-    if (saved.files == null) return { written: false, reason: saved.error ?? STACK_OUTCOMES.unreadable };
+    if (saved.error !== null) return { written: false, reason: saved.error };
     if (!composeAgrees(await this.resolvedService(stack, service), change)) {
       await this.restore(stack);
       return { written: false, reason: COMPOSE_EDIT_PROBLEMS.disagrees };

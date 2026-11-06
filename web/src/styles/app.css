@@ -6707,6 +6707,10 @@ button.network-chip .tab-count {
   align-items: flex-start;
 }
 
+.compose-masked {
+  cursor: pointer;
+}
+
 .compose-absent {
   padding: var(--space-3);
   background: var(--surface-sunken);

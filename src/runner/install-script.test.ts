@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { composeOf, type InstallSpec } from "../shared/install.js";
-import { INSTALL_EXIT, checkScript, downScript, writeScript } from "./install-script.js";
+import { INSTALL_EXIT, checkScript, downScript, parseComposeScript, writeScript } from "./install-script.js";
 
 const execute = promisify(execFile);
 // Run for real, by sh: a script that only reads right proves nothing.
@@ -129,5 +129,27 @@ describe("the scripts an install runs on a host", () => {
     expect((await run(all)).code).toBe(0);
     expect(existsSync(spec.folder)).toBe(false);
     expect(existsSync(join(root, "media"))).toBe(true);
+  });
+});
+
+describe("reading a Compose file with an older Compose", () => {
+  it("reads it without --no-env-resolution where the host's Compose does not know it, as Synology's 2.20", async () => {
+    const shims = mkdtempSync(join(tmpdir(), "autoheal-old-compose-"));
+    const answer = '{"services":{"app":{"image":"example/app:1"}}}';
+    writeFileSync(
+      join(shims, "docker"),
+      `#!/bin/sh\nfor a in "$@"; do [ "$a" = "--no-env-resolution" ] && { echo "unknown flag" >&2; exit 1; }; done\necho '${answer}'\n`,
+    );
+    chmodSync(join(shims, "docker"), 0o755);
+    try {
+      const { stdout } = await promisify(execFile)(
+        "sh",
+        ["-c", parseComposeScript("services:\n  app:\n    image: example/app:1\n")],
+        { env: { ...process.env, PATH: `${shims}:${process.env.PATH}` } },
+      );
+      expect(stdout).toBe(answer);
+    } finally {
+      rmSync(shims, { recursive: true, force: true });
+    }
   });
 });
