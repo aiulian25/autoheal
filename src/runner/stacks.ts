@@ -47,6 +47,7 @@ import { COMPOSE_COMMANDS, shellQuoted } from "./install-script.js";
 import { driftOf, reconcilableServices, type DeclaredService } from "./stack-drift.js";
 import {
   EXIT_BLOCKED,
+  EXIT_NOT_INSIDE,
   JOURNAL_SEEN_LINE,
   PREVIOUS_SUFFIX,
   commitScript,
@@ -245,6 +246,7 @@ export class Stacks {
     const entries = parseJournal(text, isOurs);
     if (entries === null) return STACK_OUTCOMES.unfinishedSave(STACK_OUTCOMES.journalNotOurs);
     const recovered = await hostScript(recoveryScript(stack.folder, entries), READ_TIMEOUT_MILLISECONDS);
+    if (recovered.exitCode === EXIT_NOT_INSIDE) return STACK_OUTCOMES.unfinishedSave(STACK_OUTCOMES.journalNotOurs);
     return recovered.exitCode === 0 ? null : STACK_OUTCOMES.unfinishedSave(tail(recovered.output));
   }
 

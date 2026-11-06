@@ -7,7 +7,6 @@ import {
 import {
   NETWORK_CHANGE,
   BIND_SEPARATOR,
-  DENIED_BIND_SOURCES,
   ENVIRONMENT_ENTRY_SEPARATOR,
   MOUNT_KIND,
   MOUNT_TYPE_BIND,
@@ -20,6 +19,7 @@ import {
   type PortProtocol,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
+import { isDeniedSource } from "../shared/install.js";
 import type { ContainerSettings, SettingsAnswer, SettingsRequest } from "../shared/protocol.js";
 import { detailsOf, hasFixedNetworkMode, joinableNetworks } from "./container-details.js";
 import { containerAccessRefusal, type ContainerAccessSettings } from "./container-access-guard.js";
@@ -27,7 +27,6 @@ import type { RecreateSpecification } from "./container-updater.js";
 import type { DockerClient } from "./docker-client.js";
 import type { ContainerConfig, ContainerDetails, PortBinding } from "./incident-report.js";
 
-const HOST_ROOT = "/";
 type RestartPolicy = ContainerSettings["restart"]["policy"];
 type Mount = ContainerSettings["mounts"][number];
 
@@ -91,9 +90,6 @@ export function settingsOf(details: ContainerDetails, image: Partial<ContainerCo
   };
 }
 
-const isUnder = (source: string, denied: string) =>
-  denied === HOST_ROOT ? source === HOST_ROOT : source === denied || source.startsWith(`${denied}${HOST_ROOT}`);
-
 /**
  * A host path the container did not have mounted before and must not get: the host's root or system, or Docker's
  * own (its socket, its data). Null when every new bind is of an ordinary path.
@@ -101,7 +97,7 @@ const isUnder = (source: string, denied: string) =>
 export function deniedMountOf(details: ContainerDetails, settings: ContainerSettings): string | null {
   const before = new Set((details.Mounts ?? []).map((mount) => mount.Source));
   const added = settings.mounts.filter((mount) => mount.kind === MOUNT_KIND.bind && !before.has(mount.source));
-  const denied = added.find((mount) => DENIED_BIND_SOURCES.some((path) => isUnder(mount.source, path)));
+  const denied = added.find((mount) => isDeniedSource(mount.source));
   return denied?.source ?? null;
 }
 

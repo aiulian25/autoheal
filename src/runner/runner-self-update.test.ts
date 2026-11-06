@@ -88,6 +88,34 @@ describe("a sidecar runner moving to its control plane's release", () => {
     });
   });
 
+  it("refuses an unsigned release where the admin asks for a signed one, and starts no helper", async () => {
+    const DIGEST = `sha256:${"3".repeat(64)}`;
+    world.docker.inspectImage = async () => ({ Id: NEW, RepoDigests: [`ghcr.io/example/autoheal@${DIGEST}`] }) as never;
+    let status: "unsigned" | "verified" = "unsigned";
+    const provenance = {
+      policy: () => ({
+        revision: 1,
+        publishers: [{ name: "example", publicKey: "irrelevant here" }],
+        required: [{ registry: "ghcr.io", repository: "example/autoheal", publishers: [] }],
+      }),
+      read: async () => ({
+        status,
+        digest: DIGEST,
+        publisher: status === "verified" ? "example" : null,
+        checkedAt: 0,
+        problem: null,
+      }),
+    };
+
+    const refused = await handOverToRelease(world.docker, own, RELEASE, provenance as never);
+    expect(refused.handedOver).toBe(false);
+    expect(refused.outcome).toContain("needs a signed image");
+    expect(world.state.created).toEqual([]);
+
+    status = "verified";
+    expect((await handOverToRelease(world.docker, own, RELEASE, provenance as never)).handedOver).toBe(true);
+  });
+
   it("changes nothing when it already runs that release", async () => {
     world.state.pulled = OLD;
 

@@ -688,6 +688,26 @@ describe("detectors", () => {
     expect(await tasks()).toEqual([]);
   });
 
+  it("gives a reopened update to whoever has it now, after its container's choice changed to Autoheal applying it", async () => {
+    const update = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"b".repeat(64)}` };
+    await report([containerSnapshot({ name: "immich", update })]);
+    await detector.run();
+    const [first] = await tasks();
+    expect(first!.assignee).toMatchObject({ kind: "user", name: "admin" });
+
+    // Updated: the task closes. Then its owner hands its updates to Autoheal, and a newer image comes.
+    await report([containerSnapshot({ name: "immich", update: { ...update, status: "current", checkedAt: 2 } })]);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+    const newer = { ...update, checkedAt: 3, remoteDigest: `sha256:${"c".repeat(64)}` };
+    await report([containerSnapshot({ name: "immich", update: newer, updatePolicy: "auto" })]);
+    await detector.run();
+
+    const [reopened] = await tasks();
+    expect(reopened!.id).toBe(first!.id);
+    expect(reopened!.assignee).toEqual({ kind: "agent", id: "autoheal", name: "Autoheal" });
+  });
+
   it("names both versions in an update's title once the images say them, and only when they differ", async () => {
     const update = (version: string | null) => ({
       status: "available" as const,

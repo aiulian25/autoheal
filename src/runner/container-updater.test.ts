@@ -557,6 +557,53 @@ describe("ContainerUpdater", () => {
       expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
     });
 
+    // Its data too big to copy, as a model store or a media cache: its owner chose to update it anyway (2026-11-06).
+    const restored: string[] = [];
+    const withTooMuchData = () =>
+      new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (_name, details) => ({
+            ...completeCheckpoint(details, "more than this host's 2.0 GB limit"),
+            complete: false,
+            oversized: true,
+          }),
+          verify: async () => ({ at: null, problem: null }),
+          restore: async (name) => {
+            restored.push(name);
+            return { at: null, problem: null };
+          },
+          discard: async () => {},
+        },
+      );
+
+    it("goes ahead with an automatic update whose data is too big to copy, saying it was not kept", async () => {
+      const result = await withTooMuchData().update("app", true);
+      expect(result.succeeded).toBe(true);
+      expect(result.outcome).toContain("2.0 GB limit");
+      expect(app()).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
+    });
+
+    it("undoes one that then starts badly, putting the old container back over the data as the new one left it", async () => {
+      docker.afterStart = (container) =>
+        container.Image === NEW_IMAGE
+          ? { Status: "exited", Running: false, ExitCode: 1 }
+          : { Status: "running", Running: true };
+      restored.length = 0;
+
+      const result = await withTooMuchData().update("app", true);
+
+      expect(result.succeeded).toBe(false);
+      expect(result.outcome).toContain(JOB_OUTCOMES.rolledBackDataKept("app"));
+      expect(app()).toMatchObject({ Image: OLD_IMAGE });
+      expect(docker.find("app-autoheal-old")).toBeUndefined();
+      expect(restored).toEqual([]);
+    });
+
     it("refuses an automatic update of a container with data before stopping anything, saying why", async () => {
       const result = await withoutCopies().update("app");
       expect(result).toEqual({

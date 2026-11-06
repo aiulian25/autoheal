@@ -392,6 +392,7 @@ export class Installs {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notOurs(name) };
     }
     const taken = await hostScript(downScript(folder, removeData), DOWN_TIMEOUT_MILLISECONDS);
+    if (taken.exitCode === INSTALL_EXIT.notOurs) return { succeeded: false, outcome: INSTALL_OUTCOMES.notOurs(name) };
     if (taken.exitCode !== 0) {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notRemoved(name, tail(taken.output)) };
     }

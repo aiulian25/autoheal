@@ -45,6 +45,8 @@ import {
   SECRET_BOX_MESSAGES,
 } from "../shared/constants.js";
 import type { HeartbeatResponse } from "../shared/protocol.js";
+import { ImageProvenanceReader } from "../runner/image-provenance.js";
+import type { ProvenanceSource } from "../runner/image-updates.js";
 import { RegistryClient } from "../runner/registry-client.js";
 import { RegistryCredentialsService } from "./settings/registry-credentials-service.js";
 import { ImageTrustService } from "./settings/image-trust-service.js";
@@ -380,6 +382,13 @@ export function createControlPlaneServices(
     controlPlane: { url: runners.apiUrl ?? EMBEDDED_RUNNER_URL, pin: runners.pin },
     environment: environment ?? null,
   });
+  // ponytail: signatures read without registry credentials, as Autoheal's own image is public; pass the local host's
+  // credentials here if a private registry ever holds it.
+  const selfUpdateReader = new ImageProvenanceReader(new RegistryClient(), () => imageTrust.policy());
+  const selfUpdateProvenance: ProvenanceSource = {
+    policy: () => imageTrust.policy(),
+    read: (reference, digest) => selfUpdateReader.read(reference, digest),
+  };
   const selfUpdate = tracked(
     new SelfUpdateService({
       docker: localHostRunner.inPlace() ? new DockerClient(localHostRunner.socketPath) : null,
@@ -387,6 +396,7 @@ export function createControlPlaneServices(
       outcomes: new SelfUpdateOutcomeFile(backups.dataDirectory),
       auditLog,
       clock,
+      provenance: selfUpdateProvenance,
     }),
   );
   const metricRollups = tracked(

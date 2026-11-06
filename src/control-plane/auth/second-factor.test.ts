@@ -137,21 +137,31 @@ describe("TOTP for every account", () => {
     expect(new URL(otpauthUri).searchParams.get("image")).toBe("https://localhost/brand/autoheal-512.png");
   });
 
-  it("takes a code typed with a space, and says when a clock is off instead of just refusing", async () => {
+  it("takes a code typed with a space, and says when a clock is behind instead of just refusing", async () => {
     const { secret } = await fullySignedInAdmin(controlPlane);
     const client = controlPlane.client();
     await client.signIn("admin", NEW_ADMIN_PASSWORD);
-    const aheadByThreeSteps = currentCode(secret, controlPlane.clock.now, 3);
-    expect((await client.post(API_ROUTES.secondFactor, { code: aheadByThreeSteps })).json()).toEqual({
+    const behindByThreeSteps = currentCode(secret, controlPlane.clock.now, -3);
+    expect((await client.post(API_ROUTES.secondFactor, { code: behindByThreeSteps })).json()).toEqual({
       error: "clock_drift",
-      clockOffsetSeconds: 90,
+      clockOffsetSeconds: -90,
     });
-    expect(controlPlane.stdout.join("")).toContain('"reason":"clock","offsetSeconds":90');
+    expect(controlPlane.stdout.join("")).toContain('"reason":"clock","offsetSeconds":-90');
 
     controlPlane.clock.now += STEP_MILLISECONDS;
     const code = currentCode(secret, controlPlane.clock.now);
     const typedWithSpace = `${code.slice(0, 3)} ${code.slice(3)}`;
     expect((await client.post(API_ROUTES.secondFactor, { code: typedWithSpace })).statusCode).toBe(204);
+  });
+
+  it("never says a wrong code belongs to a later time, which a guesser could wait for", async () => {
+    const { secret } = await fullySignedInAdmin(controlPlane);
+    const client = controlPlane.client();
+    await client.signIn("admin", NEW_ADMIN_PASSWORD);
+    const aheadByThreeSteps = currentCode(secret, controlPlane.clock.now, 3);
+    expect((await client.post(API_ROUTES.secondFactor, { code: aheadByThreeSteps })).json()).toEqual({
+      error: "wrong_code",
+    });
   });
 
   it("accepts each recovery code once, typed loosely", async () => {

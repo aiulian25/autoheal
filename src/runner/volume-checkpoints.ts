@@ -75,6 +75,8 @@ export interface TakenCheckpoint {
   mounts: DataMount[];
   complete: boolean;
   outcome: string;
+  // Not kept only because there was too much of it: over the host's limit, or more than half its free space.
+  oversized?: true;
 }
 
 const manifestSchema = z.object({
@@ -209,7 +211,9 @@ export class VolumeCheckpoints {
         return result(true, JOB_OUTCOMES.checkpointTaken(mounts.length, sizeText(report.bytes)));
       }
       await this.removeEach(volumes);
-      return result(false, JOB_OUTCOMES.checkpointSkipped(this.whyNotKept(report)));
+      const oversized = report.outcome === VOLUME_COPY_OUTCOME.tooBig || report.outcome === VOLUME_COPY_OUTCOME.noRoom;
+      const skipped = result(false, JOB_OUTCOMES.checkpointSkipped(this.whyNotKept(report)));
+      return oversized ? { ...skipped, oversized: true } : skipped;
     } catch (error) {
       await this.removeEach([...volumes, manifest]);
       return result(false, JOB_OUTCOMES.checkpointSkipped(describeError(error)));

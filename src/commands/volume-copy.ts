@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import type { Stats } from "node:fs";
 import { lstat, readdir, rm, statfs } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -153,6 +154,9 @@ async function copyAndVerify(
   if (differences !== "") throw new Error(VOLUME_COPY_MESSAGES.metadataCopyFailed);
 }
 
+// A mount whose root is a folder or a file; anything else there holds no data of the app's.
+const holdsData = (root: Stats) => root.isDirectory() || root.isFile();
+
 async function keep(roots: CopyRoots, limit: number, program: string): Promise<VolumeCopyReport> {
   const pairs = await pairsOf(roots);
   const disk = pairs[0] === undefined ? null : await statfs(pairs[0].to);
@@ -161,7 +165,8 @@ async function keep(roots: CopyRoots, limit: number, program: string): Promise<V
   const plan: { pair: CopyRoots; directory: boolean }[] = [];
   for (const pair of pairs) {
     const source = await lstat(pair.from);
-    if (!source.isDirectory() && !source.isFile()) throw new Error(VOLUME_COPY_MESSAGES.specialFile);
+    // A socket, pipe, device or link mounted on its own is the host's plumbing, never the app's data: left out.
+    if (!holdsData(source)) continue;
     bytes += await scanMount(pair.from, limit - bytes);
     if (bytes > limit) return reportOf(VOLUME_COPY_OUTCOME.tooBig, bytes, availableBytes);
     plan.push({
@@ -180,7 +185,8 @@ async function restore(roots: CopyRoots, program: string): Promise<VolumeCopyRep
   const plan: { pair: CopyRoots; directory: boolean }[] = [];
   for (const pair of await pairsOf(roots)) {
     const target = await lstat(pair.to);
-    if (!target.isDirectory() && !target.isFile()) throw new Error(VOLUME_COPY_MESSAGES.specialFile);
+    // Left out when kept, so nothing is put back over it either.
+    if (!holdsData(target)) continue;
     const from = target.isFile() ? join(pair.from, CHECKPOINT.fileEntry) : pair.from;
     const source = await lstat(from);
     if (source.isDirectory() !== target.isDirectory() || source.isFile() !== target.isFile())

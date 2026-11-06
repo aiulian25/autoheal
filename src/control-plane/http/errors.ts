@@ -66,6 +66,7 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.selfUpdateNewest]: HTTP_STATUS.conflict,
   [API_ERRORS.selfUpdateRunning]: HTTP_STATUS.conflict,
   [API_ERRORS.selfUpdateRecoveryBlocked]: HTTP_STATUS.conflict,
+  [API_ERRORS.selfUpdateUnsigned]: HTTP_STATUS.conflict,
   [API_ERRORS.sshRootPasswordRefused]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.sshHostNotConnected]: HTTP_STATUS.conflict,
   [API_ERRORS.hostRevoked]: HTTP_STATUS.unprocessableContent,

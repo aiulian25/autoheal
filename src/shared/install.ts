@@ -89,6 +89,8 @@ export const installSpecSchema = z.object({
 export type InstallSpec = z.infer<typeof installSpecSchema>;
 
 export const INSTALL_LABEL = "com.autoheal.installed";
+// How every Compose file Autoheal writes marks its services.
+export const INSTALLED_LINE = `${INSTALL_LABEL}: "true"`;
 export const COMPOSE_FILE = "docker-compose.yml";
 export const ENV_FILE = ".env";
 const DATABASE_SERVICE_SUFFIX = "-db";
@@ -113,10 +115,24 @@ export const mountSourcesOf = (spec: InstallSpec) => [
   ...(spec.database === null ? [] : [DATABASE_DATA.source]),
 ];
 
-/** A path the host's system needs, which no new container may be given. */
+/** A path as the host reads it, so `//etc`, `/etc/.` or `/srv/../etc` is seen to be `/etc`. Runs in the browser too. */
+function canonicalPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
+
+/** A path the host's system needs, which no new container may be given, however it is spelled. */
 export function isDeniedSource(source: string): boolean {
+  // A relative path is the app's own folder or under it.
+  if (!source.startsWith("/")) return false;
   const denied: readonly string[] = DENIED_BIND_SOURCES;
-  return denied.some((path) => (path === "/" ? source === "/" : source === path || source.startsWith(`${path}/`)));
+  const path = canonicalPath(source);
+  return denied.some((system) => (system === "/" ? path === "/" : path === system || path.startsWith(`${system}/`)));
 }
 
 // A JSON string is a valid YAML one, whatever it holds.
@@ -137,7 +153,7 @@ function composeOfDocument(spec: InstallSpec, document: ComposeDocument): string
       `    restart: ${spec.restartPolicy}`,
       ...(isMain ? [`    env_file: ${ENV_FILE}`] : []),
       "    labels:",
-      `      ${INSTALL_LABEL}: "true"`,
+      `      ${INSTALLED_LINE}`,
       ...(service.command === undefined ? [] : flow("command", service.command)),
       ...(service.entrypoint === undefined ? [] : flow("entrypoint", service.entrypoint)),
       ...(service.user === undefined ? [] : flow("user", service.user)),
@@ -194,7 +210,7 @@ export function composeOf(spec: InstallSpec): string {
     `    restart: ${spec.restartPolicy}`,
     `    env_file: ${ENV_FILE}`,
     `    labels:`,
-    `      ${INSTALL_LABEL}: "true"`,
+    `      ${INSTALLED_LINE}`,
     ...(spec.mounts.length === 0
       ? []
       : ["    volumes:", ...spec.mounts.map((m) => `      - ${quoted(`${m.source}:${m.target}`)}`)]),
@@ -215,7 +231,7 @@ export function composeOf(spec: InstallSpec): string {
           `    container_name: ${quoted(databaseNameOf(spec))}`,
           `    restart: ${spec.restartPolicy}`,
           "    labels:",
-          `      ${INSTALL_LABEL}: "true"`,
+          `      ${INSTALLED_LINE}`,
           "    environment:",
           "      POSTGRES_USER: ${POSTGRES_USER}",
           "      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}",

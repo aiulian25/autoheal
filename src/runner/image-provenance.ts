@@ -3,12 +3,16 @@ import { IMAGE_PROVENANCE, PROVENANCE_MESSAGES } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
 import {
   PROVENANCE_STATUS,
+  ruleForImage,
+  satisfiesRule,
   type ImageProvenance,
   type ImageTrustPolicy,
   type TrustedPublisher,
 } from "../shared/image-provenance.js";
 import { canonicalRepository } from "../shared/rollouts.js";
-import type { ImageReference, SignatureArtifact } from "./registry-client.js";
+import type { ImageDetails } from "./docker-client.js";
+import type { ProvenanceSource } from "./image-updates.js";
+import { parseImageReference, type ImageReference, type SignatureArtifact } from "./registry-client.js";
 
 /** What a signature is over: Red Hat's simple signing document, which names the one image it is for. */
 interface SimpleSigning {
@@ -154,4 +158,36 @@ export class ImageProvenanceReader {
       this.remembered.delete(oldest);
     }
   }
+}
+
+/**
+ * The digest Docker recorded for what it just pulled, for this very repository: what a signature must be over.
+ * Null where Docker knows no digest for it, such as an image built on the host under the same name.
+ */
+function pulledDigest(image: ImageDetails | null, reference: string): string | null {
+  const wanted = canonicalRepository(reference);
+  const found = (image?.RepoDigests ?? []).find((entry) => canonicalRepository(entry) === wanted);
+  return found?.split("@")[1] ?? null;
+}
+
+/**
+ * Why the image just pulled may not be put in place: a scope that asks for a signed image, and this digest is not
+ * one that holds up. Asked after the pull and about the digest Docker recorded for it, never about the tag, and
+ * before anything is stopped. Null where no rule covers the image, or where the proof is in hand.
+ */
+export async function provenanceRefusal(
+  source: ProvenanceSource | null,
+  reference: string,
+  newImage: ImageDetails | null,
+): Promise<string | null> {
+  const image = parseImageReference(reference);
+  if (source === null || image === null) return null;
+  const rule = ruleForImage(source.policy(), image);
+  if (rule === null) return null;
+  const pulled = pulledDigest(newImage, reference);
+  if (pulled === null) return PROVENANCE_MESSAGES.heldBackUnknown(reference);
+  const found = await source.read(image, pulled).catch((error: unknown) => describeError(error));
+  if (typeof found === "string") return PROVENANCE_MESSAGES.heldBack(reference, found);
+  if (satisfiesRule(rule, found, pulled)) return null;
+  return PROVENANCE_MESSAGES.heldBack(reference, found.problem ?? found.status);
 }

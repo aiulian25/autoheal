@@ -195,6 +195,29 @@ describe("volume-copy", () => {
     expect(readdirSync(at("to", "0"))).toEqual([]);
   });
 
+  it("leaves out a mount that is itself a socket, pipe or link, the host's plumbing, keeping the rest", async () => {
+    mkdirSync(at("from", "0"));
+    mkdirSync(at("to", "0"));
+    writeFileSync(at("from", "0", "state"), "old");
+    execFileSync("mkfifo", [at("from", "1")]);
+    mkdirSync(at("to", "1"));
+    symlinkSync(at("from", "0", "state"), at("from", "2"));
+    mkdirSync(at("to", "2"));
+
+    const kept = await run(["keep", "10000"]);
+
+    expect(kept.code).toBe(0);
+    expect(JSON.parse(kept.printed).outcome).toBe("kept");
+    expect(readFileSync(at("to", "0", "state"), "utf8")).toBe("old");
+    expect(readdirSync(at("to", "1"))).toEqual([]);
+
+    // Put back the other way round: the plumbing is passed over again, and the data comes back.
+    writeFileSync(at("from", "0", "state"), "new");
+    const back = await run(["restore"], { from: at("to"), to: at("from") });
+    expect(back.code).toBe(0);
+    expect(readFileSync(at("from", "0", "state"), "utf8")).toBe("old");
+  });
+
   it("reads contents only to compare them on a restore, never to fill an empty checkpoint", async () => {
     mkdirSync(at("from", "0"));
     mkdirSync(at("to", "0"));

@@ -1,10 +1,18 @@
-import { COMPOSE_FILE, ENV_FILE, composeOf, envLine, mountSourcesOf, type InstallSpec } from "../shared/install.js";
+import {
+  COMPOSE_FILE,
+  ENV_FILE,
+  INSTALLED_LINE,
+  composeOf,
+  envLine,
+  mountSourcesOf,
+  type InstallSpec,
+} from "../shared/install.js";
 
 // Plain POSIX sh, for what a host has: busybox on a NAS as much as bash on Linux. Nothing here is ever a secret's
 // value: those are made on the host as the .env is written.
 export const shellQuoted = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
-export const INSTALL_EXIT = { noCompose: 3, folderTaken: 4, folderChanged: 7 } as const;
+export const INSTALL_EXIT = { noCompose: 3, folderTaken: 4, folderChanged: 7, notOurs: 8 } as const;
 export const COMPOSE_COMMANDS = { plugin: "docker compose", standalone: "docker-compose" } as const;
 
 // A NAS keeps its tools outside what an SSH session's PATH has.
@@ -84,6 +92,8 @@ export function downScript(folder: string, removeData: boolean): string {
     PATH_LINE,
     composeLine,
     `cd ${quoted} || exit 1`,
+    // A label on a container can be set by others; only a Compose file Autoheal wrote says it installed the app.
+    `grep -qF ${shellQuoted(INSTALLED_LINE)} ${COMPOSE_FILE} || exit ${INSTALL_EXIT.notOurs}`,
     removeData ? "$compose down -v" : "$compose down",
     "cd /",
     removeData ? `rm -rf ${quoted}` : `rm -f ${quoted}/${COMPOSE_FILE} ${quoted}/${ENV_FILE}`,

@@ -1,6 +1,8 @@
 import { statSync } from "node:fs";
 import { hostname } from "node:os";
 import type { DockerClient } from "../../runner/docker-client.js";
+import { provenanceRefusal } from "../../runner/image-provenance.js";
+import type { ProvenanceSource } from "../../runner/image-updates.js";
 import { containerNameOf, type ContainerDetails } from "../../runner/incident-report.js";
 import { API_ERRORS, type SelfUpdateOutcome, type SelfUpdateView } from "../../shared/api.js";
 import {
@@ -46,6 +48,8 @@ export interface SelfUpdateDependencies {
   ownContainer?: string;
   // The socket's group, which the helper is given as the control plane was.
   socketGroup?: () => number;
+  // Where the admin asks for a signed image: the helper holds the Docker socket, so it is held to that like any update.
+  provenance?: ProvenanceSource | null;
 }
 
 // Where a mount of its own container comes from, as Docker needs it for the helper's: a volume's name or a path.
@@ -133,6 +137,9 @@ export class SelfUpdateService {
     }
     if (image.Id === own.Image) {
       throw new DomainError(API_ERRORS.selfUpdateNewest);
+    }
+    if ((await provenanceRefusal(this.dependencies.provenance ?? null, reference, image)) !== null) {
+      throw new DomainError(API_ERRORS.selfUpdateUnsigned);
     }
     // Looked at again: the pull may have taken minutes, and this is the one step that could end a running update.
     await this.refuseActiveHelper(docker);

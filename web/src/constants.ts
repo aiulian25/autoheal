@@ -3971,6 +3971,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   self_update_running: "An update of Autoheal is going on already.",
   self_update_recovery_blocked:
     "Autoheal cannot tell how its last update went, so it will not start another one until someone has looked at the record.",
+  self_update_unsigned:
+    "A signed-image rule covers Autoheal's image, and the new one is not signed by a publisher you trust, so nothing was changed.",
   ssh_switch_local_host:
     "This is the machine the dashboard runs on: Autoheal looks after it from its own container, not over SSH.",
   ssh_root_password_refused:

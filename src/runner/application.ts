@@ -256,10 +256,11 @@ async function updateThisRunner(
   docker: DockerClient,
   selfContainerName: string,
   release: string | null,
+  provenance: ProvenanceSource,
 ): Promise<JobResult> {
   if (release === null) return { succeeded: false, outcome: RUNNER_UPDATE_TEXT.noRelease, output: null };
   const socketGroup = statSync(DEFAULT_DOCKER_SOCKET_PATH).gid;
-  const handed = await handOverToRelease(docker, { reference: selfContainerName, socketGroup }, release);
+  const handed = await handOverToRelease(docker, { reference: selfContainerName, socketGroup }, release, provenance);
   return { succeeded: handed.handedOver || handed.upToDate === true, outcome: handed.outcome, output: null };
 }
 
@@ -456,7 +457,12 @@ export async function createRuntime(
     ...(isSidecar
       ? {
           updateRunner: () =>
-            updateThisRunner(docker, config.selfContainerName, runtime.fromControlPlane?.release?.image ?? null),
+            updateThisRunner(
+              docker,
+              config.selfContainerName,
+              runtime.fromControlPlane?.release?.image ?? null,
+              provenanceSource,
+            ),
         }
       : {}),
     installSpecOf: (jobId) =>

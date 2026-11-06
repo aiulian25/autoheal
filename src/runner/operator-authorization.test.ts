@@ -116,6 +116,12 @@ describe("delegated container isolation", () => {
       }),
     ).toBe(false);
     expect(
+      unchangedOperatorBoundaries(before, {
+        ...settings(),
+        labels: [...settings().labels, { name: "com.autoheal.installed", value: "true" }],
+      }),
+    ).toBe(false);
+    expect(
       unchangedOperatorBoundaries(before, { ...settings(), environment: [{ name: "APP_MODE", value: "fixed" }] }),
     ).toBe(true);
   });

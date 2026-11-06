@@ -4,6 +4,7 @@ export const PREVIOUS_SUFFIX = ".autoheal-previous";
 export const JOURNAL_SEEN_LINE = "journal";
 export const EXIT_ROLLED_BACK = 71;
 export const EXIT_BLOCKED = 72;
+export const EXIT_NOT_INSIDE = 73;
 const JOURNAL_NAME = ".autoheal-transaction";
 const SIDECAR_INFIX = ".autoheal.";
 const TEMPORARY_SUFFIX = "XXXXXX";
@@ -129,7 +130,15 @@ export function parseJournal(text: string, isOurs: (path: string) => boolean): J
  * after the last one worked, or the old copies and the journal would go though the files did not come back.
  */
 export function recoveryScript(folder: string, entries: readonly JournalEntry[]): string {
+  // The journal is only text: a link in the folder could point a path that reads as inside it anywhere on the host.
+  // Each one inside the folder is looked at as the host resolves it, and nothing is done unless all stay inside.
+  const inFolder = entries.filter(({ path }) => path.startsWith(`${folder}/`));
+  const staysInside = ({ path }: JournalEntry) => {
+    const parent = shellQuoted(path.slice(0, path.lastIndexOf("/")));
+    return `case "$(cd -P -- ${parent} 2>/dev/null && pwd || echo "$root")/" in "$root"/*) ;; *) exit ${EXIT_NOT_INSIDE} ;; esac`;
+  };
   return [
+    ...(inFolder.length === 0 ? [] : [`root=$(cd -P -- ${shellQuoted(folder)} && pwd)`, ...inFolder.map(staysInside)]),
     ...entries.flatMap(({ path, newSuffix, oldSuffix }) => {
       const oldFile = oldSuffix === null ? null : sidecar(path, oldSuffix);
       const putBack = oldFile === null ? `rm -f -- ${shellQuoted(path)}` : putBackOld(path, oldFile);

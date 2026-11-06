@@ -414,6 +414,7 @@ export const API_ERRORS = {
   selfUpdateNewest: "self_update_newest",
   selfUpdateRunning: "self_update_running",
   selfUpdateRecoveryBlocked: "self_update_recovery_blocked",
+  selfUpdateUnsigned: "self_update_unsigned",
   sshRootPasswordRefused: "ssh_root_password_refused",
   sshHostNotConnected: "ssh_host_not_connected",
   hostRevoked: "host_revoked",

@@ -658,10 +658,15 @@ export class TasksService {
     return again ? "happened_again" : "joined";
   }
 
+  // A new occurrence goes to whoever has it now: a container whose update choice changed since the last time, from
+  // ask to always apply, is Autoheal's, not left with the person it went to then.
   private reopen(task: TaskRow, finding: TaskFinding, now: number): TaskRow {
+    const assignee = this.assigneeFields(finding.assignee);
+    const reassigned = assignee.assigneeUserId !== task.assigneeUserId || assignee.assigneeAgent !== task.assigneeAgent;
     this.database
       .update(tasks)
       .set({
+        ...assignee,
         status: TASK_STATUS.todo,
         closedAt: null,
         closedByDetector: false,
@@ -676,6 +681,8 @@ export class TasksService {
       .where(eq(tasks.id, task.id))
       .run();
     this.addActivity(task.id, TASK_ACTIVITY.reopened, AUTOHEAL, { occurrences: task.occurrences + 1 });
+    if (reassigned)
+      this.addActivity(task.id, TASK_ACTIVITY.assigned, AUTOHEAL, { to: this.assigneeName(finding.assignee) });
     return this.find(task.id);
   }
 

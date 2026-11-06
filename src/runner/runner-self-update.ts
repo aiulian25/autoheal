@@ -13,6 +13,8 @@ import {
 import { imageRepository, imageTag } from "../shared/image-reference.js";
 import { isNewerTag } from "../shared/image-versions.js";
 import type { DockerClient } from "./docker-client.js";
+import { provenanceRefusal } from "./image-provenance.js";
+import type { ProvenanceSource } from "./image-updates.js";
 import type { ContainerDetails } from "./incident-report.js";
 
 export type RunnerUpdateDocker = Pick<
@@ -75,6 +77,8 @@ export async function handOverToRelease(
   docker: RunnerUpdateDocker,
   own: OwnContainer,
   release: string,
+  // Where the admin asks for a signed image, this one holds the Docker socket: it is held to that like any update.
+  provenance: ProvenanceSource | null = null,
 ): Promise<HandOver> {
   const refused = (outcome: string): HandOver => ({ handedOver: false, outcome });
   const details = await docker.inspect(own.reference);
@@ -92,6 +96,8 @@ export async function handOverToRelease(
   if (image.Id === details.Image) {
     return { handedOver: false, outcome: RUNNER_UPDATE_TEXT.alreadyThere(reference), upToDate: true };
   }
+  const heldBack = await provenanceRefusal(provenance, reference, image);
+  if (heldBack !== null) return refused(heldBack);
   // One swap at a time: a helper still at work is never interrupted by another.
   if (!isClearable(await docker.inspect(SELF_UPDATE.helperName))) return refused(RUNNER_UPDATE_TEXT.helperBusy);
   await docker.remove(SELF_UPDATE.helperName);

@@ -7,7 +7,6 @@ import { UPDATE_GROUP_LABEL, updateGroupOf, type UpdateGroup } from "./update-gr
 import { isDeepStrictEqual } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
-  PROVENANCE_MESSAGES,
   ANONYMOUS_VOLUME_PATTERN,
   BIND_SEPARATOR,
   DEFAULT_BRIDGE_NETWORK,
@@ -37,21 +36,11 @@ import {
   type UpdatePhase,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
-import { ruleForImage, satisfiesRule } from "../shared/image-provenance.js";
+import { provenanceRefusal } from "./image-provenance.js";
 import type { ProvenanceSource } from "./image-updates.js";
-import { parseImageReference } from "./registry-client.js";
 import type { ContainerSummary, DockerClient, ImageDetails } from "./docker-client.js";
 import { splitTag } from "../shared/image-reference.js";
 
-/**
- * The digest Docker recorded for what it just pulled, for this very repository: what a signature must be over.
- * Null where Docker knows no digest for it, such as an image built on the host under the same name.
- */
-function pulledDigest(image: ImageDetails | null, reference: string): string | null {
-  const wanted = canonicalRepository(reference);
-  const found = (image?.RepoDigests ?? []).find((entry) => canonicalRepository(entry) === wanted);
-  return found?.split("@")[1] ?? null;
-}
 import { utcMinute } from "../shared/time-zones.js";
 import { deniedMountOf, withSettings } from "./container-settings.js";
 import { healthProbe, untilSettled } from "./settle-check.js";
@@ -122,6 +111,9 @@ interface ReplaceMode {
   requireCheckpoint?: boolean;
   // Set once a copy of the data did not complete, so nothing may be put back over data that was never kept.
   dataUnkept?: boolean;
+  // Set when the only copies not made were too big to make: an automatic update goes on without them (its owner's
+  // choice, 2026-11-06), and an undo puts the old container back over the data as the new version left it.
+  oversized?: boolean;
 }
 const UPDATING: ReplaceMode = { keepData: true, startAlways: false };
 const EDITING: ReplaceMode = { keepData: false, startAlways: false };
@@ -347,25 +339,6 @@ export class ContainerUpdater {
   ) {}
 
   /**
-   * Why the image just pulled may not be put in place: a scope that asks for a signed image, and this digest is not
-   * one that holds up. Asked after the pull and about the digest Docker recorded for it, never about the tag, and
-   * before anything is stopped. Null where no rule covers the image, or where the proof is in hand.
-   */
-  private async provenanceRefusal(reference: string, newImage: ImageDetails | null): Promise<string | null> {
-    const source = this.provenance;
-    const image = parseImageReference(reference);
-    if (source === null || image === null) return null;
-    const rule = ruleForImage(source.policy(), image);
-    if (rule === null) return null;
-    const pulled = pulledDigest(newImage, reference);
-    if (pulled === null) return PROVENANCE_MESSAGES.heldBackUnknown(reference);
-    const found = await source.read(image, pulled).catch((error: unknown) => describeError(error));
-    if (typeof found === "string") return PROVENANCE_MESSAGES.heldBack(reference, found);
-    if (satisfiesRule(rule, found, pulled)) return null;
-    return PROVENANCE_MESSAGES.heldBack(reference, found.problem ?? found.status);
-  }
-
-  /**
    * The containers that run inside this one's network. An update recreates them inside the new one's: the
    * network they point at goes with the old container.
    */
@@ -454,7 +427,7 @@ export class ContainerUpdater {
       return failed("Docker did not verify the reviewed image digest and platform. No container was stopped.");
     if (rollout && newImage?.Id === details.Image)
       return failed("The reviewed image is already running; no rollout replacement was made.");
-    const heldBack = await this.provenanceRefusal(reference, newImage);
+    const heldBack = await provenanceRefusal(this.provenance, reference, newImage);
     if (heldBack !== null) {
       return failed(heldBack);
     }
@@ -518,9 +491,11 @@ export class ContainerUpdater {
     // What the new version said before it goes: why it did not hold.
     const said = await this.lastWords(name);
     steps.enter(UPDATE_PHASE.undoing);
-    const undone = await this.rollBack(name);
+    const keepCurrentData = mode.oversized === true;
+    const undone = await this.rollBack(name, undefined, { keepCurrentData });
+    const undoneSaid = keepCurrentData && undone.succeeded ? JOB_OUTCOMES.rolledBackDataKept(name) : undone.outcome;
     const output = result.output === undefined ? said : `${result.output}${said === null ? "" : `\n\n${said}`}`;
-    return { ...failed(`${result.outcome} ${undone.outcome}`), ...(output === null ? {} : { output }) };
+    return { ...failed(`${result.outcome} ${undoneSaid}`), ...(output === null ? {} : { output }) };
   }
 
   private async lastWords(name: string): Promise<string | null> {
@@ -610,7 +585,15 @@ export class ContainerUpdater {
    * Puts back the container an update kept aside, removing the one that replaced it, and the data kept before the
    * update with it. Data that cannot be put back leaves it stopped: the old version must not run on the new data.
    */
-  async rollBack(name: string, authorize?: () => Promise<boolean>): Promise<ActionResult> {
+  /**
+   * `keepCurrentData`: put the old container back over the data as the new version left it, for an automatic update
+   * whose data was too big to copy first. Every other roll back restores the data kept before the update.
+   */
+  async rollBack(
+    name: string,
+    authorize?: () => Promise<boolean>,
+    options: { keepCurrentData?: boolean } = {},
+  ): Promise<ActionResult> {
     let operation: RollbackOperation | null = null;
     try {
       operation = await this.journal.find(name);
@@ -649,7 +632,9 @@ export class ContainerUpdater {
           ) {
             throw new Error(`${member.name} is no longer this group's replacement.`);
           }
-          const restore = group !== null || original.Image === undefined || replacement?.Image !== original.Image;
+          const restore =
+            options.keepCurrentData !== true &&
+            (group !== null || original.Image === undefined || replacement?.Image !== original.Image);
           const available = restore ? await this.checkpointAvailable(member.name, original) : NO_DATA_KEPT;
           if (available.problem !== null) return failed(JOB_OUTCOMES.rollbackRefused(member.name, available.problem));
           if (member.name === name) at = available.at;
@@ -970,7 +955,8 @@ export class ContainerUpdater {
         kept = taken.outcome;
         const complete =
           taken.complete && taken.containerId === details.Id && isDeepStrictEqual(taken.mounts, dataMountsOf(details));
-        if (mode.requireCheckpoint) {
+        const tooBig = !complete && taken.oversized === true;
+        if (mode.requireCheckpoint && !tooBig) {
           if (!complete) {
             throw new Error(`${JOB_OUTCOMES.checkpointRequired}.${kept}`);
           }
@@ -980,7 +966,8 @@ export class ContainerUpdater {
           }
         }
         warning = complete ? "" : kept;
-        if (!complete) mode.dataUnkept = true;
+        if (!complete && !tooBig) mode.dataUnkept = true;
+        if (tooBig) mode.oversized = true;
       }
       steps.enter(UPDATE_PHASE.starting);
       await this.docker.rename(oldId, parked);
@@ -1110,8 +1097,10 @@ export class ContainerUpdater {
         const taken =
           (await this.checkpoints?.take(dependentName, dependent)) ??
           unavailableCheckpoint(dependent, this.withoutCheckpoints);
+        const tooBig = !taken.complete && taken.oversized === true;
         if (
           mode.requireCheckpoint &&
+          !tooBig &&
           (!taken.complete ||
             taken.containerId !== dependent.Id ||
             !isDeepStrictEqual(taken.mounts, dataMountsOf(dependent)))
@@ -1120,9 +1109,10 @@ export class ContainerUpdater {
         }
         if (!taken.complete) {
           checkpointWarnings.push(`${dependentName}: ${taken.outcome || JOB_OUTCOMES.checkpointRequired}`);
-          mode.dataUnkept = true;
+          if (tooBig) mode.oversized = true;
+          else mode.dataUnkept = true;
         }
-        if (mode.requireCheckpoint && this.checkpoints !== null) {
+        if (mode.requireCheckpoint && this.checkpoints !== null && !tooBig) {
           const verified = await this.checkpoints.verify(dependentName, dependent);
           if (verified.problem !== null) throw new Error(`${dependentName}: ${verified.problem}`);
         }

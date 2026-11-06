@@ -1902,6 +1902,9 @@ export const VOLUME_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}$/;
 export const VOLUME_ANONYMOUS_LABEL = "com.docker.volume.anonymous";
 // Autoheal keeps its safety records in the labels of volumes that otherwise look empty and unused.
 export const AUTOHEAL_LABEL_PREFIX = "autoheal.";
+// Labels Autoheal itself sets and trusts, such as the one saying it installed a container.
+export const AUTOHEAL_OWN_LABEL_PREFIX = "com.autoheal.";
+export const COMPOSE_LABEL_PREFIX = "com.docker.compose.";
 export const AUTOHEAL_VOLUME_PREFIXES: readonly string[] = ["autoheal-guard-", "autoheal-results-"];
 export const OTHER_TOOL_LABEL_SUFFIX = ".internal.resource";
 export const VOLUME_SIZES_REFRESH_MILLISECONDS = 10 * 60 * 1000;
@@ -2206,6 +2209,9 @@ export const JOB_OUTCOMES = {
   // A container given to Ollama: a new version that started badly is undone at once, and the roll back says how.
   undone: (name: string, problem: string) => `Updated ${name}, but ${problem}; automatic undo was requested.`,
   rolledBack: (name: string) => `Rolled ${name} back to the container it ran before the update.`,
+  // An automatic update whose data was too big to copy first: undone, the old version reads the data as the new left it.
+  rolledBackDataKept: (name: string) =>
+    `Rolled ${name} back to the container it ran before the update. Its data was too big to copy first, so it stays as the new version left it.`,
   nothingToRollBack: (parked: string) => `There is no ${parked} to roll back to.`,
   checkpointTaken: (mounts: number, size: string) =>
     ` Its data (${mounts} ${mounts === 1 ? "mount" : "mounts"}, ${size}) was kept first: rolling back restores it.`,

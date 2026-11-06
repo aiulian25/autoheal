@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import { API_ERRORS } from "../../shared/api.js";
 import { AUDIT_ACTIONS, JOB_ACTION, JOB_STATUS, SETTING_KEYS, TARGET_INTEGRATION } from "../../shared/constants.js";
 import {
   BACKUP_SETTINGS_DEFAULT,
+  CONTAINER_BACKUP,
+  backupJobSchema,
   backupSettingsSchema,
   type BackupAnswer,
   type BackupJobDetails,
@@ -25,6 +28,17 @@ import { RunnerRelay } from "./runner-relay.js";
 import type { WaitingRunners } from "./waiting-runners.js";
 
 const BACKUP_ACTIONS: ReadonlySet<string> = new Set([JOB_ACTION.backupContainer, JOB_ACTION.restoreContainer]);
+const ageIdentity = z.string().startsWith(CONTAINER_BACKUP.identityPrefix);
+// What a key holds since keys name their host: backup folders may sit on storage several hosts share.
+const hostBoundKey = z.object({ host: z.string(), identity: ageIdentity });
+
+function hostBoundKeyIn(opened: string) {
+  try {
+    return hostBoundKey.safeParse(JSON.parse(opened)).data ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A container's backups, which live in a plain folder on its own host. The dashboard holds no list of them, only the
@@ -32,6 +46,8 @@ const BACKUP_ACTIONS: ReadonlySet<string> = new Set([JOB_ACTION.backupContainer,
  */
 export class ContainerBackupService {
   private readonly relay: RunnerRelay<BackupRequest, BackupAnswer>;
+  // ponytail: in memory, so a restart lets a restore open one more old key; store it on the job if that ever matters.
+  private readonly oldKeyOpenedFor = new Map<string, string>();
 
   constructor(
     private readonly handle: DatabaseHandle,
@@ -65,9 +81,9 @@ export class ContainerBackupService {
     return this.relay.ask(hostId, { id: randomUUID(), kind, target, directory });
   }
 
-  private async newKey(): Promise<BackupJobDetails["key"]> {
+  private async newKey(hostId: string): Promise<BackupJobDetails["key"]> {
     const identity = await generateX25519Identity();
-    const sealed = await encryptBackup(Buffer.from(identity), this.passphrase);
+    const sealed = await encryptBackup(Buffer.from(JSON.stringify({ host: hostId, identity })), this.passphrase);
     return { recipient: await identityToRecipient(identity), sealedKey: Buffer.from(sealed).toString("base64") };
   }
 
@@ -85,7 +101,7 @@ export class ContainerBackupService {
       directory,
       copyDirectory,
       include: [...include],
-      key: await this.newKey(),
+      key: await this.newKey(hostId),
       restoreId,
     };
     return this.jobsService.request(
@@ -106,19 +122,39 @@ export class ContainerBackupService {
     return this.request(actor, hostId, JOB_ACTION.restoreContainer, target, { restoreId });
   }
 
-  /** Only for a backup job this host is running now. What opens goes to that runner and is not kept. */
+  /**
+   * Only for a backup job this host is running now: the key made for that job, or, for a restore, the key of a backup
+   * this host made. What opens goes to that runner and is not kept.
+   */
   async openKey(host: Pick<HostRow, "id">, jobId: string, sealedKey: string) {
+    const refused = () => new DomainError(API_ERRORS.backupKeyRefused);
     const job = this.handle.database.select().from(jobs).where(eq(jobs.id, jobId)).get();
     const running =
       job !== undefined &&
       job.hostId === host.id &&
       job.status === JOB_STATUS.delivered &&
       BACKUP_ACTIONS.has(job.action);
-    if (!running) throw new DomainError(API_ERRORS.backupKeyRefused);
-    const opened = await decryptBackup(Buffer.from(sealedKey, "base64"), this.passphrase).catch(() => {
-      throw new DomainError(API_ERRORS.backupKeyRefused);
+    if (!running) throw refused();
+    const issued = job.backupJson === null ? null : backupJobSchema.parse(JSON.parse(job.backupJson)).key.sealedKey;
+    const isIssued = sealedKey === issued;
+    // A backup only ever needs its own key; a restore also needs the one stored with the backup it puts back.
+    if (!isIssued && job.action !== JOB_ACTION.restoreContainer) throw refused();
+    const sealed = await decryptBackup(Buffer.from(sealedKey, "base64"), this.passphrase).catch(() => {
+      throw refused();
     });
-    return { identity: Buffer.from(opened).toString("utf8") };
+    const opened = Buffer.from(sealed).toString("utf8");
+    const bound = hostBoundKeyIn(opened);
+    if (bound !== null) {
+      if (bound.host !== host.id) throw refused();
+      return { identity: bound.identity };
+    }
+    if (!ageIdentity.safeParse(opened).success) throw refused();
+    if (isIssued) return { identity: opened };
+    // A key from before keys named their host could be any host's: a restore opens one of those, never a second.
+    const first = this.oldKeyOpenedFor.get(jobId);
+    if (first !== undefined && first !== sealedKey) throw refused();
+    this.oldKeyOpenedFor.set(jobId, sealedKey);
+    return { identity: opened };
   }
 
   take(host: Pick<HostRow, "id">) {

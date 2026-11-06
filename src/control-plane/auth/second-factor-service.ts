@@ -5,6 +5,7 @@ import {
   AUDIT_ACTIONS,
   SECOND_FACTOR_MAXIMUM_FAILURES,
   TARGET_USER,
+  TOTP_ALLOWED_DRIFT_STEPS,
   TOTP_CODE_PATTERN,
   TOTP_FAILURE,
   type AuditAction,
@@ -218,7 +219,10 @@ export class SecondFactorService {
     const passed = step !== null || usedRecoveryCode;
     this.throttle.record(user.username, context.ip, passed);
     if (!passed) {
-      const failure = totpSecret === null ? NOT_A_MATCH : explainTotpFailure(totpSecret, typed, this.clock());
+      const failure =
+        totpSecret === null
+          ? NOT_A_MATCH
+          : explainTotpFailure(totpSecret, typed, this.clock(), TOTP_ALLOWED_DRIFT_STEPS);
       return { kind: "wrong_code", failure };
     }
     if (step !== null) {

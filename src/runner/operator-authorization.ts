@@ -1,4 +1,9 @@
-import { REPORT_LIMITS } from "../shared/constants.js";
+import {
+  AUTOHEAL_LABEL_PREFIX,
+  AUTOHEAL_OWN_LABEL_PREFIX,
+  COMPOSE_LABEL_PREFIX,
+  REPORT_LIMITS,
+} from "../shared/constants.js";
 import type { ContainerSettings } from "../shared/protocol.js";
 import type { DockerClient } from "./docker-client.js";
 import { composeProjectOf, type ContainerDetails } from "./incident-report.js";
@@ -15,6 +20,13 @@ export const OPERATOR_ISOLATION_REFUSAL =
   "Refused: delegated container access requires an isolated workload without host access or shared mounted data. Ask an administrator.";
 export const OPERATOR_MOUNTS_REFUSAL =
   "Refused: delegated settings cannot change mounted data or reserved control labels. Ask an administrator.";
+
+// A delegated edit may not forge what Autoheal or Compose wrote, such as the label saying Autoheal installed a container.
+const RESERVED_LABEL_PREFIXES: readonly string[] = [
+  COMPOSE_LABEL_PREFIX,
+  AUTOHEAL_LABEL_PREFIX,
+  AUTOHEAL_OWN_LABEL_PREFIX,
+];
 
 export const operatorTarget = (details: ContainerDetails): OperatorTarget => ({
   name: details.Name.replace(/^\//, ""),
@@ -118,7 +130,7 @@ export function unchangedOperatorBoundaries(details: ContainerDetails, settings:
   const normalize = (mounts: unknown[]) => mounts.map((mount) => JSON.stringify(mount)).sort();
   const after = settings.mounts.map(({ kind, source, target, readOnly }) => ({ kind, source, target, readOnly }));
   if (JSON.stringify(normalize(before)) !== JSON.stringify(normalize(after))) return false;
-  const reserved = (name: string) => name.startsWith("com.docker.compose.") || name.startsWith("autoheal.");
+  const reserved = (name: string) => RESERVED_LABEL_PREFIXES.some((prefix) => name.startsWith(prefix));
   const oldLabels = Object.entries(details.Config.Labels ?? {})
     .filter(([name]) => reserved(name))
     .sort(([a], [b]) => a.localeCompare(b));

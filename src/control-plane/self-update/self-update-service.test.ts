@@ -165,6 +165,31 @@ describe("Autoheal updating itself, from the dashboard", () => {
     expect(await audit()).toContain(AUDIT_ACTIONS.selfUpdateStarted);
   });
 
+  it("refuses an unsigned image where the admin asks for a signed one for Autoheal's, and starts no helper", async () => {
+    const signedOnly = new SelfUpdateService({
+      docker: new DockerClient(engine.socketPath),
+      reference: REFERENCE,
+      outcomes,
+      auditLog: controlPlane.services.auditLog,
+      clock: () => controlPlane.clock.now,
+      ownContainer: containerIdOf(NAME),
+      socketGroup: () => SOCKET_GROUP,
+      provenance: {
+        policy: () => ({
+          revision: 1,
+          publishers: [],
+          required: [{ registry: "docker.io", repository: "library/autoheal", publishers: [] }],
+        }),
+        read: async () => {
+          throw new Error("not signed");
+        },
+      },
+    });
+
+    await expect(signedOnly.start(actor)).rejects.toMatchObject({ code: API_ERRORS.selfUpdateUnsigned });
+    expect(helperCreations()).toEqual([]);
+  });
+
   it("refuses when it already runs that image, when an update is going on, and without the Docker socket", async () => {
     engine.imageIds.set(REFERENCE, OLD_IMAGE);
     engine.imageLabels.set(OLD_IMAGE, {});

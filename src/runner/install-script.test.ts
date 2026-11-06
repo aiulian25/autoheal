@@ -132,6 +132,19 @@ describe("the scripts an install runs on a host", () => {
   });
 });
 
+describe("taking away what Autoheal did not install", () => {
+  it("leaves a folder alone whose Compose file Autoheal did not write, whatever its containers' labels say", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "autoheal-not-ours-"));
+    writeFileSync(join(folder, "docker-compose.yml"), "services:\n  app:\n    image: example/app:1\n");
+    writeFileSync(join(folder, ".env"), "SECRET=kept\n");
+    const script = downScript(folder, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
+    expect((await run(script)).code).toBe(INSTALL_EXIT.notOurs);
+    expect(existsSync(join(folder, "docker-compose.yml"))).toBe(true);
+    expect(existsSync(join(folder, ".env"))).toBe(true);
+    rmSync(folder, { recursive: true, force: true });
+  });
+});
+
 describe("reading a Compose file with an older Compose", () => {
   it("reads it without --no-env-resolution where the host's Compose does not know it, as Synology's 2.20", async () => {
     const shims = mkdtempSync(join(tmpdir(), "autoheal-old-compose-"));

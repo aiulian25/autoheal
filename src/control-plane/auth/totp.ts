@@ -103,12 +103,18 @@ export function matchTotp(secret: string, code: string, now: number, lastUsedSte
 /**
  * Why a code `matchTotp` refused failed, so the person knows what to fix: it was used already, it
  * belongs to a time minutes away (a clock is off), or it matches nothing near now (another secret:
- * an old authenticator entry, or a typo).
+ * an old authenticator entry, or a typo). `stepsAhead` is how far into the future it looks: for a secret
+ * already in use, a code said to belong to a later time is one a guesser could simply wait for.
  */
-export function explainTotpFailure(secret: string, code: string, now: number): TotpFailure {
+export function explainTotpFailure(
+  secret: string,
+  code: string,
+  now: number,
+  stepsAhead: number = TOTP_DIAGNOSIS_STEPS,
+): TotpFailure {
   const key = base32Decode(secret);
   const current = totpStep(now);
-  for (let drift = -TOTP_DIAGNOSIS_STEPS; drift <= TOTP_DIAGNOSIS_STEPS; drift += 1) {
+  for (let drift = -TOTP_DIAGNOSIS_STEPS; drift <= stepsAhead; drift += 1) {
     if (!sameCode(hotp(key, current + drift), code)) {
       continue;
     }

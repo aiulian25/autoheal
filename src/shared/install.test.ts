@@ -275,6 +275,14 @@ describe("what is accepted", () => {
     expect(isDeniedSource("/etcetera")).toBe(false);
     expect(isDeniedSource("/mnt/fast/app")).toBe(false);
     expect(isDeniedSource("./data")).toBe(false);
+    expect(isDeniedSource("./")).toBe(false);
+  });
+
+  it("knows them however they are spelled", () => {
+    for (const spelling of ["//etc", "/etc/.", "/etc/", "/tmp/../etc", "/var//run/docker.sock", "/./", "/srv/../.."]) {
+      expect(isDeniedSource(spelling)).toBe(true);
+    }
+    expect(isDeniedSource("/srv/../mnt/app")).toBe(false);
   });
 
   it("quotes a .env value only when it must", () => {

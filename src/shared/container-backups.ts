@@ -5,6 +5,8 @@ const GIBIBYTE = 1024 ** 3;
 
 export const CONTAINER_BACKUP = {
   format: "autoheal-container-backup-v2",
+  // How every age identity starts: what a sealed key must open to.
+  identityPrefix: "AGE-SECRET-KEY-1",
   // Made before manifests were sealed: listed, and restored only by hand.
   unsealedFormat: "autoheal-container-backup-v1",
   manifestFile: "manifest.json",
