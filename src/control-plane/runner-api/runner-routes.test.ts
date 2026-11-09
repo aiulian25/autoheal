@@ -11,6 +11,7 @@ import {
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { RUNNER_BODY_LIMIT_BYTES, HOST_SILENT_AFTER_MILLISECONDS } from "../../shared/constants.js";
+import { decodeEnrolment } from "../../shared/join-code.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { hosts } from "../database/schema.js";
@@ -48,12 +49,14 @@ describe("host enrolment and the runner API", () => {
   const listedHost = async (label: string) =>
     (await admin.get(API_ROUTES.hosts)).json<HostView[]>().find((host) => host.label === label)!;
 
-  it("shows a new host's token once and stores only its hash", async () => {
-    const { host, token } = await enroll("HP");
+  it("never shows a host's token or keeps its join code: hashes only, and the token's end once it is traded", async () => {
+    const { host, token, joinCode } = await enroll("HP");
     expect(token).toMatch(/^ahk_[A-Za-z0-9_-]{43}$/);
-    expect(host).toMatchObject({ label: "HP", state: "never_seen", tokenHint: token.slice(-4) });
+    expect(host).toMatchObject({ label: "HP", state: "never_seen", tokenHint: "" });
+    expect(await listedHost("HP")).toMatchObject({ tokenHint: token.slice(-4) });
     const stored = JSON.stringify(controlPlane.services.databaseHandle.database.select().from(hosts).all());
     expect(stored).not.toContain(token);
+    expect(stored).not.toContain(decodeEnrolment(joinCode)!.enrolment);
     expect(JSON.stringify(await admin.get(API_ROUTES.hosts))).not.toContain(token);
     expect((await admin.post(API_ROUTES.hosts, { label: "hp" })).json()).toEqual({ error: "host_label_taken" });
   });

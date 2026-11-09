@@ -4,15 +4,20 @@ import { Link } from "react-router";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
 import { NOTIFICATION_KINDS, TASK_PRIORITIES, wordsOf, type NotificationKind } from "../../../src/shared/constants.js";
 import {
+  DELIVERY_ATTEMPT_LIMIT,
+  NOTIFICATION_ROUTING_LIMITS,
   notificationRoutingSchema,
   type NotificationInbox,
   type NotificationRoutingView,
   type NotificationRule,
 } from "../../../src/shared/notification-deliveries.js";
 import { api } from "../api-client.js";
-import { INVENTORY_REFRESH_MILLISECONDS, PATHS } from "../constants.js";
+import { INVENTORY_REFRESH_MILLISECONDS, NOTIFICATION_ROUTING_DEFAULTS, PATHS, TEXT } from "../constants.js";
 import { hostsQuery } from "../queries.js";
 import { ErrorNotice, Loading, TimeAgo } from "./common.js";
+
+const inbox = TEXT.notificationInbox;
+const routing = TEXT.notificationRouting;
 
 export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolean; incidentId?: string }) {
   const [open, setOpen] = useState(false);
@@ -48,25 +53,21 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
   const busy = acknowledge.isPending || retry.isPending || route.isPending;
   return (
     <details className="card" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Notification deliveries</summary>
+      <summary>{inbox.title}</summary>
       {open && (
         <>
-          <p className="small muted">
-            Server accepted means Gotify or ntfy accepted the request; it does not confirm device receipt. Acknowledging
-            records human review and stops queued retries and escalation. Message bodies and credentials are excluded
-            from this inbox.
-          </p>
+          <p className="small muted">{inbox.explanation}</p>
           {!query.data && !query.error && <Loading />}
           {query.data && (
             <>
-              <p>{query.data.pendingCount} channel deliveries pending.</p>
+              <p>{inbox.pending(query.data.pendingCount)}</p>
               {query.data.overflowCount > 0 && (
                 <p className="notice warning" role="status">
-                  {query.data.overflowCount} alerts could not be enqueued because capacity was reached. Last occurrence:{" "}
-                  <TimeAgo timestamp={query.data.lastOverflowAt} />. Review affected tasks and incidents.
+                  {inbox.overflow(query.data.overflowCount)} <TimeAgo timestamp={query.data.lastOverflowAt} />
+                  {inbox.overflowAfter}
                 </p>
               )}
-              {query.data.events.length === 0 && <p className="muted">No captured notification deliveries.</p>}
+              {query.data.events.length === 0 && <p className="muted">{inbox.none}</p>}
               {query.data.events.map((event) => (
                 <section key={event.id} className="section">
                   <header className="row">
@@ -80,29 +81,28 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
                           taskId: event.resourceId,
                         })}
                       >
-                        Open {event.resourceKind}
+                        {inbox.open(event.resourceKind)}
                       </Link>
                     )}
                     {admin && event.acknowledgedAt === null && (
                       <button type="button" disabled={busy} onClick={() => acknowledge.mutate(event.id)}>
-                        Acknowledge
+                        {inbox.acknowledge}
                       </button>
                     )}
                   </header>
                   {event.acknowledgedAt !== null && (
                     <p className="small muted">
-                      Acknowledged by {event.acknowledgedBy} · <TimeAgo timestamp={event.acknowledgedAt} />
+                      {inbox.acknowledgedBy(event.acknowledgedBy ?? "")}
+                      {TEXT.separator}
+                      <TimeAgo timestamp={event.acknowledgedAt} />
                     </p>
                   )}
                   {event.deliveries.length === 0 ? (
                     <div>
-                      <p className="muted">
-                        No channel selected or configured when this alert was captured. Configure a channel and routing
-                        in Settings first.
-                      </p>
+                      <p className="muted">{inbox.noChannel}</p>
                       {admin && event.acknowledgedAt === null && (
                         <button type="button" disabled={busy} onClick={() => route.mutate(event.id)}>
-                          Queue using current routing
+                          {inbox.queue}
                         </button>
                       )}
                     </div>
@@ -111,13 +111,13 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
                       <table>
                         <thead>
                           <tr>
-                            <th>Channel</th>
-                            <th>State</th>
-                            <th>Attempts</th>
-                            <th>Last attempt</th>
-                            <th>Server accepted</th>
-                            <th>Next attempt</th>
-                            {admin && <th>Recovery</th>}
+                            <th>{inbox.columns.channel}</th>
+                            <th>{inbox.columns.state}</th>
+                            <th>{inbox.columns.attempts}</th>
+                            <th>{inbox.columns.lastAttempt}</th>
+                            <th>{inbox.columns.accepted}</th>
+                            <th>{inbox.columns.nextAttempt}</th>
+                            {admin && <th>{inbox.columns.recovery}</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -125,15 +125,18 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
                             <tr key={delivery.id}>
                               <td>
                                 {delivery.channel}
-                                {delivery.stage > 0 ? " · escalation" : ""}
+                                {delivery.stage > 0 ? `${TEXT.separator}${inbox.escalation}` : ""}
                               </td>
                               <td>
-                                {delivery.status === "accepted" ? "Server accepted" : wordsOf(delivery.status)}
+                                {delivery.status === "accepted" ? inbox.columns.accepted : wordsOf(delivery.status)}
                                 {delivery.failureCode && (
-                                  <span className="small muted"> · {wordsOf(delivery.failureCode)}</span>
+                                  <span className="small muted">
+                                    {TEXT.separator}
+                                    {wordsOf(delivery.failureCode)}
+                                  </span>
                                 )}
                               </td>
-                              <td>{delivery.attempts} / 8</td>
+                              <td>{inbox.attempts(delivery.attempts, DELIVERY_ATTEMPT_LIMIT)}</td>
                               <td>
                                 <TimeAgo timestamp={delivery.lastAttemptAt} />
                               </td>
@@ -147,7 +150,7 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
                                 <td>
                                   {delivery.status === "failed" && event.acknowledgedAt === null && (
                                     <button type="button" disabled={busy} onClick={() => retry.mutate(delivery.id)}>
-                                      Retry with current channel settings
+                                      {inbox.retry}
                                     </button>
                                   )}
                                 </td>
@@ -160,10 +163,7 @@ export function NotificationDeliveryInbox({ admin, incidentId }: { admin: boolea
                   )}
                 </section>
               ))}
-              <p className="small faint">
-                History retains up to 30 days and 2,000 alerts. Interrupted provider requests may produce duplicate
-                device pushes; each logical alert remains one inbox event.
-              </p>
+              <p className="small faint">{inbox.history}</p>
             </>
           )}
           <ErrorNotice error={query.error ?? acknowledge.error ?? retry.error ?? route.error} />
@@ -207,28 +207,23 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
   const invalid = !notificationRoutingSchema.safeParse({ rules }).success;
   return (
     <details className="card" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Notification routing and quiet hours</summary>
+      <summary>{routing.title}</summary>
       {open && (
         <>
-          <p className="small muted">
-            The first matching rule selects the primary channels. Without a match, configured channels receive alerts as
-            before. Rules apply to new alerts; queued alerts retain their captured rule. Quiet hours use UTC. Urgent
-            override permits urgent alerts during quiet hours. Escalation sends once to the selected channel after the
-            first permitted send slot if nobody acknowledges.
-          </p>
+          <p className="small muted">{routing.explanation}</p>
           {!current.data && !current.error && <Loading />}
           <fieldset disabled={!admin || save.isPending}>
-            <legend>Routing rules</legend>
+            <legend>{routing.rules}</legend>
             {rules.map((rule, index) => (
               <section className="section" key={rule.id}>
-                <h3>Rule {index + 1}</h3>
+                <h3>{routing.rule(index + 1)}</h3>
                 <label>
-                  Host
+                  {routing.host}
                   <select
                     value={rule.hostId ?? ""}
                     onChange={(event) => change(index, { hostId: event.target.value || null })}
                   >
-                    <option value="">All hosts</option>
+                    <option value="">{routing.allHosts}</option>
                     {hosts.data?.map((host) => (
                       <option key={host.id} value={host.id}>
                         {host.label}
@@ -237,7 +232,7 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                   </select>
                 </label>
                 <fieldset>
-                  <legend>Severity</legend>
+                  <legend>{routing.severity}</legend>
                   {TASK_PRIORITIES.map((priority) => (
                     <label className="choice-option" key={priority}>
                       <input
@@ -252,7 +247,7 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                   ))}
                 </fieldset>
                 <fieldset>
-                  <legend>Primary channels (none suppresses primary sends)</legend>
+                  <legend>{routing.primaryChannels}</legend>
                   {NOTIFICATION_KINDS.map((channel) => (
                     <label className="choice-option" key={channel}>
                       <input
@@ -272,17 +267,17 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                     checked={rule.quietStartMinute !== null}
                     onChange={(event) =>
                       change(index, {
-                        quietStartMinute: event.target.checked ? 22 * 60 : null,
-                        quietEndMinute: event.target.checked ? 7 * 60 : null,
+                        quietStartMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietStartMinute : null,
+                        quietEndMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietEndMinute : null,
                       })
                     }
                   />
-                  Quiet hours (UTC)
+                  {routing.quietHours}
                 </label>
                 {rule.quietStartMinute !== null && (
                   <div className="row">
                     <label>
-                      Quiet from
+                      {routing.quietFrom}
                       <input
                         type="time"
                         value={timeValue(rule.quietStartMinute)}
@@ -290,7 +285,7 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                       />
                     </label>
                     <label>
-                      Quiet until
+                      {routing.quietUntil}
                       <input
                         type="time"
                         value={timeValue(rule.quietEndMinute)}
@@ -305,30 +300,36 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                     checked={rule.urgentOverride}
                     onChange={(event) => change(index, { urgentOverride: event.target.checked })}
                   />
-                  Urgent alerts override quiet hours
+                  {routing.urgentOverride}
                 </label>
                 <label className="choice-option">
                   <input
                     type="checkbox"
                     checked={rule.escalateAfterMinutes !== null}
-                    onChange={(event) => change(index, { escalateAfterMinutes: event.target.checked ? 15 : null })}
+                    onChange={(event) =>
+                      change(index, {
+                        escalateAfterMinutes: event.target.checked
+                          ? NOTIFICATION_ROUTING_DEFAULTS.escalateAfterMinutes
+                          : null,
+                      })
+                    }
                   />
-                  Escalate once if unacknowledged
+                  {routing.escalateOnce}
                 </label>
                 {rule.escalateAfterMinutes !== null && (
                   <>
                     <label>
-                      Escalate after minutes
+                      {routing.escalateAfter}
                       <input
                         type="number"
-                        min={5}
-                        max={1440}
+                        min={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.min}
+                        max={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.max}
                         value={rule.escalateAfterMinutes}
                         onChange={(event) => change(index, { escalateAfterMinutes: Number(event.target.value) })}
                       />
                     </label>
                     <fieldset>
-                      <legend>Escalation channels</legend>
+                      <legend>{routing.escalationChannels}</legend>
                       {NOTIFICATION_KINDS.map((channel: NotificationKind) => (
                         <label className="choice-option" key={channel}>
                           <input
@@ -356,10 +357,10 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                       setDraft(next);
                     }}
                   >
-                    Move up
+                    {routing.moveUp}
                   </button>
                   <button type="button" onClick={() => setDraft(rules.filter((item) => item.id !== rule.id))}>
-                    Remove rule
+                    {routing.remove}
                   </button>
                 </div>
               </section>
@@ -368,7 +369,7 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
               <div className="row">
                 <button
                   type="button"
-                  disabled={rules.length >= 16}
+                  disabled={rules.length >= NOTIFICATION_ROUTING_LIMITS.rules}
                   onClick={() =>
                     setDraft([
                       ...rules,
@@ -386,7 +387,7 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                     ])
                   }
                 >
-                  Add routing rule
+                  {routing.add}
                 </button>
                 <button
                   type="button"
@@ -394,19 +395,14 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
                   disabled={invalid || !current.data}
                   onClick={() => save.mutate()}
                 >
-                  Save routing
+                  {routing.save}
                 </button>
               </div>
             )}
           </fieldset>
-          {invalid && (
-            <p className="notice warning">
-              Choose at least one severity, different quiet start/end times and an escalation channel when escalation is
-              enabled.
-            </p>
-          )}
+          {invalid && <p className="notice warning">{routing.invalid}</p>}
           <ErrorNotice error={current.error ?? hosts.error ?? save.error} />
-          {save.isSuccess && <p role="status">Notification routing saved.</p>}
+          {save.isSuccess && <p role="status">{routing.saved}</p>}
         </>
       )}
     </details>

@@ -10,10 +10,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type JobView } from "../../shared/api.js";
-import { HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 
 const SECRET_VALUE = "a-value-only-its-owner-should-see";
@@ -40,7 +40,7 @@ describe("an install's details, until its job has an outcome", () => {
       method,
       url,
       payload,
-      headers: { authorization: `Bearer ${bearer}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${bearer}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
   const runner = (method: "GET" | "POST", url: string, payload?: object) => runnerAs(token, method, url, payload);
   const takeWork = async () => (await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs;

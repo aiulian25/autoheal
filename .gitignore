@@ -18,6 +18,9 @@ discovery/
 backup/
 # The release runbook: local paths and hosts, never published.
 build and push.md
+# Working documents at the top of the folder stay here, whatever their name: the README is the only one published.
+/*.md
+!/README.md
 # Review archives made from this folder.
 /autoheal-review-*.tar.gz
 # The retired Python watcher, kept on this machine only.

@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { INSTALL_OUTCOMES } from "../shared/constants.js";
 import { INSTALL_RECIPES, draftOf, type InstallSpec } from "../shared/install.js";
+import { writeScript } from "./install-script.js";
 import { Installs, type InstallsDependencies } from "./installs.js";
 
 const spec: InstallSpec = {
@@ -25,7 +32,21 @@ interface Setup {
   available?: number;
   localImage?: unknown;
   facts?: () => Promise<unknown>;
+  shell?: InstallsDependencies["hostScript"];
 }
+
+const execute = promisify(execFile);
+// The host's own shell for real, with a stand-in for Compose, keeping what it prints on both streams as a host does.
+const runWith = (compose: string) => (script: string) =>
+  execute("sh", ["-c", script.replace(/^if docker compose[\s\S]*?fi$/m, () => compose)]).then(
+    ({ stdout, stderr }) => ({ exitCode: 0, output: `${stdout}${stderr}` }),
+    (error: { code: number; stdout: string; stderr: string }) => ({
+      exitCode: error.code,
+      output: `${error.stdout}${error.stderr}`,
+    }),
+  );
+// With a Compose that does nothing: whatever a script would remove, it removes.
+const runForReal = runWith("compose=true");
 
 function installs({
   containers = {},
@@ -35,6 +56,7 @@ function installs({
   available = 1e12,
   localImage = null,
   facts,
+  shell,
 }: Setup = {}) {
   const ran: string[] = [];
   const pulled: string[] = [];
@@ -57,8 +79,9 @@ function installs({
       system: async () => ({ cpuCount: 1, kernel: "7", architecture: "x86_64" }),
     },
     hostRoot: "/host/root",
-    hostScript: async (script: string) => {
+    hostScript: async (script: string, timeoutMilliseconds: number) => {
       ran.push(script);
+      if (shell !== undefined) return shell(script, timeoutMilliseconds);
       return answers.shift() ?? { exitCode: 0, output: "compose=docker compose\nwritable=1\nplace=/home/me\n" };
     },
     settings: { hostDeploy: true, containerAccess: true, dryRun: false, ...settings },
@@ -322,5 +345,47 @@ describe("taking an app back", () => {
     const all = installs({ containers: { App: ours } });
     expect((await all.subject.uninstall("App", true)).succeeded).toBe(true);
     expect(all.ran[0]).toContain("rm -rf '/home/me/docker/app'");
+  });
+
+  describe("with the host's own shell", () => {
+    let root: string;
+    let folder: string;
+    // What an install's containers carry: Autoheal's label, and where Compose found their folder.
+    const installLabels = (workingFolder: string) => ({
+      Config: { Labels: { "com.autoheal.installed": "true", "com.docker.compose.project.working_dir": workingFolder } },
+    });
+    beforeEach(async () => {
+      root = mkdtempSync(join(tmpdir(), "autoheal-take-away-"));
+      folder = join(root, "app");
+      expect((await runForReal(writeScript({ ...spec, folder }))).exitCode).toBe(0);
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    it("leaves another app's folder alone when a container's labels point there, and still takes its own app", async () => {
+      // Labels anything can set: a hand-written Compose file, an image, another tool on the host.
+      const pointed = installLabels(folder);
+      const { subject } = installs({ containers: { Other: pointed, App: pointed }, shell: runForReal });
+      const refused = await subject.uninstall("Other", true);
+      expect(existsSync(join(folder, "docker-compose.yml"))).toBe(true);
+      expect(existsSync(join(folder, ".env"))).toBe(true);
+      expect(existsSync(join(folder, "data"))).toBe(true);
+      expect(refused).toEqual({ succeeded: false, outcome: INSTALL_OUTCOMES.notItsFolder("Other", folder) });
+      expect(await subject.uninstall("App", true)).toEqual({
+        succeeded: true,
+        outcome: INSTALL_OUTCOMES.removedWithData("App"),
+      });
+      expect(existsSync(folder)).toBe(false);
+    });
+
+    it("keeps the app's folder, data included, when Compose cannot take it down, and says what Compose said", async () => {
+      const said = "network app_default has active endpoints";
+      const failingCompose = runWith(`failing() { echo "${said}" >&2; return 1; }; compose=failing`);
+      const { subject } = installs({ containers: { App: installLabels(folder) }, shell: failingCompose });
+      const taken = await subject.uninstall("App", true);
+      expect(existsSync(join(folder, "docker-compose.yml"))).toBe(true);
+      expect(existsSync(join(folder, ".env"))).toBe(true);
+      expect(existsSync(join(folder, "data"))).toBe(true);
+      expect(taken).toEqual({ succeeded: false, outcome: INSTALL_OUTCOMES.notTakenDown("App", said) });
+    });
   });
 });

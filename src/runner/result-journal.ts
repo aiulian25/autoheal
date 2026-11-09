@@ -1,6 +1,7 @@
 import { JOB_OUTCOMES, RUNNER_BODY_LIMIT_BYTES, RUNNER_MESSAGES, VERDICT_ESCALATED } from "../shared/constants.js";
 import { z } from "zod";
 import { handledIncidentSchema, outcomeSchema, jobResultSchema, type Outcome } from "../shared/protocol.js";
+import { describeError } from "../shared/errors.js";
 import { log } from "../shared/log.js";
 import type { DockerClient } from "./docker-client.js";
 
@@ -72,8 +73,10 @@ export class ResultJournal {
 
   static async open(store: Store, capacity = 256) {
     const journal = new ResultJournal(store, capacity);
+    const volumes = await store.volumes(LABEL).catch((error: unknown) => {
+      throw new Error(RUNNER_MESSAGES.resultJournalUnread(describeError(error)));
+    });
     try {
-      const volumes = await store.volumes(LABEL);
       if (volumes.length > MAX_SNAPSHOTS) throw new Error("Excess retained snapshots");
       for (const volume of volumes) {
         const text = volume.Labels?.[RECORD] ?? "";

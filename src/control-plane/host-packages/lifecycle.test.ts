@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PackageFacts } from "../../shared/protocol.js";
-import { DISTRIBUTION_LIFECYCLE } from "./distribution-lifecycle.js";
+import { DISTRIBUTION_LIFECYCLE, LIFECYCLE_DATES_AS_OF } from "./distribution-lifecycle.js";
 import { lifecycleOf } from "./lifecycle.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -15,6 +15,7 @@ describe("how long a host's release gets security fixes", () => {
     expect(lifecycleOf(facts("ubuntu", "24.04"), eolOf("ubuntu", "24.04") - 365 * DAY)).toMatchObject({
       release: "Ubuntu 24.04",
       status: "supported",
+      datesAsOf: LIFECYCLE_DATES_AS_OF,
     });
     expect(lifecycleOf(facts("almalinux", "9.6"), eolOf("almalinux", "9") - 365 * DAY)?.release).toBe("AlmaLinux 9");
     expect(lifecycleOf(facts("raspbian", "12"), eolOf("debian", "12") - 365 * DAY)?.release).toBe("Debian 12");

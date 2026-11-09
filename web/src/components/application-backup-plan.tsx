@@ -2,18 +2,35 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type FormEvent } from "react";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
 import {
+  APPLICATION_BACKUP_ARTIFACT_STATUS,
+  APPLICATION_BACKUP_OPERATION,
+  APPLICATION_BACKUP_RUN_STATUS,
   APPLICATION_BACKUPS,
   APPLICATION_BOOT_DRILL,
+  OPEN_APPLICATION_BACKUP_RUN_STATUSES,
+  type ApplicationBackupRunStatus,
   type ApplicationBackupsView,
   type ApplicationPlanDefinition,
+  type RequestedApplicationBackupOperation,
 } from "../../../src/shared/application-backups.js";
+import { BYTES_PER_MEBIBYTE, MILLISECONDS_PER_SECOND } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
-import { TEXT } from "../constants.js";
+import { APPLICATION_BACKUP_FORM, TEXT } from "../constants.js";
 import { hostsQuery } from "../queries.js";
 import { ErrorNotice, Loading, TimeAgo } from "./common.js";
 import { RestoreDrillResult } from "./restore-drill-result.js";
 const key = ["application-backups"];
 const bootText = TEXT.applicationBackups.boot;
+const text = TEXT.applicationBackups.plans;
+const OPEN_RUNS: readonly ApplicationBackupRunStatus[] = OPEN_APPLICATION_BACKUP_RUN_STATUSES;
+type Plan = ApplicationBackupsView["plans"][number];
+
+// How often a plan takes a backup: on a schedule, by hand, or not while paused.
+function scheduleOf(plan: Plan): string {
+  if (!plan.enabled) return text.paused;
+  if (plan.definition.intervalHours === null) return text.manual;
+  return text.every(plan.definition.intervalHours);
+}
 // One NAME=value a line; what has no name is left out, and the server checks what is left.
 const settingsFrom = (text: string) =>
   text
@@ -31,10 +48,10 @@ export function ApplicationBackupPlans() {
     queryFn: async () => {
       const value = await api<ApplicationBackupsView>("GET", API_ROUTES.applicationBackups);
       if (!value || !Array.isArray(value.plans) || !Array.isArray(value.runs) || !Array.isArray(value.artifacts))
-        throw new Error("Application backup plans are unavailable. Refresh after updating the dashboard.");
+        throw new Error(text.unavailable);
       return value;
     },
-    refetchInterval: 3000,
+    refetchInterval: APPLICATION_BACKUP_FORM.refreshMilliseconds,
   });
   const hosts = useQuery(hostsQuery);
   const [name, setName] = useState(""),
@@ -44,7 +61,7 @@ export function ApplicationBackupPlans() {
     [mount, setMount] = useState(""),
     [path, setPath] = useState(""),
     [bootAllowed, setBootAllowed] = useState(false),
-    [readySeconds, setReadySeconds] = useState("30"),
+    [readySeconds, setReadySeconds] = useState(String(APPLICATION_BACKUP_FORM.readySeconds)),
     [testSettings, setTestSettings] = useState(""),
     [bootAsked, setBootAsked] = useState<string | null>(null);
   const [exclusive, setExclusive] = useState(false);
@@ -52,7 +69,7 @@ export function ApplicationBackupPlans() {
     [approved, setApproved] = useState(false),
     [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), MILLISECONDS_PER_SECOND);
     return () => window.clearInterval(timer);
   }, []);
   const refresh = () => client.invalidateQueries({ queryKey: key });
@@ -72,7 +89,7 @@ export function ApplicationBackupPlans() {
       artifactId,
     }: {
       planId: string;
-      operation: "capture" | "drill" | "boot-drill";
+      operation: RequestedApplicationBackupOperation;
       artifactId?: string;
     }) =>
       api("POST", apiPath(API_ROUTES.applicationBackupRun, { planId }), {
@@ -113,7 +130,7 @@ export function ApplicationBackupPlans() {
     onSuccess: refresh,
   });
   const toggle = useMutation({
-    mutationFn: (plan: ApplicationBackupsView["plans"][number]) =>
+    mutationFn: (plan: Plan) =>
       api("PUT", apiPath(API_ROUTES.applicationBackupPlan, { planId: plan.id }), {
         revision: plan.revision,
         hostId: plan.hostId,
@@ -132,7 +149,7 @@ export function ApplicationBackupPlans() {
       exclusiveDockerWriters: true,
       sqlite: mount && path ? { mountTarget: mount, path } : null,
       intervalHours: interval ? Number(interval) : null,
-      retain: 3,
+      retain: APPLICATION_BACKUP_FORM.retain,
       bootDrill: bootAllowed ? { readySeconds: Number(readySeconds), environment: settingsFrom(testSettings) } : null,
     });
   };
@@ -145,18 +162,14 @@ export function ApplicationBackupPlans() {
   const busy = action.isPending || prepare.isPending || restore.isPending;
   return (
     <section className="card" id="application-plans">
-      <h2>Application backup plans</h2>
-      <p>
-        Application data is separate from the dashboard database backup above. These plans stop every service that
-        shares writable data, require clean exits, and encrypt both file data and the backup manifest. This is a
-        coordinated file backup, not a database-native dump.
-      </p>
+      <h2>{text.title}</h2>
+      <p>{text.explanation}</p>
       <p className="notice warning">
-        Storage budget: 512 MiB of encrypted application artifacts per dashboard. Initial limit:{" "}
-        {APPLICATION_BACKUPS.sourceBytes / 1024 / 1024} MiB of source data per plan, up to {APPLICATION_BACKUPS.mounts}{" "}
-        local Docker directory volumes. Bind mounts, remote/aliased drivers and shutdown grace periods over 30 seconds
-        are unsupported. Larger data, unsupported metadata and unclean shutdowns are refused. Schedules cause service
-        downtime. A restore drill uses isolated copies and leaves live data unchanged.
+        {text.budget(
+          APPLICATION_BACKUPS.storedBytes / BYTES_PER_MEBIBYTE,
+          APPLICATION_BACKUPS.sourceBytes / BYTES_PER_MEBIBYTE,
+          APPLICATION_BACKUPS.mounts,
+        )}
       </p>
       <ErrorNotice
         error={
@@ -164,23 +177,24 @@ export function ApplicationBackupPlans() {
         }
       />
       {!view.data && !view.error && <Loading />}
-      {view.data && !view.data.available && (
-        <p className="notice warning">
-          Set a protected backup passphrase before creating application plans. A connected, updated runner is required.
-        </p>
-      )}
+      {view.data && !view.data.available && <p className="notice warning">{text.needsPassphrase}</p>}
       {view.data?.available && (
         <details>
-          <summary>Create application plan</summary>
+          <summary>{text.create}</summary>
           <form onSubmit={submit} className="form-grid">
             <label>
-              Plan name
-              <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+              {text.name}
+              <input
+                required
+                maxLength={APPLICATION_BACKUPS.nameCharacters}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
             </label>
             <label>
-              Host
+              {text.host}
               <select required value={host} onChange={(e) => setHost(e.target.value)}>
-                <option value="">Choose host</option>
+                <option value="">{text.chooseHost}</option>
                 {hosts.data?.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.label}
@@ -189,30 +203,43 @@ export function ApplicationBackupPlans() {
               </select>
             </label>
             <label>
-              Container name
-              <input required maxLength={256} value={container} onChange={(e) => setContainer(e.target.value)} />
-            </label>
-            <label>
-              Repeat every (hours; blank for manual)
-              <input type="number" min={1} max={8760} value={interval} onChange={(e) => setInterval(e.target.value)} />
-            </label>
-            <label>
-              Optional SQLite mount target
-              <input placeholder="/data" value={mount} onChange={(e) => setMount(e.target.value)} required={!!path} />
-            </label>
-            <label>
-              SQLite file within that mount
+              {text.containerName}
               <input
-                placeholder="app.sqlite"
+                required
+                maxLength={APPLICATION_BACKUPS.containerNameCharacters}
+                value={container}
+                onChange={(e) => setContainer(e.target.value)}
+              />
+            </label>
+            <label>
+              {text.repeat}
+              <input
+                type="number"
+                min={APPLICATION_BACKUPS.scheduleMinimumHours}
+                max={APPLICATION_BACKUPS.scheduleMaximumHours}
+                value={interval}
+                onChange={(e) => setInterval(e.target.value)}
+              />
+            </label>
+            <label>
+              {text.sqliteMount}
+              <input
+                placeholder={text.sqliteMountExample}
+                value={mount}
+                onChange={(e) => setMount(e.target.value)}
+                required={!!path}
+              />
+            </label>
+            <label>
+              {text.sqliteFile}
+              <input
+                placeholder={text.sqliteFileExample}
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 required={!!mount}
               />
             </label>
-            <p className="muted">
-              SQLite drills run only the fixed read-only integrity check. No commands, SQL or credentials are accepted.
-              Keep the dashboard backup passphrase separately: it protects the independent application backup keys.
-            </p>
+            <p className="muted">{text.sqliteNote}</p>
             <label>
               <input type="checkbox" checked={bootAllowed} onChange={(e) => setBootAllowed(e.target.checked)} />{" "}
               {bootText.allow}
@@ -246,44 +273,39 @@ export function ApplicationBackupPlans() {
                 checked={exclusive}
                 onChange={(event) => setExclusive(event.target.checked)}
               />
-              I confirm that only Docker containers write these local volumes; no host process or external export writes
-              to them.
+              {text.exclusive}
             </label>
             <button type="submit" disabled={create.isPending || !exclusive}>
-              Save plan
+              {text.save}
             </button>
           </form>
         </details>
       )}
       {view.data?.plans.map((plan) => {
-        const artifacts = view.data.artifacts.filter((a) => a.planId === plan.id && a.status === "ready");
-        const active = view.data.runs.some(
-          (r) =>
-            r.hostId === plan.hostId &&
-            (r.status === "queued" || r.status === "running" || r.status === "recovery-required"),
+        const artifacts = view.data.artifacts.filter(
+          (a) => a.planId === plan.id && a.status === APPLICATION_BACKUP_ARTIFACT_STATUS.ready,
         );
+        const active = view.data.runs.some((r) => r.hostId === plan.hostId && OPEN_RUNS.includes(r.status));
         return (
           <section key={plan.id} className="card">
             <h3>{plan.definition.name}</h3>
             <p>
-              {plan.definition.containerName} ·{" "}
-              {plan.enabled
-                ? plan.definition.intervalHours
-                  ? `Every ${plan.definition.intervalHours} hours`
-                  : "Manual captures"
-                : "Paused"}{" "}
-              · Keep {plan.definition.retain} backups
+              {plan.definition.containerName}
+              {TEXT.separator}
+              {scheduleOf(plan)}
+              {TEXT.separator}
+              {text.keep(plan.definition.retain)}
             </p>
             <div className="row">
               <button
                 type="button"
                 disabled={busy || active}
-                onClick={() => action.mutate({ planId: plan.id, operation: "capture" })}
+                onClick={() => action.mutate({ planId: plan.id, operation: APPLICATION_BACKUP_OPERATION.capture })}
               >
-                Capture application backup
+                {text.capture}
               </button>
               <button type="button" disabled={toggle.isPending} onClick={() => toggle.mutate(plan)}>
-                {plan.enabled ? "Pause plan" : "Enable plan"}
+                {plan.enabled ? text.pause : text.enable}
               </button>
             </div>
             {bootAsked !== null && artifacts.some(({ id }) => id === bootAsked) && (
@@ -293,7 +315,11 @@ export function ApplicationBackupPlans() {
                   type="button"
                   disabled={busy || active}
                   onClick={() => {
-                    action.mutate({ planId: plan.id, operation: "boot-drill", artifactId: bootAsked });
+                    action.mutate({
+                      planId: plan.id,
+                      operation: APPLICATION_BACKUP_OPERATION.bootDrill,
+                      artifactId: bootAsked,
+                    });
                     setBootAsked(null);
                   }}
                 >
@@ -309,13 +335,13 @@ export function ApplicationBackupPlans() {
                 <TimeAgo timestamp={artifact.createdAt} />
                 <span>
                   {artifact.lastDrillAt === null ? (
-                    "Not yet restore-drilled"
+                    text.notDrilled
                   ) : (
                     <>
                       {bootText.integrityVerified} <TimeAgo timestamp={artifact.lastDrillAt} />
                     </>
                   )}
-                  {artifact.retained ? " · Retained for recovery" : ""}
+                  {artifact.retained ? `${TEXT.separator}${text.retained}` : ""}
                 </span>
                 {plan.definition.bootDrill != null && (
                   <span className="small">
@@ -331,9 +357,15 @@ export function ApplicationBackupPlans() {
                 <button
                   type="button"
                   disabled={busy || active}
-                  onClick={() => action.mutate({ planId: plan.id, operation: "drill", artifactId: artifact.id })}
+                  onClick={() =>
+                    action.mutate({
+                      planId: plan.id,
+                      operation: APPLICATION_BACKUP_OPERATION.drill,
+                      artifactId: artifact.id,
+                    })
+                  }
                 >
-                  Run isolated restore drill
+                  {text.drill}
                 </button>
                 {plan.definition.bootDrill != null && artifact.imageId !== null && (
                   <button type="button" disabled={busy || active} onClick={() => setBootAsked(artifact.id)}>
@@ -345,7 +377,7 @@ export function ApplicationBackupPlans() {
                   disabled={busy || active || !artifact.lastDrillAt}
                   onClick={() => prepare.mutate({ planId: plan.id, artifactId: artifact.id })}
                 >
-                  Review live restore
+                  {text.reviewRestore}
                 </button>
               </div>
             ))}
@@ -353,10 +385,10 @@ export function ApplicationBackupPlans() {
         );
       })}
       {preview && (
-        <section className="notice warning" aria-label="Application restore review">
-          <h3>Review live data replacement</h3>
+        <section className="notice warning" aria-label={text.restoreReview}>
+          <h3>{text.replacement}</h3>
           {review?.failure && <p role="status">{TEXT.applicationBackups.failure[review.failure]}</p>}
-          {awaitingWriters && <p role="status">Waiting for the runner to discover every shared-data writer…</p>}
+          {awaitingWriters && <p role="status">{text.awaitingWriters}</p>}
           {review?.result && (
             <>
               <p>{review.result.message}</p>
@@ -367,39 +399,38 @@ export function ApplicationBackupPlans() {
               </ul>
               {review.result.ok && (
                 <>
-                  <p>
-                    These services will stop. All covered data will be replaced after an isolated integrity drill and an
-                    encrypted safety backup. This review expires after one minute.
-                  </p>
+                  <p>{text.willStop}</p>
                   <label>
-                    <input type="checkbox" checked={approved} onChange={(e) => setApproved(e.target.checked)} />I
-                    approve replacing this application’s live data
+                    <input type="checkbox" checked={approved} onChange={(e) => setApproved(e.target.checked)} />
+                    {text.approve}
                   </label>
                   <button
                     type="button"
                     disabled={!approved || !fresh || restore.isPending}
                     onClick={() => restore.mutate()}
                   >
-                    Restore reviewed application data
+                    {text.restore}
                   </button>
-                  {!fresh && <p role="status">Review expired. Cancel and request a fresh review.</p>}
+                  {!fresh && <p role="status">{text.expired}</p>}
                 </>
               )}
             </>
           )}
           <button type="button" disabled={restore.isPending} onClick={() => setPreview(null)}>
-            Cancel
+            {text.cancel}
           </button>
         </section>
       )}
       {view.data?.runs
-        .filter((run) => run.operation !== "preview")
-        .slice(0, 20)
+        .filter((run) => run.operation !== APPLICATION_BACKUP_OPERATION.preview)
+        .slice(0, APPLICATION_BACKUP_FORM.runsShown)
         .map((run) => (
           <div key={run.id} className="card">
             <p>
               <strong>
-                {run.operation} · {run.status}
+                {run.operation}
+                {TEXT.separator}
+                {run.status}
               </strong>{" "}
               <TimeAgo timestamp={run.createdAt} />
             </p>
@@ -407,11 +438,11 @@ export function ApplicationBackupPlans() {
             {run.result?.boot && <RestoreDrillResult boot={run.result.boot} />}
             {run.failure && <p>{TEXT.applicationBackups.failure[run.failure]}</p>}
             {run.result?.stopped.length ? (
-              <p className="notice warning">Recovery still blocks: {run.result.stopped.join(", ")}</p>
+              <p className="notice warning">{text.stillBlocks(run.result.stopped.join(TEXT.listComma))}</p>
             ) : null}
-            {run.status === "recovery-required" && (
+            {run.status === APPLICATION_BACKUP_RUN_STATUS.recoveryRequired && (
               <button type="button" disabled={resume.isPending} onClick={() => resume.mutate(run.id)}>
-                Resume interrupted recovery
+                {text.resume}
               </button>
             )}
           </div>

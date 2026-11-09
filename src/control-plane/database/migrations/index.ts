@@ -35,6 +35,13 @@ import { registryCredentialsMigration } from "./0061-registry-credentials.js";
 import { imageTrustMigration } from "./0062-image-trust.js";
 import { probeVantagesMigration } from "./0063-probe-vantages.js";
 import { availabilityGroupsMigration } from "./0064-availability-groups.js";
+import { tagChangesMigration } from "./0065-tag-changes.js";
+import { editSettingsMigration } from "./0066-edit-settings.js";
+import { clockSkewMigration } from "./0067-clock-skew.js";
+import { containersStaleMigration } from "./0068-containers-stale.js";
+import { reportTrimmedMigration } from "./0069-report-trimmed.js";
+import { joinCodesMigration } from "./0070-join-codes.js";
+import { clockOffsetMigration } from "./0071-clock-offset.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -136,6 +143,13 @@ export const MIGRATIONS: readonly Migration[] = [
   imageTrustMigration,
   probeVantagesMigration,
   availabilityGroupsMigration,
+  tagChangesMigration,
+  editSettingsMigration,
+  clockSkewMigration,
+  containersStaleMigration,
+  reportTrimmedMigration,
+  joinCodesMigration,
+  clockOffsetMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

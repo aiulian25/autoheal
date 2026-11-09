@@ -122,10 +122,11 @@ it("offers nothing to submit until a replica is ticked", async () => {
 });
 
 it("asks before removing a group", async () => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   show();
 
   fireEvent.click(await screen.findByRole("button", { name: text.removeFor("Wiki") }));
+  expect(sent).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
 
   await waitFor(() => expect(sent).toHaveLength(1));
   expect(sent[0]).toMatchObject({ url: apiPath(API_ROUTES.availabilityGroup, { groupId: "g1" }), method: "DELETE" });

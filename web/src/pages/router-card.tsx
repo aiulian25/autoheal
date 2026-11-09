@@ -8,6 +8,7 @@ import {
   type RouterSettingsView,
 } from "../../../src/shared/network.js";
 import { ApiError, api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice } from "../components/common.js";
 import { TEXT } from "../constants.js";
 import { routerSettingsQuery } from "../queries.js";
@@ -17,7 +18,7 @@ const text = TEXT.network.connection;
 function ProbeResult({ probe }: { probe: RouterProbeView }) {
   return (
     <div className="router-probe" role="status">
-      <strong>{text.asked}</strong>
+      <strong>{probe.name === null ? text.asked : text.askedRouter(probe.name, probe.version)}</strong>
       {probe.capabilities.map(({ capability, works, detail }) => (
         <span key={capability} className={works ? "text-good" : "text-warning"}>
           {works ? "✓" : "!"} {text.capabilities[capability as keyof typeof text.capabilities]}
@@ -201,6 +202,7 @@ function ContractForm({ view, onSaved }: { view: RouterSettingsView; onSaved: ()
 /** The router, beside what else Autoheal leans on. Admins only: its details are a home's own. */
 export function RouterCard() {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const settings = useQuery(routerSettingsQuery);
   const [changing, setChanging] = useState(false);
   const refresh = () => {
@@ -214,7 +216,7 @@ export function RouterCard() {
   const view = settings.data;
   if (view === undefined) return null;
   const confirmRemove = () => {
-    if (window.confirm(text.removeConfirm)) remove.mutate();
+    asking.confirm(text.removeConfirm, () => remove.mutate());
   };
   return (
     <section className="card settings-card" aria-labelledby="router-title">
@@ -251,6 +253,7 @@ export function RouterCard() {
         </div>
       )}
       {view.configured && !changing && <ContractForm view={view} onSaved={refresh} />}
+      {asking.question}
       <ErrorNotice error={settings.error ?? remove.error} />
     </section>
   );

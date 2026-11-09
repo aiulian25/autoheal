@@ -19,6 +19,8 @@ export const CONTAINER_BACKUP = {
   settingsFile: "settings.json.age",
   unfinishedPrefix: ".unfinished-",
   stackFolderPrefix: "_stack_",
+  // Each host's own folder within the backup folder, which several hosts may share. No container name starts with it.
+  hostFolderPrefix: "_host_",
   defaultDirectory: "/var/backups/autoheal",
   kept: 5,
   // Above this, a folder is named and left out unless ticked: a media library is not copied by accident.
@@ -100,8 +102,17 @@ export const backupTargetSchema = z.union([
 ]);
 export type BackupTarget = z.infer<typeof backupTargetSchema>;
 
-export const backupFolderName = ({ container, stack }: BackupTarget) =>
+const targetFolderName = ({ container, stack }: BackupTarget) =>
   stack === null ? (container as string) : `${CONTAINER_BACKUP.stackFolderPrefix}${stack}`;
+
+/**
+ * Where a target's backups go: in the folder of the host that makes them, as several hosts may share the backup folder
+ * and each lets go of its oldest there. With no host, the folder every host's went in before they had their own.
+ */
+export const backupFolderName = (target: BackupTarget, hostId: string | null) =>
+  hostId === null
+    ? targetFolderName(target)
+    : `${CONTAINER_BACKUP.hostFolderPrefix}${hostId}/${targetFolderName(target)}`;
 
 const manifestFileSchema = z.object({
   file: z.string().regex(/^[a-z0-9.-]+$/),
@@ -169,6 +180,8 @@ export const backupJobSchema = z
     key: keyPairSchema,
     // Which backup a restore puts back.
     restoreId: z.string().regex(BACKUP_ID).nullable(),
+    // The host it runs on, whose own folder its backups go in. None on a job from before hosts had one.
+    hostId: z.uuid().nullable().default(null),
   })
   .strict();
 export type BackupJobDetails = z.infer<typeof backupJobSchema>;
@@ -194,6 +207,7 @@ export const backupRequestSchema = z.object({
   kind: z.enum([BACKUP_ASK.preview, BACKUP_ASK.list]),
   target: backupTargetSchema,
   directory: backupFolder,
+  hostId: z.uuid().nullable().default(null),
 });
 export type BackupRequest = z.infer<typeof backupRequestSchema>;
 

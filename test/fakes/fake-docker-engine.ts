@@ -127,6 +127,11 @@ export class FakeDockerEngine {
   // What a pull was given for a private registry, as Docker reads it: by image, decoded from its own header.
   readonly pullCredentials = new Map<string, { username: string; password: string; serveraddress: string }>();
   private readonly streams = new Set<ServerResponse>();
+  // How many times an event stream was opened, and the container list asked for.
+  eventStreamsOpened = 0;
+  listings = 0;
+  // A Docker too busy to list its containers, for a moment.
+  failListings = false;
   // Each exec asked for: the container it runs in, its command and whether it has a terminal (a shell), the
   // sizes it was given, and how it ended.
   readonly execs = new Map<
@@ -329,6 +334,7 @@ export class FakeDockerEngine {
       return response.end();
     }
     if (pathname === "/events") {
+      this.eventStreamsOpened += 1;
       response.writeHead(200, { "content-type": "application/json" });
       response.flushHeaders();
       this.streams.add(response);
@@ -371,6 +377,8 @@ export class FakeDockerEngine {
       return json(200, { CachesDeleted: [], SpaceReclaimed: this.buildCacheBytes });
     }
     if (pathname === "/containers/json") {
+      this.listings += 1;
+      if (this.failListings) return json(500, { message: "context deadline exceeded" });
       return json(
         200,
         [...this.containers.entries()].map(([name, container]) => ({

@@ -26,6 +26,8 @@ export interface FileAsk {
 
 // A listing changes nothing and says little: only reading a file and changing one are on record.
 const UNAUDITED = new Set<FileOperation>([FILE_OPERATION.list]);
+// What may go to the runner twice: a folder listed or a file read again changes nothing.
+const READS = new Set<FileOperation>([FILE_OPERATION.list, FILE_OPERATION.read]);
 
 /**
  * A container's files, reached through its runner, which hears of each request at once; the person's answer
@@ -44,7 +46,7 @@ export class FileService {
     private readonly auditLog: AuditLog,
     runners: Pick<WaitingRunners, "wake">,
   ) {
-    this.relay = new RunnerRelay(runners);
+    this.relay = new RunnerRelay(runners, (request) => READS.has(request.operation));
   }
 
   ask(actor: Actor, hostId: string, containerName: string, ask: FileAsk, tokenHash?: string) {
@@ -103,6 +105,10 @@ export class FileService {
   reset() {
     this.authorizations.clear();
     this.relay.reset();
+  }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
   }
 
   private audit(actor: Actor, hostId: string, request: FileRequest) {

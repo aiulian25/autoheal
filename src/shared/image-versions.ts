@@ -47,3 +47,10 @@ export const isVersionTag = (tag: string) => tagVersion(tag) !== null;
 
 /** Whether `candidate` is a later version than `current` on the same line, as `newerTags` reads them. */
 export const isNewerTag = (current: string, candidate: string) => newerTags(current, [candidate]).length > 0;
+
+/** Whether `candidate` starts a new major version of `current`: its first number differs (16-alpine → 18-alpine). */
+export function isNewMajor(current: string, candidate: string): boolean {
+  const own = tagVersion(current);
+  const other = tagVersion(candidate);
+  return own !== null && other !== null && own.numbers[0] !== other.numbers[0];
+}

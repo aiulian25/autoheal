@@ -1,0 +1,101 @@
+/* --- incidents: the steps from noticed to done ------------------------------------------------ */
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+}
+
+.steps li {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2) var(--space-3) 0 0;
+  border-top: var(--step-bar-width) solid var(--border);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.steps li strong {
+  color: var(--text);
+}
+
+.steps li.done {
+  border-top-color: var(--text-muted);
+}
+
+.steps li.current {
+  border-top-color: var(--primary);
+}
+
+.steps li.current strong {
+  color: var(--accent);
+}
+
+.steps li.todo strong {
+  color: var(--text-muted);
+  font-weight: var(--weight-normal);
+}
+
+.steps.down {
+  flex-direction: column;
+}
+
+.steps.down li {
+  padding: 0 0 var(--space-3) var(--space-3);
+  border-top: none;
+  border-left: var(--step-bar-width) solid var(--border);
+}
+
+.steps.down li.done {
+  border-left-color: var(--text-muted);
+}
+
+.steps.down li.current {
+  border-left-color: var(--primary);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .split {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  .split.even {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sticky {
+    position: sticky;
+    top: var(--space-4);
+  }
+}
+
+/* On a phone the steps run down, like the board's panel. */
+@media (max-width: 48rem) {
+  .steps {
+    flex-direction: column;
+  }
+
+  .steps li {
+    padding: 0 0 var(--space-3) var(--space-3);
+    border-top: none;
+    border-left: var(--step-bar-width) solid var(--border);
+  }
+
+  .steps li.done {
+    border-left-color: var(--text-muted);
+  }
+
+  .steps li.current {
+    border-left-color: var(--primary);
+  }
+}

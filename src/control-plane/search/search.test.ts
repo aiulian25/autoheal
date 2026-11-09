@@ -8,9 +8,13 @@ import {
   HOST_SECTIONS,
   INCIDENT_STATUS,
 } from "../../shared/constants.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { startTestControlPlane, type TestControlPlane, type TestClient } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestControlPlane,
+  type TestClient,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { heartbeatWith, containerSnapshot } from "../../../test/support/inventory.js";
 import { hostChanges, runbooks, tasks, users } from "../database/schema.js";
@@ -26,7 +30,7 @@ describe("bounded infrastructure search", () => {
     plane = await startTestControlPlane();
     admin = (await fullySignedInAdmin(plane)).client;
     host = (await admin.post(API_ROUTES.hosts, { label: "Atlas" })).json<EnrolledHostView>();
-    const token = decodeJoinCode(host.joinCode)!.token;
+    const token = runnerTokenOf(host);
     await plane.runnerApp.inject({
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,

@@ -1,0 +1,131 @@
+/* --- tabs, meters and filters --------------------------------------------------------------- */
+
+/* The strip's line is a shadow, not a border, so the chosen tab's underline lies over it unclipped. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 var(--border);
+}
+
+.tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 10px;
+  border-bottom: var(--focus-width) solid transparent;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tabs a.active,
+.tabs a[aria-current="true"] {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  border-bottom-color: var(--accent);
+}
+
+.tab-count {
+  font-size: var(--text-badge);
+  color: var(--text-faint);
+}
+
+/* Centred on the words' capitals, which sit a little high in their line. */
+.tab-count,
+.tab-pill {
+  translate: 0 -2px;
+}
+
+.tab-pill {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--tab-pill);
+  color: var(--accent);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-strong);
+}
+
+.usage {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+meter {
+  width: var(--meter-width);
+}
+
+/* How full: a rounded bar, amber then red as it fills. Drawn in SVG so no inline style is needed (CSP). */
+.bar {
+  display: block;
+  width: 100%;
+  height: var(--bar-height);
+}
+
+.bar-track {
+  fill: var(--track);
+}
+
+.bar-fill {
+  fill: var(--tone, var(--accent));
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.filters input[type="search"] {
+  min-width: min(var(--search-width), 100%);
+}
+
+/* The tick sits level with the boxes beside it, not with their labels. */
+.filters .choice {
+  align-items: center;
+  min-height: var(--control-height);
+  font-size: var(--text-body);
+}
+
+/* A container's stats open in the row right under it, on the same shade as the chosen row. */
+tr.selected:has(+ tr.inspector-row) td {
+  border-bottom-color: transparent;
+}
+
+tr.inspector-row > td,
+tr.reach-row > td {
+  padding: var(--space-1) var(--space-4) var(--space-4);
+  background: var(--surface-muted);
+}
+
+/* Its width is the page's, never its content's: the opened stats below size themselves by it. */
+.container-table {
+  container-type: inline-size;
+}
+
+/* Image names can be long digests: they break rather than widen the table. */
+.container-table td.mono {
+  overflow-wrap: anywhere;
+}
+
+/* Should the table still scroll sideways, the opened stats stay as wide as what shows of it, in view. */
+tr.inspector-row > td > *,
+tr.reach-row > td > * {
+  position: sticky;
+  left: var(--space-4);
+  width: calc(100cqi - 2 * var(--space-4));
+}
+
+/* On a phone a container row keeps its name and state; the stats under it show the rest. */
+@media (max-width: 48rem) {
+  .container-table:not(.host-containers .container-table) th:nth-child(n + 4),
+  .container-table:not(.host-containers .container-table) tr:not(.inspector-row) > td:nth-child(n + 4) {
+    display: none;
+  }
+}

@@ -1,14 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
+import { MILLISECONDS_PER_MINUTE } from "../../../src/shared/constants.js";
 import {
+  MAINTENANCE_LIMITS,
   MAINTENANCE_MAX_MILLISECONDS,
   MAINTENANCE_FRESH_MILLISECONDS,
   type MaintenanceView,
 } from "../../../src/shared/maintenance.js";
 import { api } from "../api-client.js";
-import { INVENTORY_REFRESH_MILLISECONDS } from "../constants.js";
+import { INVENTORY_REFRESH_MILLISECONDS, MAINTENANCE_FORM, TEXT } from "../constants.js";
 import { ErrorNotice } from "./common.js";
+
+const text = TEXT.maintenance;
+const EXTEND_MILLISECONDS = MAINTENANCE_FORM.extendMinutes * MILLISECONDS_PER_MINUTE;
 
 export const maintenanceQuery = {
   queryKey: ["maintenance"],
@@ -31,13 +36,19 @@ export function MaintenanceBadge({ hostId, containerName }: { hostId: string; co
     <span
       className="badge warning"
       title={windows
-        .map(
-          (window) =>
-            `${window.containerName ?? "Whole host"}: ${window.reason} · ${window.owner} · until ${new Date(window.expiresAt).toLocaleString()}`,
+        .map((window) =>
+          text.windowTitle(
+            window.containerName ?? text.wholeHost,
+            window.reason,
+            window.owner,
+            new Date(window.expiresAt).toLocaleString(),
+          ),
         )
         .join("\n")}
     >
-      Maintenance{pending ? " · awaiting runner" : " · runner confirmed"}
+      {text.badge}
+      {TEXT.separator}
+      {pending ? text.awaitingRunner : text.runnerConfirmed}
     </span>
   );
 }
@@ -49,7 +60,7 @@ export function MaintenanceDialog({ hostId, admin }: { hostId: string; admin: bo
   const windows = useQuery(maintenanceQuery);
   const [reason, setReason] = useState("");
   const [containerName, setContainerName] = useState("");
-  const [minutes, setMinutes] = useState(60);
+  const [minutes, setMinutes] = useState<number>(MAINTENANCE_FORM.defaultMinutes);
   const change = useMutation({
     mutationFn: ({ method, path, body }: { method: string; path: string; body?: unknown }) =>
       api<MaintenanceView>(method, path, body),
@@ -61,19 +72,20 @@ export function MaintenanceDialog({ hostId, admin }: { hostId: string; admin: bo
   return (
     <details className="card">
       <summary>
-        Maintenance windows <MaintenanceBadge hostId={hostId} />
+        {text.title} <MaintenanceBadge hostId={hostId} />
       </summary>
-      <p className="small muted">
-        Pause automatic recovery and changes for up to 24 hours. Reporting continues. Already running operations finish;
-        wait for runner confirmation before planned work. Manual actions remain available.
-      </p>
+      <p className="small muted">{text.explanation}</p>
       {active.map((window) => (
         <div key={window.id} className="notice warning">
           <p>
-            <strong>{window.containerName ?? "Whole host"}</strong> · {window.reason}
+            <strong>{window.containerName ?? text.wholeHost}</strong>
+            {TEXT.separator}
+            {window.reason}
           </p>
           <p>
-            {window.owner} · ends{" "}
+            {window.owner}
+            {TEXT.separator}
+            {text.ends}
             <time dateTime={new Date(window.expiresAt).toISOString()}>
               {new Date(window.expiresAt).toLocaleString()}
             </time>
@@ -83,17 +95,18 @@ export function MaintenanceDialog({ hostId, admin }: { hostId: string; admin: bo
               <button
                 type="button"
                 disabled={
-                  change.isPending || window.expiresAt + 30 * 60_000 > window.startsAt + MAINTENANCE_MAX_MILLISECONDS
+                  change.isPending ||
+                  window.expiresAt + EXTEND_MILLISECONDS > window.startsAt + MAINTENANCE_MAX_MILLISECONDS
                 }
                 onClick={() =>
                   change.mutate({
                     method: "PATCH",
                     path: apiPath(API_ROUTES.maintenanceWindow, { hostId, maintenanceId: window.id }),
-                    body: { expiresAt: window.expiresAt + 30 * 60_000 },
+                    body: { expiresAt: window.expiresAt + EXTEND_MILLISECONDS },
                   })
                 }
               >
-                Extend 30 minutes
+                {text.extend(MAINTENANCE_FORM.extendMinutes)}
               </button>
               <button
                 type="button"
@@ -105,7 +118,7 @@ export function MaintenanceDialog({ hostId, admin }: { hostId: string; admin: bo
                   })
                 }
               >
-                End maintenance
+                {text.end}
               </button>
             </div>
           )}
@@ -121,46 +134,44 @@ export function MaintenanceDialog({ hostId, admin }: { hostId: string; admin: bo
               body: {
                 containerName: containerName.trim() || null,
                 reason: reason.trim(),
-                expiresAt: Date.now() + minutes * 60_000,
+                expiresAt: Date.now() + minutes * MILLISECONDS_PER_MINUTE,
               },
             });
           }}
         >
-          <label htmlFor={`${id}-container`}>Container name (blank for whole host)</label>
+          <label htmlFor={`${id}-container`}>{text.containerName}</label>
           <input
             id={`${id}-container`}
             value={containerName}
-            maxLength={256}
+            maxLength={MAINTENANCE_LIMITS.containerNameCharacters}
             onChange={(event) => setContainerName(event.target.value)}
           />
-          <label htmlFor={`${id}-reason`}>Reason</label>
+          <label htmlFor={`${id}-reason`}>{text.reason}</label>
           <input
             id={`${id}-reason`}
             value={reason}
             required
-            maxLength={240}
+            maxLength={MAINTENANCE_LIMITS.reasonCharacters}
             onChange={(event) => setReason(event.target.value)}
           />
-          <label htmlFor={`${id}-duration`}>Duration</label>
+          <label htmlFor={`${id}-duration`}>{text.duration}</label>
           <select id={`${id}-duration`} value={minutes} onChange={(event) => setMinutes(Number(event.target.value))}>
-            {[15, 30, 60, 120, 240, 480, 1440].map((duration) => (
+            {MAINTENANCE_FORM.durationMinutes.map((duration) => (
               <option key={duration} value={duration}>
-                {duration} minutes
+                {text.minutes(duration)}
               </option>
             ))}
           </select>
           <button type="submit" disabled={change.isPending || windows.data?.acknowledged?.[hostId]?.generation == null}>
-            Start maintenance
+            {text.start}
           </button>
           {windows.data?.acknowledged?.[hostId]?.generation == null && (
-            <p className="notice warning">Update and connect this host’s runner before enabling maintenance.</p>
+            <p className="notice warning">{text.runnerNeeded}</p>
           )}
         </form>
       )}
       <ErrorNotice error={windows.error ?? change.error} />
-      {change.isSuccess && (
-        <p role="status">Maintenance policy saved. Await runner confirmation before planned work.</p>
-      )}
+      {change.isSuccess && <p role="status">{text.saved}</p>}
     </details>
   );
 }

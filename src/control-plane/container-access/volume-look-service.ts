@@ -33,4 +33,8 @@ export class VolumeLookService {
   reset() {
     this.relay.reset();
   }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
+  }
 }

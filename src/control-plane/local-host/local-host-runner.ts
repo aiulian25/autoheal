@@ -8,7 +8,6 @@ import { containerNameOf } from "../../runner/incident-report.js";
 import { LocalDockerConnection } from "../../runner/local-docker-connection.js";
 import {
   DEFAULT_DOCKER_SOCKET_PATH,
-  DEFAULT_SELF_CONTAINER_NAME,
   ENV_CONTROL_PLANE_URL,
   ENV_DOCKER_SOCKET_PATH,
   ENV_JOIN_CODE,
@@ -19,7 +18,7 @@ import {
 import { describeError } from "../../shared/errors.js";
 import { log } from "../../shared/log.js";
 import { runnerContainerRunning } from "../hosts/runner-container.js";
-import type { LocalHostService, LocalRunnerDetails } from "./local-host-service.js";
+import { LocalHostUnready, type LocalHostService, type LocalRunnerDetails } from "./local-host-service.js";
 
 type StopRunner = () => Promise<void>;
 
@@ -104,7 +103,17 @@ export class LocalHostRunner {
   /** Its runner started where it can be, again after one that could not start; stopped once its host is revoked. */
   tick() {
     if (!this.running || this.paused) return;
-    const details = this.dependencies.hosts.ensure();
+    let details: LocalRunnerDetails | null;
+    try {
+      details = this.dependencies.hosts.ensure();
+    } catch (error) {
+      // Said once, and on its host's page; the next tick tries again, and the rest of the round runs on meanwhile.
+      if (error instanceof LocalHostUnready) this.hostId = error.hostId;
+      const problem = describeError(error);
+      if (problem !== this.problem) log(LOCAL_HOST.failed(problem));
+      this.problem = problem;
+      return;
+    }
     if (details === null) {
       this.hostId = null;
       void this.stopRunner();
@@ -158,16 +167,16 @@ export class LocalHostRunner {
       if (await runnerContainerRunning(connection)) {
         throw new Error(LOCAL_HOST.runnerStillThere);
       }
-      const own = await new DockerClient(connection).inspect(this.dependencies.ownContainer ?? hostname());
-      const config = localRunnerConfig(
-        environment,
-        details,
-        this.dependencies.controlPlane,
-        own === null ? DEFAULT_SELF_CONTAINER_NAME : containerNameOf(own),
-      );
+      const ownName = this.dependencies.ownContainer ?? hostname();
+      const own = await new DockerClient(connection).inspect(ownName);
+      if (own === null) {
+        throw new Error(LOCAL_HOST.ownContainerUnknown(ownName));
+      }
+      const config = localRunnerConfig(environment, details, this.dependencies.controlPlane, containerNameOf(own));
       const ports = {
         ...(this.dependencies.portsOf ?? localRunnerPorts)(config),
         localHost: { currentBoot: kernelBootId, aliveFile: LOCAL_HOST.aliveFile },
+        reconnect: () => ({ ...this.dependencies.controlPlane, token: details.token }),
       };
       const stop = await startRunner(await createRuntime(config, ports));
       this.problem = null;

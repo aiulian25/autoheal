@@ -12,6 +12,9 @@ interface HostEvent {
   hostId: string;
 }
 
+// The queries that show tasks or incidents, by the first part of their key.
+const BOARD_FAMILIES: ReadonlySet<string> = new Set(["board", "tasks", "task", "incidents", "incident", "overview"]);
+
 interface ProgressEvent extends HostEvent {
   jobId: string;
   progress: UpdateProgress;
@@ -60,6 +63,13 @@ export function useLiveUpdates() {
       void queryClient.invalidateQueries({ queryKey: ["jobs", hostId] });
       void queryClient.invalidateQueries({ queryKey: ["update-run", hostId] });
       void queryClient.invalidateQueries({ queryKey: ["board"] });
+    });
+    // A task or an incident changed: the board, and every list of either, read again.
+    source.addEventListener(LIVE_EVENT.board, () => {
+      void queryClient.invalidateQueries(
+        { predicate: ({ queryKey }) => BOARD_FAMILIES.has(String(queryKey[0])) },
+        { cancelRefetch: false },
+      );
     });
     source.addEventListener(LIVE_EVENT.progress, (message) => {
       const { hostId, jobId, progress } = read<ProgressEvent>(message);

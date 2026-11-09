@@ -18,6 +18,7 @@ import {
 } from "../container-files.js";
 import { TEXT } from "../constants.js";
 import { bytes } from "../format.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { Icon } from "./icons.js";
 
@@ -127,6 +128,7 @@ export function ContainerFiles({
 }) {
   const text = TEXT.files;
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const [folder, setFolder] = useState(ROOT);
   const [opened, setOpened] = useState<string | null>(null);
   // What went wrong outside the list's own reading: a name not usable, a download refused, a file too big.
@@ -158,24 +160,21 @@ export function ContainerFiles({
     }
     setOpened(path);
   };
-  const named = (question: string, start = "") => {
-    const name = window.prompt(question, start)?.trim() ?? null;
-    if (name === null) {
-      return null;
-    }
+  // A name given in place, used only when a file or folder can have it.
+  const usable = (go: (name: string) => void) => (name: string) => {
     if (!isUsableName(name)) {
       setFailure(new ReadableError(text.badName));
-      return null;
+      return;
     }
     setFailure(null);
-    return name;
+    go(name);
   };
-  const makeFolder = () => {
-    const name = named(text.askFolderName);
-    if (name !== null) {
-      change.mutate({ operation: FILE_OPERATION.makeFolder, path: childOf(folder, name) });
-    }
-  };
+  const makeFolder = () =>
+    asking.askName(
+      text.askFolderName,
+      "",
+      usable((name) => change.mutate({ operation: FILE_OPERATION.makeFolder, path: childOf(folder, name) })),
+    );
   // A file open in the editor closes when it moves or goes.
   const changeEntry = (body: FileBody) => {
     if (opened === body.path) {
@@ -183,17 +182,18 @@ export function ContainerFiles({
     }
     change.mutate(body);
   };
-  const rename = (entry: FileEntry) => {
-    const name = named(text.askNewName(entry.name), entry.name);
-    if (name !== null && name !== entry.name) {
-      changeEntry({ operation: FILE_OPERATION.rename, path: childOf(folder, entry.name), to: childOf(folder, name) });
-    }
-  };
+  const rename = (entry: FileEntry) =>
+    asking.askName(
+      text.askNewName(entry.name),
+      entry.name,
+      usable((name) => {
+        if (name === entry.name) return;
+        changeEntry({ operation: FILE_OPERATION.rename, path: childOf(folder, entry.name), to: childOf(folder, name) });
+      }),
+    );
   const remove = (entry: FileEntry) => {
     const path = childOf(folder, entry.name);
-    if (window.confirm(text.confirmRemove(path))) {
-      changeEntry({ operation: FILE_OPERATION.remove, path });
-    }
+    asking.confirm(text.confirmRemove(path), () => changeEntry({ operation: FILE_OPERATION.remove, path }));
   };
   const downloadEntry = async (entry: FileEntry) => {
     const path = childOf(folder, entry.name);
@@ -215,12 +215,16 @@ export function ContainerFiles({
       setFailure(new ReadableError(text.tooBig));
       return;
     }
+    const write = async () => {
+      const content = base64FromBytes(new Uint8Array(await file.arrayBuffer()));
+      change.mutate({ operation: FILE_OPERATION.write, path: childOf(folder, file.name), content });
+    };
     const replaces = entries.some((entry) => entry.name === file.name);
-    if (replaces && !window.confirm(text.confirmReplace(file.name))) {
+    if (replaces) {
+      asking.confirm(text.confirmReplace(file.name), () => void write());
       return;
     }
-    const content = base64FromBytes(new Uint8Array(await file.arrayBuffer()));
-    change.mutate({ operation: FILE_OPERATION.write, path: childOf(folder, file.name), content });
+    await write();
   };
   return (
     <section className="files-panel stack" aria-label={text.title(containerName)}>
@@ -258,6 +262,7 @@ export function ContainerFiles({
           {text.refresh}
         </button>
       </div>
+      {asking.question}
       <ErrorNotice error={failure} />
       <ErrorNotice error={change.error} />
       {opened !== null && <FileEditor key={opened} path={opened} ask={ask} onClose={() => setOpened(null)} />}

@@ -16,6 +16,7 @@ import {
   sizeText,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice, Loading } from "../components/common.js";
 import { Icon } from "../components/icons.js";
 import { TEXT } from "../constants.js";
@@ -238,6 +239,7 @@ function ServerRow({
   defaultLabel: string;
 }) {
   const refresh = useServersRefresh();
+  const asking = useAskInPlace();
   const [changing, setChanging] = useState(false);
   const fields = { name: server.name, url: server.url, model: server.model, contextTokens: server.contextTokens };
   const answering = server.status.reachable;
@@ -259,7 +261,7 @@ function ServerRow({
   });
   const labelsOn = hosts.filter(({ id }) => server.hostIds.includes(id)).map(({ label }) => label);
   const confirmRemove = () => {
-    if (window.confirm(text.removeServerConfirm(server.name, labelsOn))) remove.mutate();
+    asking.confirm(text.removeServerConfirm(server.name, labelsOn), () => remove.mutate());
   };
   const toggleHost = (hostId: string) =>
     setHosts.mutate(
@@ -349,6 +351,7 @@ function ServerRow({
           </button>
         </div>
       )}
+      {asking.question}
       <ErrorNotice error={pickModel.error ?? setHosts.error ?? remove.error} />
     </section>
   );

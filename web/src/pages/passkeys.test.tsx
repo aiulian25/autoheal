@@ -11,7 +11,7 @@ import {
   type SessionView,
 } from "../../../src/shared/api.js";
 import { HTTP_STATUS } from "../../../src/shared/constants.js";
-import { PATHS, SESSION_QUERY_KEY } from "../constants.js";
+import { PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { AccountPage } from "./account-page.js";
 import { LoginPage } from "./auth-pages.js";
 
@@ -145,10 +145,6 @@ describe("passkeys", () => {
   });
 
   it("lists each with its manager's name, and renames or removes it in place", async () => {
-    vi.stubGlobal(
-      "confirm",
-      vi.fn(() => true),
-    );
     const fetch = serve({ usable: true, offered: true }, [PHONE]);
     renderAt(PATHS.account, true);
     const passkey = apiPath(API_ROUTES.accountPasskey, { passkeyId: PHONE.id });
@@ -165,6 +161,8 @@ describe("passkeys", () => {
     await waitFor(() => expect(sentTo(fetch, "PATCH", passkey)).toEqual([{ name: "Work phone" }]));
 
     fireEvent.click(section.getByRole("button", { name: "Remove" }));
+    expect(sentTo(fetch, "DELETE", passkey)).toEqual([]);
+    fireEvent.click(section.getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(sentTo(fetch, "DELETE", passkey)).toEqual([null]));
   });
 

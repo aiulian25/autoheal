@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, type DragEvent } from "react";
 import {
   API_ROUTES,
+  hasNewerVersion,
   hasUpdate,
   type AgentDispatchRequest,
   type AgentDispatchView,
@@ -12,14 +13,16 @@ import {
   type HostPackagesView,
   type HostView,
 } from "../../src/shared/api.js";
-import { BOARD_CARD, HOST_PACKAGES, HOST_STATE } from "../../src/shared/constants.js";
+import { BOARD_CARD, CONTROL_LOCK, HOST_PACKAGES, HOST_STATE } from "../../src/shared/constants.js";
+import { imageTag } from "../../src/shared/image-reference.js";
+import { isNewMajor } from "../../src/shared/image-versions.js";
 import { api } from "./api-client.js";
 import { AGENT_DRAG_TYPE, HAND_OVER_SEPARATOR } from "./constants.js";
 
-export const HAND_OVER = { update: "update", package: "package", incident: "incident" } as const;
+export const HAND_OVER = { update: "update", package: "package", incident: "incident", tag: "tag" } as const;
 
 // What changes once Ollama has them: the board, the tasks, the incidents and the hosts' packages.
-const CHANGED_QUERIES = ["board", "tasks", "incidents", "host-packages"];
+const CHANGED_QUERIES = ["board", "tasks", "incidents", "host-packages", "containers", "jobs"];
 
 // What its runner would refuse is not offered: the checks the control plane makes before it takes anything.
 export const updateHandable = (container: ContainerView | undefined) =>
@@ -32,10 +35,31 @@ export const packagesHandable = (host: HostView, view: HostPackagesView) =>
 export const incidentHandable = (host: HostView | undefined, container: ContainerView | undefined) =>
   host?.state === HOST_STATE.online && host.dryRun === false && container?.handsOff === null;
 
+/** A database's new major version: it needs a dump and a restore, not a new tag, so it is never handed over. */
+export const isDatabaseMajor = (container: ContainerView) =>
+  container.byItself.updateLock === CONTROL_LOCK.database &&
+  container.update.newerTag != null &&
+  isNewMajor(imageTag(container.image), container.update.newerTag);
+
+/** A newer version the agent can move to: by a Compose file, on a host that acts and whose runner can. */
+export const tagHandable = (host: HostView | undefined, container: ContainerView) =>
+  host?.state === HOST_STATE.online &&
+  host.dryRun === false &&
+  host.containerAccess === true &&
+  host.hostDeploy === true &&
+  host.tagChanges === true &&
+  container.handsOff === null &&
+  container.composeProject !== null &&
+  hasNewerVersion(container) &&
+  !isDatabaseMajor(container);
+
 export const updateItem = (taskId: string) => [HAND_OVER.update, taskId].join(HAND_OVER_SEPARATOR);
 export const packageItem = (hostId: string, name: string) =>
   [HAND_OVER.package, hostId, name].join(HAND_OVER_SEPARATOR);
 export const incidentItem = (incidentId: string) => [HAND_OVER.incident, incidentId].join(HAND_OVER_SEPARATOR);
+// Neither a container's name nor a tag holds the separator.
+export const tagItem = (container: ContainerView) =>
+  [HAND_OVER.tag, container.hostId, container.name, container.update.newerTag ?? ""].join(HAND_OVER_SEPARATOR);
 
 /** Which host each key's work is on, as the cards on the page say; null where none does. */
 export function hostsOfItems(items: readonly string[], cards: readonly BoardCardView[]): (string | null)[] {
@@ -48,14 +72,14 @@ export function hostsOfItems(items: readonly string[], cards: readonly BoardCard
   );
   return items.map((item) => {
     const [kind, id = ""] = item.split(HAND_OVER_SEPARATOR);
-    return kind === HAND_OVER.package ? id : (hostOf.get(item) ?? null);
+    return kind === HAND_OVER.package || kind === HAND_OVER.tag ? id : (hostOf.get(item) ?? null);
   });
 }
 
 /** The keys as the control plane takes them: each host's packages together. */
 export function requestOf(items: readonly string[]): AgentDispatchRequest {
   const packages = new Map<string, string[]>();
-  const request: AgentDispatchRequest = { updates: [], packages: [], incidents: [] };
+  const request: AgentDispatchRequest = { updates: [], packages: [], incidents: [], tags: [] };
   for (const item of items) {
     // A package's name may hold the separator itself (libc6:i386): it is all that follows the host's id.
     const [kind, id = "", ...name] = item.split(HAND_OVER_SEPARATOR);
@@ -67,6 +91,9 @@ export function requestOf(items: readonly string[]): AgentDispatchRequest {
     }
     if (kind === HAND_OVER.package) {
       packages.set(id, [...(packages.get(id) ?? []), name.join(HAND_OVER_SEPARATOR)]);
+    }
+    if (kind === HAND_OVER.tag) {
+      request.tags.push({ hostId: id, container: name[0] ?? "", tag: name[1] ?? "" });
     }
   }
   request.packages = [...packages].map(([hostId, names]) => ({ hostId, names }));
@@ -117,4 +144,5 @@ export function useHandOver() {
   });
 }
 
-export const handedCount = ({ updates, packages, incidents }: AgentDispatchView) => updates + packages + incidents;
+export const handedCount = ({ updates, packages, incidents, tags }: AgentDispatchView) =>
+  updates + packages + incidents + tags;

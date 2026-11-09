@@ -70,7 +70,9 @@ export function registerPasskeyRoutes(
 ) {
   app.get(API_ROUTES.passkeyStatus, { config: { access: ACCESS_PUBLIC } }, async () => passkeys.status());
 
-  app.post(API_ROUTES.passkeySignInOptions, signInRoute, async () => passkeys.signInOptions());
+  app.post(API_ROUTES.passkeySignInOptions, signInRoute, async (request) =>
+    passkeys.signInOptions(requestContext(request)),
+  );
 
   app.post(API_ROUTES.passkeySignIn, signInRoute, async (request, reply) => {
     const { response } = parseBody(signInBody, request.body);
@@ -91,7 +93,7 @@ export function registerPasskeyRoutes(
     if (check.kind !== "verified") {
       throw codeRefused(check, reply);
     }
-    return passkeys.enrolmentOptions(request.authSession!);
+    return passkeys.enrolmentOptions(request.authSession!, requestContext(request));
   });
 
   app.post(API_ROUTES.accountPasskeys, async (request) => {

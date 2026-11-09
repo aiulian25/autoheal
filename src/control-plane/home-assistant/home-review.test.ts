@@ -92,11 +92,18 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+// What docker-compose.yml mounts at /ha-config when HOME_ASSISTANT_CONFIG_PATH is unset: a device, not a folder.
+const NOTHING_MOUNTED = "/dev/null";
+
 const reviewWith = (
-  overrides: { ask?: (system: string, user: string) => Promise<string>; log?: HomeLogRecord[] } = {},
+  overrides: {
+    ask?: (system: string, user: string) => Promise<string>;
+    log?: HomeLogRecord[];
+    folder?: string;
+  } = {},
 ) =>
   new HomeReview({
-    root,
+    root: overrides.folder ?? root,
     connected: () => true,
     facts: () => FACTS,
     systemLog: async () => overrides.log ?? [],
@@ -433,6 +440,13 @@ describe("the review", () => {
     rmSync(join(root, "configuration.yaml"));
     const view = await reviewWith().view();
     expect(view.mounted).toBe(false);
+    expect(view.leftovers).toEqual([]);
+  });
+
+  it("says the folder is not there when Compose mounted /dev/null in its place", async () => {
+    const view = await reviewWith({ folder: NOTHING_MOUNTED }).view();
+    expect(view.mounted).toBe(false);
+    expect(view.scannedAt).toBeNull();
     expect(view.leftovers).toEqual([]);
   });
 

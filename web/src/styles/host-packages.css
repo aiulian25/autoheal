@@ -1,0 +1,21 @@
+/* --- a host's packages: the new version in green, a security fix's source in red */
+
+.new-version {
+  color: var(--good);
+  font-weight: var(--weight-strong);
+}
+
+.security-source {
+  color: var(--danger);
+  font-weight: var(--weight-strong);
+}
+
+/* An image's names can be long: they break rather than widen the table. */
+.host-images .mono {
+  overflow-wrap: anywhere;
+}
+
+/* A change names images, digests and all: they break rather than widen the page on a phone. */
+.host-changes li {
+  overflow-wrap: anywhere;
+}

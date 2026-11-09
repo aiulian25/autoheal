@@ -1,0 +1,198 @@
+/* --- A shell or files under a container's row, a shell on the host, a container's settings and what it publishes. */
+
+/* A shell in a container, or its files, under its row: a line naming it, then the terminal on its own dark
+   ground, or the folder's entries. */
+.terminal-panel,
+.files-panel,
+.settings-panel {
+  display: grid;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.terminal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-small);
+}
+
+.terminal-tools {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.terminal-who {
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+}
+
+/* A shell on the host: a card under its page's header, or the whole window. */
+.host-terminal {
+  margin: var(--space-3) 0;
+  padding: 14px 16px 16px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface);
+  animation: power-slide 0.35s ease-out;
+}
+
+.host-terminal.terminal-full {
+  position: fixed;
+  inset: var(--space-3);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+}
+
+.host-terminal.terminal-full .terminal-screen {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.header-actions > button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.terminal-screen {
+  height: var(--terminal-height);
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--terminal-background);
+}
+
+/* On the terminal itself, where its fitting counts it, not on the box around it. */
+.terminal-screen .xterm {
+  height: 100%;
+  padding: var(--space-2) var(--space-3);
+}
+
+.file-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  font-size: var(--text-small);
+}
+
+.files-toolbar {
+  flex-wrap: wrap;
+}
+
+.files-table td {
+  height: var(--compact-row-height);
+  font-size: var(--text-small);
+}
+
+.file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+}
+
+.file-name .icon {
+  flex-shrink: 0;
+  width: var(--icon-button-icon-size);
+  height: var(--icon-button-icon-size);
+}
+
+.file-editor {
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.file-text {
+  width: 100%;
+  min-height: var(--file-text-height);
+  font-size: var(--text-small);
+  white-space: pre;
+}
+
+/* A container's settings: each kind in its own box, a row of fields for each entry. */
+.settings-section {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  margin: 0;
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
+.settings-section legend {
+  padding: 0 var(--space-1);
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+}
+
+.setting-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+/* Above a list's rows, what each field holds: as wide as the field under it. */
+.setting-heading span {
+  flex: 1 1 var(--settings-field-width);
+  min-width: 0;
+  font-size: var(--text-badge);
+  color: var(--text-muted);
+}
+
+.setting-entry select,
+.setting-heading .setting-choice {
+  flex: 0 0 var(--setting-choice-width);
+}
+
+.setting-entry .setting-check {
+  flex: 0 0 var(--setting-check-width);
+}
+
+/* The room each row's remove button takes. */
+.setting-heading::after {
+  content: "";
+  flex: 0 0 var(--icon-button-size);
+}
+
+.setting-entry input:not([type="checkbox"]) {
+  flex: 1 1 var(--settings-field-width);
+  min-width: 0;
+}
+
+.access-gate {
+  max-width: var(--form-width);
+  padding-top: var(--space-2);
+}
+
+/* What a container publishes on its host: small badges, each a link to it there. */
+.ports {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.port {
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--control);
+  font-family: var(--font-mono);
+  font-size: var(--text-badge);
+  color: var(--text);
+}
+
+a.port:hover {
+  color: var(--primary);
+}

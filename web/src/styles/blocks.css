@@ -1,0 +1,228 @@
+/* --- building blocks ------------------------------------------------------------------------ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.faint {
+  color: var(--text-faint);
+}
+
+.small {
+  font-size: var(--text-small);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.row.spread {
+  justify-content: space-between;
+}
+
+/* A question asked where its button is, instead of in the browser's own dialog. */
+.ask-in-place {
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--warning-border);
+  background: var(--warning-surface);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 10px var(--space-4);
+  border-bottom: var(--border-width) solid var(--divider);
+  vertical-align: middle;
+}
+
+th {
+  font-size: var(--text-badge);
+  color: var(--text-muted);
+  font-weight: var(--weight-medium);
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover td,
+tr.selected td {
+  background: var(--surface-muted);
+}
+
+.plain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A section that folds away: its heading stays on the disclosure's line. */
+/* A section that folds: a chevron before its title, pointing down while it is open. */
+details.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  cursor: pointer;
+}
+
+details.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.fold > summary::before {
+  content: "";
+  flex: none;
+  width: var(--button-icon-size);
+  height: var(--button-icon-size);
+  background: var(--chevron) no-repeat center / contain;
+  rotate: -90deg;
+}
+
+details.fold[open] > summary::before {
+  rotate: 0deg;
+}
+
+details.fold > summary h2 {
+  font-size: var(--text-heading);
+}
+
+/* The host's stats history: a bar under its dials. */
+details.stats-history {
+  margin-top: var(--space-3);
+  padding: 10px 14px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface);
+}
+
+details.stats-history > summary h2 {
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+
+details.fold > * + * {
+  margin-top: var(--space-3);
+}
+
+pre,
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+pre,
+code {
+  font-size: var(--text-small);
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Prose from the model or the runner: still plain text, but in the reading font. */
+pre.text {
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+}
+
+.log {
+  max-height: var(--log-height);
+  overflow: auto;
+  background: var(--sidebar);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  line-height: 1.75;
+}
+
+/* A package run's own output, as a terminal shows it. */
+.log.terminal {
+  background: var(--terminal-background);
+  color: var(--terminal-foreground);
+  border-color: var(--terminal-background);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-left: var(--focus-width) solid var(--border);
+}
+
+.timeline li {
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.timeline li.comment {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+}
+
+.status-dot {
+  flex: none;
+  width: var(--status-dot-size);
+  height: var(--status-dot-size);
+  border-radius: 50%;
+  background: var(--tone, var(--text-muted));
+}
+
+/* Off: an empty ring, not a grey dot. */
+.status-dot.off {
+  background: none;
+  border: 1.5px solid var(--text-muted);
+}

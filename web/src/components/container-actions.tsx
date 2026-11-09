@@ -21,8 +21,10 @@ import {
   type ContainerAction as AnyContainerAction,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
-import { goesAhead } from "../ask-first.js";
-import { GITHUB_REPOSITORY, JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
+import { askFirstQuestion } from "../ask-first.js";
+import { useAskInPlace } from "./ask-in-place.js";
+import { JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
+import { releaseNotesLink } from "../release-links.js";
 import { Badge, ErrorNotice, FollowedLog, PlainText, TimeAgo } from "./common.js";
 import { Icon, type IconName } from "./icons.js";
 
@@ -127,6 +129,7 @@ export function ContainerActions({
   tools?: ReactNode;
 }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const permissions = useResourcePermissions();
   const allowed = (action: ContainerAction) => {
     const permission = actionPermission(action);
@@ -154,13 +157,22 @@ export function ContainerActions({
       void queryClient.invalidateQueries({ queryKey: ["task"] });
     },
   });
+  const proceed = (action: ContainerAction) => {
+    if (action === JOB_ACTION.update || action === JOB_ACTION.rollBack) setReviewing(action);
+    else run.mutate({ action });
+  };
+  // Rolling back puts the container's data back as it was, and what changed since is lost: asked first. A stop or a
+  // removal asks first where this browser chose that.
   const ask = (action: ContainerAction) => {
-    // Rolling back puts the container's data back as it was, and what changed since is lost: asked again first.
-    const confirmed = action !== JOB_ACTION.rollBack || window.confirm(TEXT.actions.confirmRollBack(container.name));
-    if (confirmed && goesAhead(action, [container.name])) {
-      if (action === JOB_ACTION.update || action === JOB_ACTION.rollBack) setReviewing(action);
-      else run.mutate({ action });
+    const question =
+      action === JOB_ACTION.rollBack
+        ? TEXT.actions.confirmRollBack(container.name)
+        : askFirstQuestion(action, [container.name]);
+    if (question === null) {
+      proceed(action);
+      return;
     }
+    asking.confirm(question, () => proceed(action));
   };
   const latest = inPanel ? jobs.data?.find((job) => job.action !== JOB_ACTION.logs) : jobs.data?.[0];
   return (
@@ -221,6 +233,7 @@ export function ContainerActions({
           }}
         />
       )}
+      {asking.question}
       <ErrorNotice error={run.error ?? jobs.error} />
     </div>
   );
@@ -231,13 +244,17 @@ export const hasParked = (container: ContainerView, siblings: readonly Container
   container.recovery?.owner === container.name ||
   siblings.some((sibling) => sibling.name === `${container.name}${OLD_CONTAINER_SUFFIX}`);
 
-// The app's own page, from its homepage.href label: one click away, in a new tab.
-// A GitHub repository's releases say what each version changed; any other source is linked as it is.
-function releaseNotesOf(source: string): { link: string; label: string } {
-  const repository = GITHUB_REPOSITORY.pattern.exec(source)?.[1];
-  return repository === undefined
+// What the new version changed: its release notes where its project's host is known, else its source as it is. The
+// newer image's labels say where its project is, or failing that the running image's.
+function releaseNotesOf(container: ContainerView): { link: string; label: string } | null {
+  const source = container.update.remote?.source ?? container.source;
+  if (source === null) {
+    return null;
+  }
+  const notes = releaseNotesLink(source, container.update.remote?.version ?? null);
+  return notes === null
     ? { link: source, label: TEXT.updates.source }
-    : { link: `${repository}${GITHUB_REPOSITORY.releasesPath}`, label: TEXT.updates.releaseNotes };
+    : { link: notes, label: TEXT.updates.releaseNotes };
 }
 
 /**
@@ -246,8 +263,7 @@ function releaseNotesOf(source: string): { link: string; label: string } {
  */
 export function ImageVersions({ container, fallback = null }: { container: ContainerView; fallback?: ReactNode }) {
   const versions = updateVersions(container);
-  const source = container.update.remote?.source ?? null;
-  const notes = source === null ? null : releaseNotesOf(source);
+  const notes = releaseNotesOf(container);
   const built = container.update.remote?.createdAt ?? null;
   if (versions === null && built === null && notes === null) {
     return fallback;
@@ -272,6 +288,7 @@ export function ImageVersions({ container, fallback = null }: { container: Conta
   );
 }
 
+// The app's own page, from its homepage.href label: one click away, in a new tab.
 export function WebLink({ container }: { container: ContainerView }) {
   if (container.link === null) {
     return null;

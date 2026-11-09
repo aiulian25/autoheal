@@ -1,0 +1,75 @@
+/* A page's cards as a person arranged them: each one's controls while arranging, and the line at the page's foot. */
+.arrange-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  /* Just above its card, in the gap its column leaves before it. */
+  margin-bottom: calc(var(--space-1) - var(--cards-gap, 0px));
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  font-size: var(--text-small);
+}
+
+/* Its card's own heading follows at once: the name here only says which card the buttons are for. */
+/* A card that draws nothing just now leaves its controls where they are, not on what comes next. */
+.arrange-bar:last-child,
+.arrange-bar:has(+ .arrange-bar) {
+  margin-bottom: 0;
+}
+
+.arrange-title {
+  color: var(--text-muted);
+}
+
+.arrange-buttons,
+.arrange-hidden {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.arrange-bar button.link,
+.arrange-line button.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.arrange-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+/* The hidden cards stand apart from the switch after them. */
+.arrange-hidden {
+  padding-right: var(--space-3);
+  border-right: var(--border-width) solid var(--border);
+}
+
+/* What arranging does reads first, apart from the hidden cards and the way out. */
+.arrange-hint {
+  margin-right: auto;
+}
+
+/* While arranging, the way out stays in sight however far down the page a person is. */
+.arrange-line.arranging {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: var(--space-2) var(--space-3);
+  /* Clear of the back-to-top button, which floats in the same corner. */
+  padding-right: calc(var(--scroll-to-top-size) + var(--space-5));
+  border-top: var(--border-width) solid var(--border);
+  background: var(--surface);
+}

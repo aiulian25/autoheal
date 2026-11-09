@@ -15,6 +15,7 @@ import {
   PROC_ROOT,
   ROOT_FILESYSTEM,
   SYS_ROOT,
+  TIME_SERVICE_UNITS,
   UPDATES_AVAILABLE_PATTERN,
   type HostPackagesSetting,
 } from "../shared/constants.js";
@@ -110,6 +111,17 @@ async function filesystemsOf(
   return found.length > 0 ? found : [ROOT_FILESYSTEM];
 }
 
+// Whether a time service keeps the host's clock: one among the units systemd runs now; null where it lists none.
+async function ntpActiveOf(host: (file: string) => string, files: HostFiles): Promise<boolean | null> {
+  const running = (await files.list(host(HOST_FILES.runningUnits))).filter((entry) =>
+    entry.startsWith(TIME_SERVICE_UNITS.runningPrefix),
+  );
+  if (running.length === 0) {
+    return null;
+  }
+  return running.some((entry) => TIME_SERVICE_UNITS.timeService.test(entry));
+}
+
 /** Where Docker keeps its images, so a full disk can say what they take there; null when Docker does not say. */
 export function imageStoreOf(info: DockerInfo): string | null {
   const throughContainerd = (info.DriverStatus ?? []).some(
@@ -174,5 +186,6 @@ export async function readHostHealth(settings: HostHealthSettings): Promise<Host
     drives: drives.health,
     address: hostMounted ? await hostAddress(host, files) : null,
     cpuTemperatures: await cpuTemperatures(sysRoot, files),
+    ntpActive: hostMounted ? await ntpActiveOf(host, files) : null,
   };
 }

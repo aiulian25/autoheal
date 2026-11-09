@@ -75,9 +75,11 @@ export class Watcher {
     const name = event.Actor?.Attributes?.name ?? "";
     if (action === EVENT_KILL) {
       this.dependencies.guard.noteKill(name);
-      // A save that can no longer happen is the guard's hold: logged once, sent with every heartbeat, every claim
-      // refused meanwhile. It is no reason to drop Docker's event stream, which a real stream error still does.
-      await this.dependencies.guard.persisted().catch(() => undefined);
+      // Saved beside the stream, not before the next event: the stops of a burst (a stack taken down) go in one save.
+      // What depends on it waits for it all the same, as a failure is handled only once the state is saved. A save
+      // that can no longer happen is the guard's hold (logged once, sent with every heartbeat, every claim refused
+      // meanwhile), no reason to drop Docker's event stream.
+      void this.dependencies.guard.persisted().catch(() => undefined);
       return;
     }
     const trigger = TRIGGER_BY_EVENT.get(action);

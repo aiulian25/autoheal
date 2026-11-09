@@ -9,12 +9,13 @@ import {
 } from "../../../src/shared/constants.js";
 import type { SshHostSettings } from "../../../src/shared/ssh-hosts.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice, Loading } from "../components/common.js";
 import { SSH_HOST_ANCHOR, SSH_SETUP, TEXT } from "../constants.js";
 import { hostsQuery, localHostQuery, settingsQuery, sshHostQuery, sshKeysQuery } from "../queries.js";
 import { SwitchToSshSteps, CommandBlock } from "./ssh-setup.js";
 import { sshConnectionText } from "./host-system.js";
-import { SavedNote, useSavedNote } from "./host-control.js";
+import { SavedNote, useSavedNote } from "../components/saved-note.js";
 
 const text = TEXT.ssh.host;
 // Names as a person types them: separated by spaces or commas.
@@ -27,6 +28,11 @@ function settingsFrom(form: FormData): SshHostSettings {
       .split(NAME_SEPARATORS)
       .filter((name) => name !== ""),
     containerAccess: form.get("containerAccess") === "on",
+    hostTerminal: form.get("hostTerminal") === "on",
+    hostDeploy: form.get("hostDeploy") === "on",
+    hostFilesystems: String(form.get("hostFilesystems") ?? "")
+      .split(NAME_SEPARATORS)
+      .filter((path) => path !== ""),
     hostPackages: String(form.get("hostPackages")) as HostPackagesSetting,
     checkpointLimitGigabytes: Number(form.get("checkpointLimitGigabytes")),
   };
@@ -64,6 +70,19 @@ function SettingsForm({ hostId, settings }: { hostId: string; settings: SshHostS
       <label className="tick">
         <input type="checkbox" name="containerAccess" defaultChecked={settings.containerAccess} />
         {text.containerAccess}
+      </label>
+      <label className="tick">
+        <input type="checkbox" name="hostTerminal" defaultChecked={settings.hostTerminal} />
+        {text.hostTerminal}
+      </label>
+      <label className="tick">
+        <input type="checkbox" name="hostDeploy" defaultChecked={settings.hostDeploy} />
+        {text.hostDeploy}
+      </label>
+      <label>
+        {text.hostFilesystems}
+        <span className="hint">{text.hostFilesystemsHint}</span>
+        <input className="mono" name="hostFilesystems" defaultValue={settings.hostFilesystems.join(" ")} />
       </label>
       <label>
         {text.hostPackages}
@@ -160,6 +179,7 @@ function ReplaceKey({ hostId, current }: { hostId: string; current: string }) {
 /** The password Autoheal runs root commands with: checked on the machine before it is kept, never shown back. */
 function RootPassword({ hostId, method }: { hostId: string; method: RootMethod | null }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const refresh = () => queryClient.invalidateQueries({ queryKey: sshHostQuery(hostId).queryKey });
   const save = useMutation({
     mutationFn: (password: string) =>
@@ -177,7 +197,7 @@ function RootPassword({ hostId, method }: { hostId: string; method: RootMethod |
     form.reset();
   };
   const confirmRemove = () => {
-    if (window.confirm(text.rootRemoveConfirm)) remove.mutate();
+    asking.confirm(text.rootRemoveConfirm, () => remove.mutate());
   };
   return (
     <div className="stack ssh-root">
@@ -206,6 +226,7 @@ function RootPassword({ hostId, method }: { hostId: string; method: RootMethod |
           {text.rootSave}
         </button>
       </form>
+      {asking.question}
       <ErrorNotice error={save.error ?? remove.error} />
     </div>
   );

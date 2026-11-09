@@ -55,6 +55,8 @@ export interface DeliveryContext {
   resourceId: string | null;
   hostId?: string | null;
 }
+// How many rules a person may set, and how soon or late an unacknowledged alert may be escalated.
+export const NOTIFICATION_ROUTING_LIMITS = { rules: 16, escalateMinutes: { min: 5, max: 1440 } } as const;
 const uniqueChannels = z
   .array(z.enum(NOTIFICATION_KINDS))
   .max(NOTIFICATION_KINDS.length)
@@ -72,7 +74,12 @@ export const notificationRuleSchema = z
     quietStartMinute: z.number().int().min(0).max(1439).nullable(),
     quietEndMinute: z.number().int().min(0).max(1439).nullable(),
     urgentOverride: z.boolean(),
-    escalateAfterMinutes: z.number().int().min(5).max(1440).nullable(),
+    escalateAfterMinutes: z
+      .number()
+      .int()
+      .min(NOTIFICATION_ROUTING_LIMITS.escalateMinutes.min)
+      .max(NOTIFICATION_ROUTING_LIMITS.escalateMinutes.max)
+      .nullable(),
     escalationChannels: uniqueChannels,
   })
   .strict()
@@ -84,7 +91,7 @@ export const notificationRoutingSchema = z
   .object({
     rules: z
       .array(notificationRuleSchema)
-      .max(16)
+      .max(NOTIFICATION_ROUTING_LIMITS.rules)
       .refine((rules) => new Set(rules.map(({ id }) => id)).size === rules.length),
   })
   .strict();

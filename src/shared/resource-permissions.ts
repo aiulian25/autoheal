@@ -16,9 +16,11 @@ export const resourceGrantSchema = z
   })
   .strict()
   .refine(({ scope, resource }) => (scope === "host" ? resource === null : resource !== null));
+// How many grants one person may hold.
+export const RESOURCE_GRANTS_LIMIT = 64;
 export const resourceGrantsSchema = z
   .array(resourceGrantSchema)
-  .max(64)
+  .max(RESOURCE_GRANTS_LIMIT)
   .refine(
     (grants) =>
       new Set(grants.map(({ hostId, scope, resource }) => JSON.stringify([hostId, scope, resource]))).size ===

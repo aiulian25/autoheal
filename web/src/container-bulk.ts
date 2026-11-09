@@ -116,7 +116,7 @@ async function askHost(
  * Asks a host's runner to act on the ticked containers, each as its own job, which the runner takes within
  * a second and runs three at a time; follows them every second, and has the rows read again once all ended.
  */
-export function useBulkAction(hostId: string) {
+export function useBulkAction(hostId: string, onAsked: () => void = () => undefined) {
   const queryClient = useQueryClient();
   const [asked, setAsked] = useState<BulkAsked | null>(null);
   const [reviewing, setReviewing] = useState<{
@@ -154,6 +154,7 @@ export function useBulkAction(hostId: string) {
         .filter(({ members }) => members.some(({ name }) => removing.has(name)))
         .map(({ name }) => name);
       setAsked({ action, total: targets.length, projects, volumes, ...answer });
+      onAsked();
       void queryClient.invalidateQueries({ queryKey: ["jobs", hostId] });
     },
   });

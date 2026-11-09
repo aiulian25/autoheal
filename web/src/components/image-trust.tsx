@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
 import { IMAGE_PROVENANCE } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { TEXT } from "../constants.js";
 import { imageTrustQuery, type ImageTrustView } from "../queries.js";
@@ -18,6 +19,7 @@ const scopeOf = (rule: { registry: string; repository: string | null }) =>
  */
 export function ImageTrustCard() {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const trust = useQuery(imageTrustQuery);
   const refresh = () => queryClient.invalidateQueries({ queryKey: imageTrustQuery.queryKey });
   const addPublisher = useMutation({
@@ -76,13 +78,14 @@ export function ImageTrustCard() {
             type="button"
             aria-label={text.removePublisherFor(publisher.name)}
             onClick={() => {
-              if (window.confirm(text.removePublisherConfirm(publisher.name))) removePublisher.mutate(publisher.name);
+              asking.confirm(text.removePublisherConfirm(publisher.name), () => removePublisher.mutate(publisher.name));
             }}
           >
             {text.removePublisher}
           </button>
         </div>
       ))}
+      {asking.question}
       <ErrorNotice error={addPublisher.error ?? removePublisher.error ?? addRule.error ?? removeRule.error} />
       <form className="step-form" onSubmit={submitPublisher} aria-label={text.addPublisher}>
         <h4>{text.addPublisher}</h4>
@@ -119,7 +122,7 @@ export function ImageTrustCard() {
             type="button"
             aria-label={text.removeRuleFor(scopeOf(rule))}
             onClick={() => {
-              if (window.confirm(text.removeRuleConfirm(scopeOf(rule)))) removeRule.mutate(rule.id);
+              asking.confirm(text.removeRuleConfirm(scopeOf(rule)), () => removeRule.mutate(rule.id));
             }}
           >
             {text.removeRule}

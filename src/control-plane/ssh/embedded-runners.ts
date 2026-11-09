@@ -204,6 +204,7 @@ export class EmbeddedRunners {
             );
             return { exitCode, output: `${stdout}${stderr}` };
           },
+          reconnect: () => ({ ...this.dependencies.controlPlane, token: details.token }),
         };
         embedded.withDocker = await dockerUsable(session);
         if (embedded.withDocker && (await runnerContainerRunning(new SshDockerConnection(session)))) {

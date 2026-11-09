@@ -3,6 +3,7 @@ import { API_ERRORS, type OwnAccountView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, TARGET_USER, type AuditAction } from "../../shared/constants.js";
 import type { AuditLog } from "../audit/audit-log.js";
 import type { RequestContext } from "../auth/auth-service.js";
+import type { LoginThrottle } from "../auth/login-throttle.js";
 import { verifyPassword } from "../auth/password-hashing.js";
 import type { ResolvedSession, SessionStore } from "../auth/sessions.js";
 import { totpAccountName } from "../auth/totp.js";
@@ -18,6 +19,7 @@ export class AccountService {
     private readonly sessions: SessionStore,
     // The dashboard's host, in the authenticator entry's name.
     private readonly accountHost: string,
+    private readonly throttle: Pick<LoginThrottle, "retryAfterSeconds" | "record">,
   ) {}
 
   view(session: ResolvedSession): OwnAccountView {
@@ -46,7 +48,14 @@ export class AccountService {
     context: RequestContext,
   ): Promise<OwnAccountView> {
     const user = this.userOf(session);
-    if (!(await verifyPassword(user.passwordHash, request.currentPassword))) {
+    // Wrong guesses wait as at sign-in, and count with it: a borrowed session must not guess the password fast either.
+    const retryAfterSeconds = this.throttle.retryAfterSeconds(user.username, context.ip);
+    if (retryAfterSeconds > 0) {
+      throw new DomainError(API_ERRORS.tooManyAttempts, { retryAfterSeconds });
+    }
+    const passwordMatches = await verifyPassword(user.passwordHash, request.currentPassword);
+    this.throttle.record(user.username, context.ip, passwordMatches);
+    if (!passwordMatches) {
       throw new DomainError(API_ERRORS.wrongPassword);
     }
     this.databaseHandle.database.transaction((transaction) => {

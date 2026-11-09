@@ -9,6 +9,7 @@ import {
   ROUTER_DEVICE_KIND,
   type RouterCapability,
   type RouterDeviceKind,
+  type RouterProbeView,
 } from "../../shared/network.js";
 import {
   RouterCertificateChanged,
@@ -335,8 +336,8 @@ export class UnifiAdapter implements RouterAdapter {
     return !STATUS_REFUSED.has(answer.status) && answer.status >= STATUS_OK_FROM && answer.status <= STATUS_OK_TO;
   }
 
-  /** Tries every read, once, and says what each found: what a person is shown before saving. */
-  async capabilities() {
+  /** Tries every read, once, and says what each found and what the router is: what a person is shown before saving. */
+  async capabilities(): Promise<RouterProbeView> {
     const trying = async (capability: RouterCapability, work: () => Promise<string>) => {
       try {
         return { capability, works: true, detail: await work() };
@@ -345,10 +346,12 @@ export class UnifiAdapter implements RouterAdapter {
         return { capability, works: false, detail: describeError(error) };
       }
     };
-    return [
+    const found: { router?: RouterDevice } = {};
+    const capabilities = [
       await trying(ROUTER_CAPABILITY.clients, async () => String((await this.clients()).length)),
       await trying(ROUTER_CAPABILITY.devices, async () => {
         const devices = await this.devices();
+        found.router = devices.find(({ kind }) => kind === ROUTER_DEVICE_KIND.router);
         return devices.map(({ name, version }) => `${name} ${version ?? ""}`.trim()).join(", ");
       }),
       await trying(ROUTER_CAPABILITY.internet, async () => {
@@ -361,5 +364,6 @@ export class UnifiAdapter implements RouterAdapter {
         return `${seen.rules.length},${seen.forwards.length}`;
       }),
     ];
+    return { name: found.router?.name ?? null, version: found.router?.version ?? null, capabilities };
   }
 }

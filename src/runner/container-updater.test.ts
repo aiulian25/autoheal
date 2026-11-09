@@ -16,7 +16,7 @@ import { settingsOf } from "./container-settings.js";
 import { ContainerUpdater, recreateSpecification, type UpdateSteps } from "./container-updater.js";
 import type { ContainerDetails, NetworkEndpoint } from "./incident-report.js";
 import type { PullLine } from "./update-progress.js";
-import { JOB_OUTCOMES } from "../shared/constants.js";
+import { JOB_OUTCOMES, RECREATE_OUTCOMES } from "../shared/constants.js";
 import { dataMountsOf, type RestoredData, type TakenCheckpoint } from "./volume-checkpoints.js";
 
 const OLD_IMAGE = `sha256:${"1".repeat(64)}`;
@@ -108,6 +108,8 @@ class InMemoryDocker {
   // What Docker recorded for the image it pulled, which a signature has to be over.
   pulledDigests: string[] | null = null;
   failPull = false;
+  // A prune at the moment the pull ends: the tag moved, but Docker no longer has the image it points at.
+  prunedAfterPull = false;
   failCreate = false;
   readonly failStops = new Set<string>();
   readonly failStarts = new Set<string>();
@@ -165,6 +167,7 @@ class InMemoryDocker {
       ...(this.pulledDigests === null ? {} : { RepoDigests: this.pulledDigests }),
     });
     this.tags.set(reference, this.pulledImage);
+    if (this.prunedAfterPull) this.images.delete(this.pulledImage);
   }
 
   async create(name: string, specification: Record<string, unknown>) {
@@ -519,7 +522,7 @@ describe("ContainerUpdater", () => {
       );
 
     // A host that has a copy service, whose copy of this container's data does not complete: too much of it, or the
-    // copy failed. What happened to arcane-agent on a real host — refused by hand, though the dialog said it would go.
+    // copy failed. What happened to a container on a real host — refused by hand, though the dialog said it would go.
     const INCOMPLETE = "more than this host keeps for one container";
     const withIncompleteCopies = () =>
       new ContainerUpdater(
@@ -916,6 +919,27 @@ describe("ContainerUpdater", () => {
     expect(confirmed).toEqual([[OLD_IMAGE, REFERENCE]]);
   });
 
+  it("fails, and leaves the update check's offer standing, when the image it pulled cannot be read", async () => {
+    const confirmed: [string, string][] = [];
+    const telling = new ContainerUpdater(
+      docker,
+      async () => undefined,
+      () => 0,
+      undefined,
+      undefined,
+      undefined,
+      (imageId, reference) => confirmed.push([imageId, reference]),
+    );
+    docker.prunedAfterPull = true;
+    expect(await telling.update("app")).toEqual({
+      succeeded: false,
+      outcome: `Could not pull ${REFERENCE}: the image was not there after the pull`,
+    });
+    expect(confirmed).toEqual([]);
+    expect(docker.calls).toEqual([`pull ${REFERENCE}`]);
+    expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+  });
+
   it("refuses containers labelled off, or pinned to a digest", async () => {
     const labelled = appContainer();
     labelled.Config.Labels = { "autoheal.update": "off" };
@@ -1186,6 +1210,22 @@ describe("ContainerUpdater", () => {
       outcome: `Refused: ${REFERENCE} now names a newer image than app runs, and recreating it would update it too.`,
     });
     expect(docker.calls).toEqual([]);
+  });
+
+  it("never starts a recreated container on an image its tag was moved to while the old one was set aside", async () => {
+    const rename = docker.rename.bind(docker);
+    docker.rename = async (reference, newName) => {
+      docker.images.set(NEW_IMAGE, { Id: NEW_IMAGE, Config: imageConfig });
+      docker.tags.set(REFERENCE, NEW_IMAGE);
+      return rename(reference, newName);
+    };
+    const result = await updater.recreate("app");
+    expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+    expect(docker.containers.size).toBe(1);
+    expect(result).toEqual({
+      succeeded: false,
+      outcome: RECREATE_OUTCOMES.restoredAfterFailure("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+    });
   });
 
   it("updates a stopped container and leaves it stopped", async () => {
@@ -1615,6 +1655,30 @@ describe("ContainerUpdater", () => {
       expect(qbittorrent()).toMatchObject({ Id: vpnId, State: { Running: true } });
     });
 
+    it("never starts a dependent on an image its tag was moved to meanwhile, and keeps its old container", async () => {
+      addDependent();
+      const MOVED = `sha256:${"6".repeat(64)}`;
+      const rename = docker.rename.bind(docker);
+      docker.rename = async (reference, newName) => {
+        if (newName === "qbittorrent-autoheal-old") {
+          docker.images.set(MOVED, { Id: MOVED, Config: { Env: ["PATH=/usr/bin"] } });
+          docker.tags.set(VPN_REFERENCE, MOVED);
+        }
+        return rename(reference, newName);
+      };
+      const result = await updater.update("app");
+      expect([...docker.containers.values()].some((container) => container.Image === MOVED)).toBe(false);
+      expect(docker.find("qbittorrent-autoheal-old")?.Id).toBe(vpnId);
+      expect(result.succeeded).toBe(false);
+      expect(result.outcome).toContain(
+        JOB_OUTCOMES.dependentNotRecreated(
+          "qbittorrent",
+          JOB_OUTCOMES.tagMovedMeanwhile(VPN_REFERENCE),
+          "qbittorrent-autoheal-old",
+        ),
+      );
+    });
+
     it("keeps a dependent's old container when its new one does not hold", async () => {
       addDependent();
       docker.afterStart = (container) =>
@@ -1962,6 +2026,33 @@ describe("an update where a signed image is required", () => {
 
     expect(asked[0]).toContain(PULLED);
     expect(asked[0]).not.toContain(":2");
+  });
+
+  it("never starts an image its tag was moved to after the signed one was checked, and puts the old one back", async () => {
+    const UNCHECKED = `sha256:${"f".repeat(64)}`;
+    // Another pull of the same tag, by a person or a cron, while the old container is set aside.
+    const rename = docker.rename.bind(docker);
+    docker.rename = async (reference, newName) => {
+      docker.images.set(UNCHECKED, { Id: UNCHECKED, Config: {} });
+      docker.tags.set(REFERENCE, UNCHECKED);
+      return rename(reference, newName);
+    };
+    const started: (string | undefined)[] = [];
+    const start = docker.start.bind(docker);
+    docker.start = async (reference) => {
+      started.push(docker.find(reference)?.Image);
+      return start(reference);
+    };
+
+    const result = await updaterWith().update("app");
+
+    expect(started).not.toContain(UNCHECKED);
+    expect(docker.find("app")).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+    expect([...docker.containers.values()].map((container) => container.Image)).toEqual([OLD_IMAGE]);
+    expect(result).toEqual({
+      succeeded: false,
+      outcome: JOB_OUTCOMES.restoredAfterFailure("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+    });
   });
 
   it("stops nothing when the proof is for another digest", async () => {

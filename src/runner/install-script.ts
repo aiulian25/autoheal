@@ -1,5 +1,6 @@
 import {
   COMPOSE_FILE,
+  CONTAINER_NAME_KEY,
   ENV_FILE,
   INSTALLED_LINE,
   composeOf,
@@ -12,7 +13,14 @@ import {
 // value: those are made on the host as the .env is written.
 export const shellQuoted = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
 
-export const INSTALL_EXIT = { noCompose: 3, folderTaken: 4, folderChanged: 7, notOurs: 8 } as const;
+export const INSTALL_EXIT = {
+  noCompose: 3,
+  folderTaken: 4,
+  folderChanged: 7,
+  notOurs: 8,
+  notItsFolder: 9,
+  notTakenDown: 10,
+} as const;
 export const COMPOSE_COMMANDS = { plugin: "docker compose", standalone: "docker-compose" } as const;
 
 // A NAS keeps its tools outside what an SSH session's PATH has.
@@ -85,16 +93,28 @@ export function upScript(folder: string): string {
   return ["set -e", PATH_LINE, composeLine, `cd ${shellQuoted(folder)}`, "$compose up -d"].join("\n");
 }
 
+// A file a person re-indented or saved on Windows still names its containers: lines are compared without their
+// indentation, trailing spaces or line ending.
+const TRIMMED_LINES = "sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'";
+// The whole line naming this container, in either quotes or none; matched as text, so a name is never a pattern.
+const namingLines = (name: string) =>
+  [JSON.stringify(name), `'${name}'`, name]
+    .map((value) => `-e ${shellQuoted(`${CONTAINER_NAME_KEY}: ${value}`)}`)
+    .join(" ");
+
 /** Takes down what it started and its files, and its data folder only when asked. */
-export function downScript(folder: string, removeData: boolean): string {
+export function downScript(folder: string, name: string, removeData: boolean): string {
   const quoted = shellQuoted(folder);
   return [
     PATH_LINE,
     composeLine,
     `cd ${quoted} || exit 1`,
-    // A label on a container can be set by others; only a Compose file Autoheal wrote says it installed the app.
+    // A label on a container can be set by others; only a Compose file Autoheal wrote says it installed the app,
+    // and only one that names this container says the folder is its own, not another app's it was pointed at.
     `grep -qF ${shellQuoted(INSTALLED_LINE)} ${COMPOSE_FILE} || exit ${INSTALL_EXIT.notOurs}`,
-    removeData ? "$compose down -v" : "$compose down",
+    `${TRIMMED_LINES} ${COMPOSE_FILE} | grep -qxF ${namingLines(name)} || exit ${INSTALL_EXIT.notItsFolder}`,
+    // Nothing goes unless Compose took the app down: its files are what anyone needs to take down what still runs.
+    `${removeData ? "$compose down -v" : "$compose down"} || exit ${INSTALL_EXIT.notTakenDown}`,
     "cd /",
     removeData ? `rm -rf ${quoted}` : `rm -f ${quoted}/${COMPOSE_FILE} ${quoted}/${ENV_FILE}`,
   ].join("\n");

@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useState, useRef } from "react";
 import { API_ROUTES, apiPath, type HostView } from "../../../src/shared/api.js";
-import { HOST_KIND, HOST_SECTIONS, JOB_ACTION } from "../../../src/shared/constants.js";
+import { HOST_KIND, HOST_SECTIONS, JOB_ACTION, MILLISECONDS_PER_SECOND } from "../../../src/shared/constants.js";
 import { useLocation } from "react-router";
 import {
   TOPOLOGY_EDGE_KINDS,
@@ -11,16 +11,11 @@ import {
   type TopologyView,
 } from "../../../src/shared/topology.js";
 import { api, ReadableError } from "../api-client.js";
-import { DEPENDENCY_MAP_TEXT, INVENTORY_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
+import { DEPENDENCY_MAP_TEXT, INVENTORY_REFRESH_MILLISECONDS, OPERATION_REVIEW, TEXT } from "../constants.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { StackMap } from "./stack-map.js";
 
-const EDGE_WORDS = {
-  network_namespace: "Shares network namespace",
-  compose_association: "Same Compose project (association only)",
-  shared_writable_data: "Shares writable data",
-  declared_dependency: "Declared dependency (Compose depends_on or autoheal.depends-on)",
-} as const;
+const EDGE_WORDS = DEPENDENCY_MAP_TEXT.edges;
 // Without a report: none can come without Docker; a runner may need updating; Autoheal's own runners send one soon.
 function noReportText(host: HostView): string {
   if (host.docker === false) {
@@ -63,37 +58,27 @@ function DependencyGraph({ host }: { host: HostView }) {
   const snapshot = view.data?.snapshot;
   return (
     <>
-      <p className="small muted">
-        Network namespace sharing and shared writable data can enlarge an operation’s scope. Compose membership is an
-        association, not a startup order. Declared dependencies come from the optional autoheal.depends-on label and do
-        not change execution policy.
-      </p>
+      <p className="small muted">{DEPENDENCY_MAP_TEXT.explanation}</p>
       {view.isPending && <Loading />}
       {view.data?.available === false && <p className="notice warning">{noReportText(host)}</p>}
-      {view.data?.stale && snapshot && (
-        <p className="notice warning">This report is stale. A mutation requires a fresh runner review.</p>
-      )}
-      {snapshot?.truncated && (
-        <p className="notice warning">
-          This report is partial because a graph or byte limit was reached. Operation review uses the full coordinator
-          discovery.
-        </p>
-      )}
+      {view.data?.stale && snapshot && <p className="notice warning">{DEPENDENCY_MAP_TEXT.stale}</p>}
+      {snapshot?.truncated && <p className="notice warning">{DEPENDENCY_MAP_TEXT.truncated}</p>}
       {snapshot?.notes.includes("unresolved_reference") && (
-        <p className="notice warning">Some referenced containers could not be resolved.</p>
+        <p className="notice warning">{DEPENDENCY_MAP_TEXT.unresolved}</p>
       )}
       {snapshot && (
         <>
           <p className="small muted">
-            Captured{" "}
+            {DEPENDENCY_MAP_TEXT.captured}{" "}
             <time dateTime={new Date(snapshot.capturedAt).toISOString()}>
               {new Date(snapshot.capturedAt).toLocaleString()}
-            </time>{" "}
-            · {snapshot.nodes.length} containers · {snapshot.edges.length} links
+            </time>
+            {TEXT.separator}
+            {DEPENDENCY_MAP_TEXT.counts(snapshot.nodes.length, snapshot.edges.length)}
           </p>
           {snapshot.nodes.length > 0 && <StackMap snapshot={snapshot} />}
           <details>
-            <summary>Accessible link list</summary>
+            <summary>{DEPENDENCY_MAP_TEXT.linkList}</summary>
             {TOPOLOGY_EDGE_KINDS.map((kind) => {
               const edges = snapshot.edges.filter((edge) => edge.kind === kind);
               return edges.length ? (
@@ -102,14 +87,16 @@ function DependencyGraph({ host }: { host: HostView }) {
                   <ul>
                     {edges.map((edge, index) => (
                       <li key={index}>
-                        <span className="mono">{edge.from}</span> · <span className="mono">{edge.to}</span>
+                        <span className="mono">{edge.from}</span>
+                        {TEXT.separator}
+                        <span className="mono">{edge.to}</span>
                       </li>
                     ))}
                   </ul>
                 </section>
               ) : null;
             })}
-            {snapshot.edges.length === 0 && <p className="muted">No supported relationships were reported.</p>}
+            {snapshot.edges.length === 0 && <p className="muted">{DEPENDENCY_MAP_TEXT.noRelationships}</p>}
           </details>
         </>
       )}
@@ -122,18 +109,19 @@ function DependencyGraph({ host }: { host: HostView }) {
 export function useOperationReview(hostId: string, action: PreviewAction, names: readonly string[]) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), MILLISECONDS_PER_SECOND);
     return () => window.clearInterval(timer);
   }, []);
   const key = JSON.stringify(names);
   const preview = useMutation({
     mutationFn: async () => {
-      if (names.length > 16) throw new ReadableError("Review at most 16 containers at once.");
+      if (names.length > OPERATION_REVIEW.containers)
+        throw new ReadableError(DEPENDENCY_MAP_TEXT.reviewAtMost(OPERATION_REVIEW.containers));
       const views: OperationImpactView[] = [];
-      for (let index = 0; index < names.length; index += 4)
+      for (let index = 0; index < names.length; index += OPERATION_REVIEW.atOnce)
         views.push(
           ...(await Promise.all(
-            names.slice(index, index + 4).map((containerName) =>
+            names.slice(index, index + OPERATION_REVIEW.atOnce).map((containerName) =>
               api<OperationImpactView>("POST", apiPath(API_ROUTES.operationPreview, { hostId, containerName }), {
                 action,
               }).then((view) => {
@@ -146,9 +134,7 @@ export function useOperationReview(hostId: string, action: PreviewAction, names:
                   view.containerName !== containerName ||
                   view.action !== action
                 )
-                  throw new ReadableError(
-                    "No usable operation review was returned. Update the runner and refresh the review.",
-                  );
+                  throw new ReadableError(DEPENDENCY_MAP_TEXT.noUsableReview);
                 return { ...view, answer: answer.data };
               }),
             ),
@@ -197,12 +183,9 @@ export function OperationImpactReview({
   }, []);
   return (
     <dialog ref={dialog} className="connect-host impact-review" aria-labelledby={`${id}-title`} onClose={onCancel}>
-      <h2 id={`${id}-title`}>Review {TEXT.actions.names[action].toLowerCase()} impact</h2>
+      <h2 id={`${id}-title`}>{DEPENDENCY_MAP_TEXT.reviewTitle(TEXT.actions.names[action].toLowerCase())}</h2>
       <div className="connect-host-body">
-        <p>
-          The runner inspected and locked the same resource set used for execution. Shared-data writers and namespace
-          providers can be locked even when they are not replaced. A changed set will refuse the job.
-        </p>
+        <p>{DEPENDENCY_MAP_TEXT.locked}</p>
         {action === JOB_ACTION.update && <p className="small muted">{TEXT.hostContainers.updateBox.noCheckpoint}</p>}
         {preview.isPending && <Loading />}
         {views?.map((view) => (
@@ -214,13 +197,14 @@ export function OperationImpactReview({
                   {view.answer.members.map((member) => (
                     <li key={member.name}>
                       <span className="mono">{member.name}</span>
-                      {member.protected ? " · protected" : ""}
+                      {member.protected ? `${TEXT.separator}${DEPENDENCY_MAP_TEXT.protected}` : ""}
                     </li>
                   ))}
                 </ul>
                 <p className="small muted">
-                  {view.answer.resources.length} coordinator resources · review expires{" "}
-                  {new Date(view.expiresAt).toLocaleTimeString()}
+                  {DEPENDENCY_MAP_TEXT.resources(view.answer.resources.length)}
+                  {TEXT.separator}
+                  {DEPENDENCY_MAP_TEXT.expires} {new Date(view.expiresAt).toLocaleTimeString()}
                 </p>
                 {view.answer.refusals.map((refusal) => (
                   <p className="notice error" key={refusal}>
@@ -242,13 +226,13 @@ export function OperationImpactReview({
           disabled={!canConfirm || preview.isPending}
           onClick={() => views && onConfirm(previewIdsOf(views))}
         >
-          Confirm reviewed operation
+          {DEPENDENCY_MAP_TEXT.confirm}
         </button>
         <button type="button" disabled={preview.isPending} onClick={() => request()}>
-          Refresh review
+          {DEPENDENCY_MAP_TEXT.refresh}
         </button>
         <button type="button" onClick={onCancel}>
-          Cancel
+          {DEPENDENCY_MAP_TEXT.cancel}
         </button>
       </div>
     </dialog>

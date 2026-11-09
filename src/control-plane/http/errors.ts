@@ -6,6 +6,7 @@ import { log } from "../../shared/log.js";
 import { DomainError } from "../domain-error.js";
 
 const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
+  [API_ERRORS.tooManyAttempts]: HTTP_STATUS.tooManyRequests,
   [API_ERRORS.anomalyNotFound]: HTTP_STATUS.notFound,
   [API_ERRORS.anomalyChanged]: HTTP_STATUS.conflict,
   [API_ERRORS.rolloutUnavailable]: HTTP_STATUS.conflict,
@@ -71,6 +72,7 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.sshHostNotConnected]: HTTP_STATUS.conflict,
   [API_ERRORS.hostRevoked]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.notLocalRunner]: HTTP_STATUS.conflict,
+  [API_ERRORS.notRunnerHost]: HTTP_STATUS.conflict,
   [API_ERRORS.incidentNotFound]: HTTP_STATUS.notFound,
   [API_ERRORS.notAwaitingApproval]: HTTP_STATUS.conflict,
   [API_ERRORS.invalidTarget]: HTTP_STATUS.unprocessableContent,
@@ -97,6 +99,10 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.taskLoop]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.assigneeNotFound]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.agentCannotTake]: HTTP_STATUS.unprocessableContent,
+  [API_ERRORS.notFromCompose]: HTTP_STATUS.unprocessableContent,
+  [API_ERRORS.databaseNewMajor]: HTTP_STATUS.conflict,
+  [API_ERRORS.noNewerVersion]: HTTP_STATUS.conflict,
+  [API_ERRORS.runnerCannotChangeTags]: HTTP_STATUS.conflict,
   [API_ERRORS.notDispatchable]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.containerNotFound]: HTTP_STATUS.notFound,
   [API_ERRORS.restartResetUnsupported]: HTTP_STATUS.unprocessableContent,
@@ -180,7 +186,9 @@ export function registerErrorHandling(app: FastifyInstance) {
       return reply.code(error.statusCode).send({ error: error.code, ...error.extra });
     }
     if (error instanceof DomainError) {
-      return reply.code(DOMAIN_ERROR_STATUS[error.code] ?? HTTP_STATUS.badRequest).send({ error: error.code });
+      return reply
+        .code(DOMAIN_ERROR_STATUS[error.code] ?? HTTP_STATUS.badRequest)
+        .send({ error: error.code, ...error.details });
     }
     const statusCode = (error as { statusCode?: unknown }).statusCode;
     if (statusCode === HTTP_STATUS.payloadTooLarge) {

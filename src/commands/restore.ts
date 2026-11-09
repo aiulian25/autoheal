@@ -40,6 +40,6 @@ export async function runRestore(
     backupPath,
     Date.now(),
   );
-  output.log(RESTORE_MESSAGES.done(backupPath, result.schemaVersion));
+  output.log(RESTORE_MESSAGES.done(backupPath, result.schemaVersion, result.previousKeptAt));
   return EXIT_SUCCESS;
 }

@@ -145,11 +145,12 @@ describe("the servers in the Ollama card", () => {
 
   it("names the hosts before removing one", async () => {
     view = WITH_ONE;
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     show();
     await screen.findByRole("checkbox", { name: "Alder" });
     fireEvent.click(await screen.findByRole("button", { name: text.removeServer }));
-    expect(confirm).toHaveBeenCalledWith("Remove Delta3640? Alder will go back to the default.");
+    expect(screen.getByRole("group", { name: "Remove Delta3640? Alder will go back to the default." })).toBeTruthy();
+    expect(sent.some(({ method }) => method === "DELETE")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(sent.at(-1)?.method).toBe("DELETE"));
   });
 

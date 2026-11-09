@@ -1,0 +1,199 @@
+/* --- a host's containers: what each does when it fails and when a new image is out -------------------- */
+
+.host-containers {
+  display: flex;
+  flex-direction: column;
+  gap: 12.5px;
+}
+
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.section-head h2 {
+  margin-right: auto;
+  font-size: var(--text-heading);
+}
+
+.section-head h2 .muted {
+  font-weight: var(--weight-normal);
+}
+
+.find {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A replay to start, in the page's header: which model, how many recent incidents, and go. */
+.replay-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.replay-start label {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.replay-start input[type="number"] {
+  width: var(--count-input-width);
+}
+
+.find input {
+  width: var(--find-width);
+  min-height: var(--find-height);
+}
+
+/* Every container is listed: past the screen's height the list scrolls in its card, its header in view, with room
+   for the tabs and the bar pinned above it. */
+.host-containers .table-wrap {
+  max-height: calc(100vh - var(--host-tabs-height) - var(--compact-head-height) - 2 * var(--space-4));
+  overflow-y: auto;
+  /* A stack's header keeps to the box's own width when the table is wider, on a phone. */
+  container-type: inline-size;
+}
+
+/* On a phone the choices stay: the table scrolls sideways in its box instead. */
+.host-containers table {
+  min-width: var(--host-containers-width);
+  table-layout: fixed;
+}
+
+/* The container being worked on stays in view at the top or the bottom of the list, whichever way it scrolled off,
+   and scrolling inside it never moves the page behind. */
+.host-containers tr.pinned > td {
+  position: sticky;
+  top: var(--compact-head-height);
+  bottom: 0;
+  z-index: 1;
+  background: var(--surface-muted);
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 var(--border);
+}
+
+.host-containers .table-wrap:has(tr.pinned) {
+  overscroll-behavior: contain;
+}
+
+/* Compact: a row a line high, its choices in small menus. */
+.host-containers th,
+.host-containers td {
+  height: var(--compact-row-height);
+  padding: 0 6px 0 0;
+  border-bottom: var(--border-width) solid var(--divider);
+  font-size: var(--text-small);
+}
+
+.host-containers th:first-child,
+.host-containers td:first-child {
+  padding-left: 10px;
+}
+
+.host-containers thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--compact-head-height);
+  /* A collapsed border scrolls away from a sticky cell, so its line is drawn on the cell itself. */
+  border-bottom-color: transparent;
+  background: var(--surface);
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 var(--border);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-normal);
+}
+
+/* The ticks come first, where an admin sees them. */
+.host-containers .tick-column {
+  width: var(--tick-column-width);
+  padding-left: 16px;
+}
+
+.host-containers .tick-column + td,
+.host-containers .tick-column + th {
+  padding-left: 0;
+}
+
+.host-containers .name-column {
+  width: var(--name-column-width);
+}
+
+.host-containers .state-column {
+  width: var(--state-column-width);
+}
+
+.host-containers .up-column {
+  width: var(--up-column-width);
+}
+
+.host-containers .image-column {
+  width: var(--image-column-width);
+}
+
+.host-containers .ports-column {
+  width: var(--ports-column-width);
+}
+
+.host-containers .cpu-column {
+  width: var(--cpu-column-width);
+}
+
+.host-containers .memory-column {
+  width: var(--memory-column-width);
+}
+
+.host-containers .usage-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.host-containers .choice-column {
+  width: var(--choice-column-width);
+}
+
+.host-containers .actions-column {
+  width: var(--actions-column-width);
+}
+
+/* A row's own buttons: a line of small icons, the ones that do not fit faded. */
+.row-actions-icons {
+  display: flex;
+  gap: 1px;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-button-size);
+  min-height: var(--icon-button-size);
+  padding: 0;
+  border-color: transparent;
+  background: none;
+  color: var(--text-muted);
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button[aria-pressed="true"] {
+  border-color: var(--border);
+  background: var(--control);
+  color: var(--text);
+}
+
+.icon-button.danger:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.icon-button:disabled {
+  opacity: 0.3;
+}
+
+.icon-button .icon {
+  width: var(--icon-button-icon-size);
+  height: var(--icon-button-icon-size);
+}

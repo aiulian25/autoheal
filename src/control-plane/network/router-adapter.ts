@@ -1,4 +1,4 @@
-import type { RouterCapability, RouterDeviceKind } from "../../shared/network.js";
+import type { RouterDeviceKind, RouterProbeView } from "../../shared/network.js";
 
 export interface RouterClient {
   mac: string;
@@ -42,7 +42,8 @@ export interface ExposureSnapshot {
 
 /** What any router must say, in plain facts rather than its own shapes. A new kind is one more of these. */
 export interface RouterAdapter {
-  capabilities(): Promise<{ capability: RouterCapability; works: boolean; detail: string }[]>;
+  // Every read tried once, and what the router calls itself and the version it runs, where it says.
+  capabilities(): Promise<RouterProbeView>;
   clients(): Promise<RouterClient[]>;
   devices(): Promise<RouterDevice[]>;
   internet(): Promise<InternetHealth>;

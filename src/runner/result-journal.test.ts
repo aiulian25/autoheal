@@ -100,6 +100,20 @@ describe("durable action results", () => {
     await expect(ResultJournal.open(f.store)).rejects.toThrow("corrupt");
   });
 
+  it("says Docker could not be read, not that the journal is damaged, when Docker is not up yet", async () => {
+    const f = guardStateFixture();
+    const notUp = Object.assign(new Error("connect ECONNREFUSED /var/run/docker.sock"), { code: "ECONNREFUSED" });
+    const opening = ResultJournal.open({
+      ...f.store,
+      volumes: async () => {
+        throw notUp;
+      },
+    });
+    await expect(opening).rejects.toThrow(/from Docker \(connect ECONNREFUSED/);
+    await expect(opening).rejects.not.toThrow("corrupt");
+    await expect(ResultJournal.open(f.store)).resolves.toBeInstanceOf(ResultJournal);
+  });
+
   it("retains an acknowledged report if local acknowledgement persistence fails", async () => {
     const f = guardStateFixture();
     const journal = await ResultJournal.open(f.store);

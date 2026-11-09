@@ -90,14 +90,16 @@ it("requires a signed image for a scope, from the publishers that were ticked", 
 });
 
 it("asks before it stops trusting a publisher or drops a rule", async () => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   show();
 
   fireEvent.click(await screen.findByRole("button", { name: text.removeRuleFor("ghcr.io/example/app") }));
+  expect(sent).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
   await waitFor(() => expect(sent).toHaveLength(1));
   expect(sent[0]).toMatchObject({ url: apiPath(API_ROUTES.imageTrustRule, { ruleId: "r1" }), method: "DELETE" });
 
   fireEvent.click(screen.getByRole("button", { name: text.removePublisherFor("example") }));
+  fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
   await waitFor(() => expect(sent).toHaveLength(2));
   expect(sent[1]).toMatchObject({
     url: apiPath(API_ROUTES.imageTrustPublisher, { name: "example" }),

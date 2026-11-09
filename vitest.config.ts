@@ -1,6 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+// Before each test file: names tests make up are answered on this machine, never asked of the network's DNS.
+const MADE_UP_NAMES = "test/support/made-up-names.ts";
+
 export default defineConfig({
   test: {
     globalSetup: ["test/support/temporary-root.ts"],
@@ -10,6 +13,7 @@ export default defineConfig({
           name: "server",
           environment: "node",
           include: ["src/**/*.test.ts", "test/**/*.test.ts"],
+          setupFiles: [MADE_UP_NAMES],
           // Sign-ins hash with Argon2id and backups are encrypted: a test that takes a second and a half on its own
           // took seven and a half while every file ran at once.
           testTimeout: 20_000,
@@ -21,7 +25,7 @@ export default defineConfig({
           name: "web",
           environment: "jsdom",
           include: ["web/**/*.test.{ts,tsx}"],
-          setupFiles: ["web/test-setup.ts"],
+          setupFiles: [MADE_UP_NAMES, "web/test-setup.ts"],
         },
       },
     ],

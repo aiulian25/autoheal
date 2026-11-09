@@ -74,6 +74,8 @@ export type InternetState = (typeof INTERNET_STATE)[keyof typeof INTERNET_STATE]
 /** A public address's own check, in the control plane: it says what the router cannot while it is down. */
 export const INTERNET_PROBES = ["https://1.1.1.1/cdn-cgi/trace", "https://www.google.com/generate_204"] as const;
 export const INTERNET_PROBE_TIMEOUT_MILLISECONDS = 5_000;
+// While the router says the line is up and the last look got out; any sign of trouble looks again each minute.
+export const INTERNET_PROBE_EVERY_MILLISECONDS = 5 * 60_000;
 export const SPEED_SOURCE = { router: "router", thisMachine: "this_machine" } as const;
 export type SpeedSource = (typeof SPEED_SOURCE)[keyof typeof SPEED_SOURCE];
 export const SPEED_TEST_URL = "https://speed.cloudflare.com";
@@ -240,6 +242,9 @@ export interface NetworkFirewallView {
   logLastAt: number | null;
   // Who sent lines lately that were not read, while none arrive from the router.
   logRefusedSender: string | null;
+  // Lines not read, as they came from an address that is not the router's, counted since the watch last started (a
+  // restore starts it again): the last one's sender and time, for an hour after it.
+  logIgnored: { sender: string; at: number; lines: number } | null;
   logNameUnresolved: boolean;
   exposureReadable: boolean;
 }
@@ -299,7 +304,8 @@ export const NETWORK_TEXT = {
   logsStoppedDetails: "Autoheal has no firewall evidence until it comes back.",
   crossing: (source: string, destination: string) =>
     `${source} reached ${destination} for the first time, across networks`,
-  crossingDetails: "It clears after a day. Check it is expected.",
+  crossingDetails:
+    "Seen in the router's log lines, which anything on your network can send in its name. It clears after a day. Check it is expected.",
   evidence: (lines: readonly string[]) => `Network around that time:\n${lines.join("\n")}`,
   evidenceDropped: (name: string, at: string) => `${at}: ${name} dropped off the network.`,
   evidenceReturned: (name: string, at: string) => `${at}: ${name} came back.`,

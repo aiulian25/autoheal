@@ -1,0 +1,83 @@
+/* --- a host's system information: two lists side by side --------------- */
+
+.host-system {
+  gap: 0;
+  padding: 10px 12px 9px;
+}
+
+.system-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
+  margin-top: 7.5px;
+}
+
+.system-facts {
+  margin: 0;
+}
+
+.system-facts > div {
+  display: grid;
+  grid-template-columns: var(--system-label-width) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: var(--border-width) solid var(--divider);
+}
+
+.system-facts > div:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.system-facts dt {
+  color: var(--text-muted);
+}
+
+.system-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.system-facts .mono {
+  font-size: var(--text-small);
+}
+
+.temperatures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* One line per drive smartd reads: what it says, and how old its reading is. */
+.drive-health {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.temperature {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--temperature-chip-height);
+  padding: 0 7px;
+  border-radius: var(--radius-small);
+  background: var(--control);
+  font-size: var(--text-badge);
+}
+
+@media (max-width: 64rem) {
+  .system-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The section a link on the page leads to, such as the OS updates from the package updates line. */
+.card:target {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 var(--focus-width) var(--ring);
+}

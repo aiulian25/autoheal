@@ -8,11 +8,14 @@ import {
   type TrendMetric,
   type AnomalyFeedback,
 } from "../../../src/shared/metric-trends.js";
+import { wordsOf } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { FULL_PERCENT, TEXT } from "../constants.js";
 import { bytes, precisePercent, rate } from "../format.js";
 import { TimeChart, type ChartReference } from "./charts.js";
 import { ErrorNotice } from "./common.js";
-const metricName = { cpu: "CPU use", memory: "Memory use", io: "Disk traffic" };
+const text = TEXT.trends;
+const metricName = text.metrics;
 const formatOf = { cpu: precisePercent, memory: bytes, io: rate };
 export const trendQuery = (hostId: string, containerName: string | null) => ({
   queryKey: ["metric-trends", hostId, containerName],
@@ -32,7 +35,7 @@ export const trendQuery = (hostId: string, containerName: string | null) => ({
       !Array.isArray(view.baselines) ||
       typeof view.health?.capacityLimited !== "boolean"
     )
-      throw new Error("Retained trend response unavailable.");
+      throw new Error(text.responseUnavailable);
     return view;
   },
   refetchInterval: TREND.flush,
@@ -42,8 +45,8 @@ export const trendReferences = (trend: MetricTrendView | undefined, metric: Tren
   const baseline = trend?.status === "ready" ? trend.baselines.find((item) => item.metric === metric) : undefined;
   return baseline
     ? [
-        { label: "Learned typical", value: baseline.median, from: baseline.since, tone: "violet" },
-        { label: "Observation threshold", value: baseline.threshold, from: baseline.since, tone: "amber" },
+        { label: text.typical, value: baseline.median, from: baseline.since, tone: "violet" },
+        { label: text.threshold, value: baseline.threshold, from: baseline.since, tone: "amber" },
       ]
     : [];
 };
@@ -78,27 +81,23 @@ export function TrendHistory({ trend, error }: { trend: MetricTrendView | undefi
   if (error)
     return (
       <p role="status" className="small muted">
-        Retained trends are unavailable. Live readings continue.
+        {text.unavailable}
       </p>
     );
   if (!trend) return null;
   return (
-    <section className="stack" aria-label="Learned resource trends">
+    <section className="stack" aria-label={text.label}>
       <p className="small muted">
-        {trend.explanation} Status: {trend.status}. History is kept for up to seven days; pressure may shorten it.
+        {trend.explanation} {text.status(trend.status)}
       </p>
       {trend.health.capacityLimited && (
         <p role="status" className="small muted">
-          Trend storage reached its fleet limit. Some history may be unavailable; no missing samples are treated as
-          zero.
+          {text.capacityLimited}
         </p>
       )}
       <details>
-        <summary>Retained five-minute history</summary>
-        <p className="small muted">
-          Only the current application or host incarnation is joined. Gaps mean missing, sparse, maintenance, or
-          older-incarnation data.
-        </p>
+        <summary>{text.history}</summary>
+        <p className="small muted">{text.gaps}</p>
         <div className="chart-grid">
           {TREND_METRICS.map((metric) => {
             const data = trendChartData(trend, metric);
@@ -112,7 +111,7 @@ export function TrendHistory({ trend, error }: { trend: MetricTrendView | undefi
                 ]}
                 format={formatOf[metric]}
                 references={trendReferences(trend, metric)}
-                {...(metric === "cpu" ? { ceiling: 100 } : {})}
+                {...(metric === "cpu" ? { ceiling: FULL_PERCENT } : {})}
               />
             );
           })}
@@ -133,22 +132,19 @@ function Observation({ view, admin }: { view: MetricAnomalyView; admin: boolean 
   });
   const format = formatOf[view.metric];
   return (
-    <section className="stack small" aria-label={`${metricName[view.metric]} observation`}>
+    <section className="stack small" aria-label={text.observationLabel(metricName[view.metric])}>
       <p>
-        Observed {format(view.observed)}; learned typical {format(view.baseline)}, threshold {format(view.threshold)}.{" "}
-        {view.baselineBuckets} baseline buckets ({view.baselineSamples} samples), {view.recentSamples} recent samples.
-        Compared at{" "}
-        <time dateTime={new Date(view.observedAt).toISOString()}>{new Date(view.observedAt).toLocaleString()}</time>.
-        State: {view.state}.
+        {text.observed(format(view.observed), format(view.baseline), format(view.threshold))}{" "}
+        {text.samples(view.baselineBuckets, view.baselineSamples, view.recentSamples)} {text.comparedAt}{" "}
+        <time dateTime={new Date(view.observedAt).toISOString()}>{new Date(view.observedAt).toLocaleString()}</time>
+        {TEXT.sentenceEnd} {text.state(view.state)}
       </p>
-      <p className="muted">
-        This is an observation for review, not a diagnosis. No automatic recovery is triggered. Maintenance and missing
-        samples are excluded.
-      </p>
+      <p className="muted">{text.notADiagnosis}</p>
       {view.feedback && (
         <p role="status">
-          Last review: {view.feedback.replaceAll("_", " ")}
-          {view.feedbackAt ? ` at ${new Date(view.feedbackAt).toLocaleString()}` : ""}.
+          {text.lastReview(wordsOf(view.feedback))}
+          {view.feedbackAt ? text.reviewedAt(new Date(view.feedbackAt).toLocaleString()) : ""}
+          {TEXT.sentenceEnd}
         </p>
       )}
       {admin && (
@@ -161,7 +157,7 @@ function Observation({ view, admin }: { view: MetricAnomalyView; admin: boolean 
               disabled={feedback.isPending}
               onClick={() => feedback.mutate(assessment)}
             >
-              {assessment === "false_positive" ? "False positive" : assessment === "useful" ? "Useful" : "Expected"}
+              {text.assessments[assessment]}
             </button>
           ))}
         </div>

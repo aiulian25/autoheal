@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { posix } from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 import { z } from "zod";
 import {
@@ -186,6 +187,14 @@ const stillMounted = ({ type, source, target }: BackupMember["mounts"][number], 
   dataMountsOf(details).some((live) => live.type === type && live.source === source && live.target === target);
 
 const backupId = (at: number) => new Date(at).toISOString().replace(/[-:]|\.\d{3}/g, "");
+// Where a host finds a target's backups: its own folder, then the one every host shared before. It only ever writes to,
+// and lets go of backups in, the first.
+const foldersOf = (target: BackupTarget, hostId: string | null) => [
+  ...new Set([backupFolderName(target, hostId), backupFolderName(target, null)]),
+];
+// Where a backup is written until it is checked: beside the finished ones, under a name no list offers.
+const unfinishedFolder = (target: BackupTarget, hostId: string | null, id: string) =>
+  `${backupFolderName(target, hostId)}/${CONTAINER_BACKUP.unfinishedPrefix}${id}`;
 
 // A restore names its own safety copy when going back from it means something.
 export interface BackupJobResult {
@@ -465,10 +474,10 @@ export class ContainerBackups {
     };
   }
 
-  private foldersFor(target: BackupTarget, all: readonly Container[]) {
+  private foldersFor(target: BackupTarget, all: readonly Container[], hostId: string | null) {
     const project = this.membersIn(all, target)[0]?.details.Config.Labels?.[COMPOSE_PROJECT_LABEL];
-    const stackFolder = project === undefined ? [] : [backupFolderName({ container: null, stack: project })];
-    return [...new Set([backupFolderName(target), ...stackFolder])];
+    const stack: BackupTarget[] = project === undefined ? [] : [{ container: null, stack: project }];
+    return [...new Set([target, ...stack].flatMap((one) => foldersOf(one, hostId)))];
   }
 
   private async list(request: BackupRequest): Promise<BackupAnswer> {
@@ -482,7 +491,7 @@ export class ContainerBackups {
             BackupAnswer,
             "unreadable" | "unreadableCount"
           >
-        >(helper, COPY_COMMAND.list, { folders: this.foldersFor(request.target, all) }),
+        >(helper, COPY_COMMAND.list, { folders: this.foldersFor(request.target, all, request.hostId ?? null) }),
     );
     const images = new Map(all.map(({ name, details }) => [name, details.Image ?? null]));
     const backups = manifests
@@ -752,7 +761,7 @@ export class ContainerBackups {
     const identity = await this.dependencies.openKey(jobId, key.sealedKey);
     await this.ask(helper, COPY_COMMAND.verify, { folder, identity, files: manifest.files });
     const { copyError } = await this.ask<{ copyError: string | null }>(helper, COPY_COMMAND.finish, {
-      parent: backupFolderName(manifest.target),
+      parent: posix.dirname(folder),
       unfinished: folder,
       manifest: { ...manifest, seal: manifestSeal(manifest, identity) },
       key: key.sealedKey,
@@ -775,7 +784,7 @@ export class ContainerBackups {
       throw new Refused(BACKUP_TEXT.nothing);
     }
     const id = backupId(this.clock());
-    const folder = `${backupFolderName(details.target)}/${CONTAINER_BACKUP.unfinishedPrefix}${id}`;
+    const folder = unfinishedFolder(details.target, details.hostId ?? null, id);
     const mounts = plan.mounts;
     return this.withHelper(mounts, details, async (helper) => {
       let record = await this.journal({ id: jobId, kind: "backup", phase: "stopped", stopped: [] });
@@ -952,7 +961,8 @@ export class ContainerBackups {
   ) {
     const { dependencies } = this;
     const restoreId = details.restoreId!;
-    const folders = this.foldersFor(details.target, all);
+    const hostId = details.hostId ?? null;
+    const folders = this.foldersFor(details.target, all, hostId);
     const found = await this.withHelper([], details, async (helper) => {
       for (const parent of folders) {
         const read = await this.ask<{ manifest: BackupManifest; key: string }>(helper, COPY_COMMAND.read, {
@@ -967,7 +977,9 @@ export class ContainerBackups {
     if (manifest.format !== CONTAINER_BACKUP.format) throw new Refused(BACKUP_TEXT.notSealed);
     const identity = await dependencies.openKey(jobId, found.key);
     // A sound manifest moved from another backup is still not this one.
-    const isThisBackup = manifest.id === restoreId && folder === `${backupFolderName(manifest.target)}/${restoreId}`;
+    const isThisBackup =
+      manifest.id === restoreId &&
+      foldersOf(manifest.target, hostId).some((parent) => folder === `${parent}/${restoreId}`);
     if (!manifestSealMatches(manifest, identity) || !isThisBackup) throw new Refused(BACKUP_TEXT.sealBroken);
     // A member restored from its stack's backup comes back alone.
     const wanted = manifest.members.filter(
@@ -1037,6 +1049,7 @@ export class ContainerBackups {
       };
       let written = halfWritten;
       const safetyId = backupId(this.clock() + 1000);
+      const safetyFolder = unfinishedFolder(details.target, hostId, safetyId);
       // Set once there is one to go back to: this restore's own copy, for its result to name.
       let recovery: { recoveryBackupId?: string } = {};
       try {
@@ -1044,7 +1057,6 @@ export class ContainerBackups {
           record = await this.journal({ ...record, stopped: [...record.stopped, one] });
         });
         // The safety copy is of everything about to change, as files: its server is stopped, so that is exact.
-        const safetyFolder = `${backupFolderName(details.target)}/${CONTAINER_BACKUP.unfinishedPrefix}${safetyId}`;
         const takeSafetyCopy = async () => {
           const copy = await this.write(
             jobId,
@@ -1164,9 +1176,7 @@ export class ContainerBackups {
       } catch (error) {
         const reason = describeError(error);
         if (!written) {
-          await this.ask(helper, COPY_COMMAND.discard, {
-            folder: `${backupFolderName(details.target)}/${CONTAINER_BACKUP.unfinishedPrefix}${safetyId}`,
-          }).catch(() => undefined);
+          await this.ask(helper, COPY_COMMAND.discard, { folder: safetyFolder }).catch(() => undefined);
           const failed = await startRest();
           const notes = [
             BACKUP_TEXT.restoreRefused(reason),
@@ -1217,7 +1227,7 @@ export class ContainerBackups {
   ) {
     if ((await this.quiesce(writers)).length > 0) throw new Error(BACKUP_TEXT.notQuiet);
     const identity = await this.dependencies.openKey(jobId, key.sealedKey);
-    const parent = safetyFolder.split("/")[0]!;
+    const parent = posix.dirname(safetyFolder);
     for (const member of safety.members) {
       for (const mount of member.mounts) {
         const index = mounts.findIndex(({ source, type }) => source === mount.source && type === mount.type);

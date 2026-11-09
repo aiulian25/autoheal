@@ -22,6 +22,7 @@ import { api } from "../api-client.js";
 import { ErrorNotice } from "../components/common.js";
 import { Icon } from "../components/icons.js";
 import { SSH_SETUP, TEXT } from "../constants.js";
+import { timeOfDay } from "../format.js";
 import { hostsQuery, settingsQuery, sshKeysQuery } from "../queries.js";
 import { CommandBlock, DockerFound, KeySetup } from "./ssh-setup.js";
 
@@ -339,7 +340,7 @@ function SshForm({
   );
 }
 
-/** With a runner: its install command, then the wait until it joins. */
+/** With a runner: its install command, then the wait until it joins, and a new command should its code expire first. */
 function RunnerForm({
   header,
   label,
@@ -372,9 +373,19 @@ function RunnerForm({
       await queryClient.invalidateQueries({ queryKey: settingsQuery.queryKey });
     },
   });
-  const added = add.data;
+  // The same host, address and folder: only the code is new.
+  const renew = useMutation({
+    mutationFn: (hostId: string) =>
+      api<EnrolledHostView>("POST", apiPath(API_ROUTES.hostJoinCode, { hostId }), {
+        address: add.variables,
+        ...(isNas ? { nasFolder } : {}),
+      }),
+  });
+  const added = renew.data ?? add.data;
   const arrived =
     added !== undefined && hosts.some((host) => host.id === added.host.id && host.state === HOST_STATE.online);
+  // Read again as the host list refreshes, so a code that runs out while this waits says so.
+  const expired = added !== undefined && !arrived && Date.now() >= added.joinCodeExpiresAt;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     add.mutate(String(new FormData(event.currentTarget).get("address") ?? ""));
@@ -419,8 +430,19 @@ function RunnerForm({
               <p className="small muted">{joined.nasCopyPut(nasFolder)}</p>
             </>
           )}
-          <p className="small muted">{isNas ? joined.nasPaste : text.paste(added.host.label)}</p>
-          <CommandBlock command={added.installCommand} />
+          {!expired && (
+            <>
+              <p className="small muted">{isNas ? joined.nasPaste : text.paste(added.host.label)}</p>
+              <CommandBlock command={added.installCommand} />
+            </>
+          )}
+          {!arrived && (
+            <p className="small muted">
+              {expired
+                ? joined.expired(timeOfDay(added.joinCodeExpiresAt))
+                : joined.worksUntil(timeOfDay(added.joinCodeExpiresAt))}
+            </p>
+          )}
           <div className={arrived ? "connect-host-result good" : "connect-host-result"} role="status">
             <strong>{arrived ? joined.connected(added.host.label) : joined.waiting(added.host.label)}</strong>
             {arrived && (
@@ -436,11 +458,21 @@ function RunnerForm({
           </div>
         </>
       )}
-      <ErrorNotice error={settings.error ?? add.error} />
+      <ErrorNotice error={settings.error ?? add.error ?? renew.error} />
       <Footer>
         {!arrived && (
           <button type="button" className="quiet" onClick={onCancel}>
             {text.cancel}
+          </button>
+        )}
+        {expired && (
+          <button
+            type="button"
+            className="primary"
+            disabled={renew.isPending}
+            onClick={() => renew.mutate(added.host.id)}
+          >
+            {joined.makeAgain}
           </button>
         )}
         {added === undefined && (

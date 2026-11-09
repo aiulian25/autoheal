@@ -8,6 +8,7 @@ import { NOTIFICATION_DELIVERY_ROUTES, type NotificationEventView } from "./noti
 import { DIAGNOSTIC_ROUTES } from "./diagnostics.js";
 import type { SshHostSettings } from "./ssh-hosts.js";
 import {
+  IGNORE_EVERY_VERSION,
   RESTART_CHOICE,
   TASK_LABEL,
   TASK_RESOURCE,
@@ -78,6 +79,7 @@ import type {
   PublishedPort,
   RecoveryHold,
   RestartWait,
+  TrimmableHeartbeatPart,
   UnusedImage,
   UpdateProgress,
 } from "./protocol.js";
@@ -138,6 +140,8 @@ export const API_ROUTES = {
   hosts: "/api/hosts",
   host: "/api/hosts/:hostId",
   hostRevoke: "/api/hosts/:hostId/revoke",
+  // A new join code for a runner host: its runner joins again with it, as the same host.
+  hostJoinCode: "/api/hosts/:hostId/join-code",
   // The runner on the dashboard's own machine, which joins through the volume both share: revoked or not.
   localHost: "/api/hosts/local",
   localHostReenroll: "/api/hosts/local/reenroll",
@@ -196,6 +200,8 @@ export const API_ROUTES = {
   hostProbe: "/api/inventory/hosts/:hostId/probes/:probeId",
   // The images no container on a host uses, and the last removal of some of them.
   hostImages: "/api/inventory/hosts/:hostId/images",
+  // Newer versions a person ignores: one version, or every new version of a container.
+  hostIgnoredVersions: "/api/inventory/hosts/:hostId/ignored-versions",
   hostNetworks: "/api/inventory/hosts/:hostId/networks",
   hostVolumes: "/api/inventory/hosts/:hostId/volumes",
   hostVolumeLook: "/api/inventory/hosts/:hostId/volumes/look",
@@ -421,6 +427,10 @@ export const API_ERRORS = {
   // Only a revoked runner on the dashboard's own machine can be added again from the dashboard.
   notLocalRunner: "not_local_runner",
   unknownRunner: "unknown_runner",
+  // A join code works once, within an hour of being made; one used already, or expired, opens nothing.
+  joinCodeRefused: "join_code_refused",
+  // Join codes are for a runner container's host reached over the network: not one over SSH, nor this machine.
+  notRunnerHost: "not_runner_host",
   incidentNotFound: "incident_not_found",
   notAwaitingApproval: "not_awaiting_approval",
   invalidTarget: "invalid_target",
@@ -432,6 +442,12 @@ export const API_ERRORS = {
   agentCannotTake: "agent_cannot_take",
   // The Ollama agent takes updates, a host's packages and escalated incidents, on hosts out of dry-run.
   notDispatchable: "not_dispatchable",
+  // A newer version is moved by changing the tag in the Compose files a container was started from.
+  notFromCompose: "not_from_compose",
+  // A database's new major version needs a dump and a restore, not a new tag.
+  databaseNewMajor: "database_new_major",
+  noNewerVersion: "no_newer_version",
+  runnerCannotChangeTags: "runner_cannot_change_tags",
   containerNotFound: "container_not_found",
   restartResetUnsupported: "restart_reset_unsupported",
   resultConflict: "result_conflict",
@@ -658,6 +674,7 @@ export interface HostHealthView {
   address?: string | null;
   gpuNotGiven?: boolean;
   cpuTemperatures?: { label: string; celsius: number }[];
+  ntpActive?: boolean | null;
 }
 
 // Live stats as sampled by a runner, stamped with when they arrived. Histories run oldest first.
@@ -677,6 +694,8 @@ export interface ContainerUpdateView {
   provenance?: ImageProvenance | null;
   // A newer version's tag than the one it runs (1.2.0 → 1.3.0); null when none is out, or its tag is no version.
   newerTag?: string | null;
+  // The version a person ignores, or IGNORE_EVERY_VERSION for every new one; null when none is ignored.
+  ignored?: string | null;
 }
 
 /** An SSH host's session: where it is, since when, and why when it is not connected. */
@@ -760,6 +779,17 @@ export interface HostView {
   restartBudget: Record<string, number>;
   // Why its runner restarts nothing on its own just now; null or absent while it may.
   recoveryHold?: RecoveryHold | null;
+  // How far its clock is from the control plane's, in seconds (ahead is positive), while that pauses its runner's
+  // automatic actions; null or absent otherwise.
+  clockSkewSeconds?: number | null;
+  // How far its clock is from the control plane's, in seconds (ahead is positive), as its last full report found it,
+  // whether or not that pauses anything; null or absent while it does not report, and when its runner could not tell.
+  clockOffsetSeconds?: number | null;
+  // When the containers shown for it were reported, while its runner says Docker could not list them since; null or
+  // absent while they are current.
+  containersStaleSince?: number | null;
+  // What its latest report left out to fit, shown as last reported; null or absent when it left out nothing.
+  reportTrimmed?: TrimmableHeartbeatPart[] | null;
   // When each container's used-up restarts free again and its wait ends; null from a runner before it, which
   // takes no reset.
   restartWait?: Record<string, RestartWait> | null;
@@ -770,6 +800,8 @@ export interface HostView {
   // Whether its .env lets an admin open a shell on the host itself; null or absent from a runner that cannot.
   hostTerminal?: boolean | null;
   hostDeploy?: boolean | null;
+  // Whether its runner can move a container to a newer tag by its Compose files, as its .env allows.
+  tagChanges?: boolean;
   // From the runner's latest report; null until it has sent one.
   health: HostHealthView | null;
   // The latest live stats; null when none arrived lately.
@@ -804,6 +836,8 @@ export interface ContainerView {
   link: string | null;
   // The version its image's labels name; null when they name none.
   version: string | null;
+  // Where its image's code lives, as its labels say; null when they name none, and from a runner from before it.
+  source: string | null;
   // What it publishes on its host; null from a runner from before ports were reported.
   ports: PublishedPort[] | null;
   // On the host's own network it publishes nothing: it uses the host's ports as they are.
@@ -912,10 +946,16 @@ export type ContainerTimelineEntry =
   | { kind: typeof TIMELINE_ENTRY.task; at: number; task: TimelineTaskView; activity: TaskActivityView }
   | { kind: typeof TIMELINE_ENTRY.notification; at: number; notification: NotificationEventView };
 
+/** An image no container uses, and since when: an update's kept image, from the moment Autoheal set it aside. */
+export interface OldImageView extends UnusedImage {
+  // When its host first reported it unused; null for one already unused before the dashboard noted it.
+  unusedSince: number | null;
+}
+
 /** The images no container on a host uses, to remove one by one, the ticked ones, or all at once. */
 export interface HostImagesView {
-  // Null until the host's runner reports them: runners from before this don't.
-  images: UnusedImage[] | null;
+  // Null until the host's runner reports them: runners from before this don't. Most recently left unused first.
+  images: OldImageView[] | null;
   lastRemoval: JobView | null;
 }
 
@@ -985,6 +1025,8 @@ export interface AgentDispatchRequest {
   updates: string[];
   packages: { hostId: string; names: string[] }[];
   incidents: string[];
+  // Newer versions, each moved to by changing its tag where the container's Compose files write it.
+  tags: { hostId: string; container: string; tag: string }[];
 }
 
 /** How many of each the agent took. */
@@ -992,15 +1034,30 @@ export interface AgentDispatchView {
   updates: number;
   packages: number;
   incidents: number;
+  tags: number;
 }
 
 /** A newer image waits behind its tag, and its label lets someone update it. */
 export const hasUpdate = (container: ContainerView) =>
   container.update.status === UPDATE_STATUS.available && container.update.policy !== UPDATE_POLICY.off;
 
-/** A newer version than the tag it runs is out, unless its label turns updates off. */
+/** Whether a person ignores the newer version that is out: that one, or every new version of the container. */
+export const ignoresNewerVersion = ({ update }: Pick<ContainerView, "update">) =>
+  update.ignored === IGNORE_EVERY_VERSION || (update.ignored != null && update.ignored === update.newerTag);
+
+/** A newer version than the tag it runs is out, unless its label turns updates off or a person ignores it. */
+/** Whether a container's new images are Autoheal's to apply without asking: if Ollama calls one safe, or each one. */
+export const updatesWithoutAsking = (container: ContainerView) =>
+  container.update.policy === UPDATE_POLICY.auto || container.update.policy === UPDATE_POLICY.always;
+
 export const hasNewerVersion = (container: ContainerView) =>
-  container.update.newerTag != null && container.update.policy !== UPDATE_POLICY.off;
+  container.update.newerTag != null && container.update.policy !== UPDATE_POLICY.off && !ignoresNewerVersion(container);
+
+/** What a person ignores of one container's newer versions: a tag, every one, or null to stop ignoring. */
+export interface IgnoredVersionChange {
+  container: string;
+  version: string | null;
+}
 
 export interface UpdateVersions {
   from: string;
@@ -1228,8 +1285,11 @@ export interface SshHostDetailsView {
 
 export interface EnrolledHostView {
   host: HostView;
-  // Shown once: it holds the runner's token, of which only a hash is stored.
+  // Shown once, of which only a hash is stored: it works once, until joinCodeExpiresAt, traded for the runner's token.
   joinCode: string;
+  joinCodeExpiresAt: number;
+  // For a runner already installed: in its folder, it puts this code in its .env and starts it again.
+  rejoinCommand: string;
   // Null unless the host is a NAS that cannot download the image: what makes the file to copy to it first.
   imageCopyCommand: string | null;
   // What to paste on the new host: its compose file, its .env with the join code, and the start.
@@ -1591,6 +1651,8 @@ export interface JobView {
   recoveryBackupId: string | null;
   // An update or a recreate on its way: what it is doing now, the new image's layers as they come.
   progress: UpdateProgress | null;
+  // The Compose project a stack job works on, whose containers its rows show at work; null for every other job.
+  stack: string | null;
 }
 
 export interface TaskDetailView extends TaskSummaryView {
@@ -1773,6 +1835,8 @@ export interface LifecycleView {
   // Null when no date was announced yet.
   securityUntil: string | null;
   extendedUntil: string | null;
+  // The day the dates were read from endoflife.date: they are a copy, refreshed by hand.
+  datesAsOf: string;
 }
 
 export interface HostUpdateSettingsView {

@@ -78,7 +78,7 @@ export class ContainerBackupService {
   ask(actor: Actor, hostId: string, kind: BackupRequest["kind"], target: BackupTarget) {
     this.access.requireHostAdmin(hostId, actor.userId);
     const { directory } = this.settings();
-    return this.relay.ask(hostId, { id: randomUUID(), kind, target, directory });
+    return this.relay.ask(hostId, { id: randomUUID(), kind, target, directory, hostId });
   }
 
   private async newKey(hostId: string): Promise<BackupJobDetails["key"]> {
@@ -103,6 +103,7 @@ export class ContainerBackupService {
       include: [...include],
       key: await this.newKey(hostId),
       restoreId,
+      hostId,
     };
     return this.jobsService.request(
       { kind: "user", actor },
@@ -167,5 +168,9 @@ export class ContainerBackupService {
 
   reset() {
     this.relay.reset();
+  }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
   }
 }

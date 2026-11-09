@@ -72,6 +72,8 @@ export interface HostFiles {
   modifiedAt(path: string): Promise<number | null>;
   filesystem(path: string): Promise<FilesystemSpace | null>;
   system(): Promise<HostSystem>;
+  // How far the host's clock is ahead of this machine's, in milliseconds; null when it cannot be read.
+  clockOffset(): Promise<number | null>;
 }
 
 async function localFilesystem(path: string): Promise<FilesystemSpace | null> {
@@ -103,6 +105,8 @@ export const LOCAL_HOST_FILES: HostFiles = {
   filesystem: localFilesystem,
   // The kernel is the host's own even inside a container: these are the host's CPUs, kernel and architecture.
   system: async () => ({ cpuCount: Math.max(1, cpus().length), kernel: release(), architecture: machine() }),
+  // And so is its wall clock: a container has no clock of its own.
+  clockOffset: async () => 0,
 };
 
 /** A file the caller cannot do without: its absence is an error, not a gap. */

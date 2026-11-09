@@ -145,6 +145,37 @@ describe("replay", () => {
     expect(run.results.filter((result) => result.error === null)).toHaveLength(3);
   });
 
+  it("asks the Ollama that decides for the incidents' host, with the model in use there", async () => {
+    const watching = await FakeOllama.start();
+    watching.models = { "qwen3:30b-a3b": {} };
+    watching.handler = () => answer({ action: "restart", target: "x", diagnosis: "the host's own Ollama" });
+    try {
+      const added = await admin.post(API_ROUTES.ollamaServers, {
+        name: "Rowan",
+        url: watching.url(),
+        model: "qwen3:30b-a3b",
+        contextTokens: 32_768,
+      });
+      const hostId = (await admin.get(API_ROUTES.hosts)).json<{ id: string }[]>()[0]!.id;
+      const assigned = await admin.put(
+        apiPath(API_ROUTES.ollamaServerHosts, { serverId: added.json<{ id: string }>().id }),
+        {
+          hostIds: [hostId],
+        },
+      );
+      expect(assigned.statusCode, assigned.body).toBeLessThan(300);
+      const asked = ollama.requests.length;
+
+      const run = await startReplay([]);
+      expect(run).toMatchObject({ status: "finished", incidentCount: 3, modelName: "qwen3:30b-a3b" });
+      expect(run.results.map((result) => result.replayDiagnosis)).toEqual(Array(3).fill("the host's own Ollama"));
+      expect(watching.requests).toHaveLength(3);
+      expect(ollama.requests).toHaveLength(asked);
+    } finally {
+      await watching.close();
+    }
+  });
+
   it("asks another model the same Ollama has, over as many recent incidents as asked, and refuses one it lacks", async () => {
     ollama.models["qwen3:30b-a3b"] = { capabilities: ["completion", "thinking"] };
     const before = ollama.requests.length;

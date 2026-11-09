@@ -1,0 +1,425 @@
+/* --- Settings: the sections down the side, each one's cards beside them ----------------------------- */
+
+.settings-page {
+  gap: 0;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 28px;
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .settings-layout {
+    grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+@media (min-width: 64rem) {
+  .settings-nav {
+    position: sticky;
+    top: 24px;
+  }
+}
+
+.settings-nav a {
+  display: flex;
+  align-items: center;
+  height: var(--settings-nav-item-height);
+  padding: 0 12px;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.settings-nav a:hover {
+  color: var(--text);
+}
+
+.settings-nav a[aria-current="true"] {
+  background: var(--nav-active);
+  color: var(--nav-active-text);
+  font-weight: var(--weight-medium);
+}
+
+.settings-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 40.5px;
+  min-width: 0;
+}
+
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-margin-top: 24px;
+}
+
+.settings-block > h2,
+.settings-block > .section-head h2 {
+  font-size: var(--text-figure);
+}
+
+.settings-lede {
+  margin-top: -8.5px;
+  margin-bottom: -1.5px;
+  color: var(--text-muted);
+}
+
+.settings-card {
+  gap: 0;
+  padding: 20px;
+}
+
+.settings-card.dashed {
+  border-style: dashed;
+  border-color: var(--control-border);
+}
+
+.settings-card h3 {
+  font-size: var(--text-card-title);
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--badge-height);
+}
+
+.settings-card-text {
+  margin-top: 15.5px;
+  color: var(--text-muted);
+}
+
+.settings-card-head .small {
+  font-size: var(--text-badge);
+}
+
+.settings-facts {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px 0;
+  margin: 14px 0 0;
+  font-size: var(--text-small);
+}
+
+.settings-facts dt {
+  color: var(--text-muted);
+}
+
+.settings-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-facts.spread {
+  grid-template-columns: 1fr auto;
+  gap: 12px 0;
+  font-size: var(--text-body);
+}
+
+/* Something on the way is not safe: said in the warm tone of a decision waiting. */
+.settings-warning {
+  display: flex;
+  gap: 11px;
+  margin-top: 15px;
+  padding: 12px 16px 12px 14px;
+  background: var(--warm-banner);
+  border: var(--border-width) solid var(--panel-border);
+  border-radius: var(--radius);
+  color: var(--warm-text);
+  font-size: var(--text-small);
+}
+
+.settings-warning .icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: var(--warning);
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  margin-top: 12.5px;
+}
+
+.settings-form label {
+  gap: 5px;
+}
+
+.settings-form .hint {
+  margin-top: 0;
+}
+
+/* Buttons here are a touch narrower than elsewhere, as drawn. */
+.settings-blocks button:not(.link, .quiet) {
+  padding-inline: 14px;
+}
+
+.settings-form button {
+  align-self: flex-start;
+}
+
+.channels {
+  container-type: inline-size;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+}
+
+.channel + .channel {
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.channel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 20px;
+}
+
+.channel > :last-child:not(.channel-row) {
+  margin-bottom: 18px;
+}
+
+.channel-row {
+  --channel-dot: 9px;
+  --channel-gap: 18px;
+  display: flex;
+  align-items: center;
+  gap: var(--channel-gap);
+  min-height: 80px;
+}
+
+.channel-row > .status-dot {
+  width: var(--channel-dot);
+  height: var(--channel-dot);
+}
+
+/* A long address breaks within its column rather than running under the buttons. */
+.channel-what {
+  display: flex;
+  flex-direction: column;
+  margin-right: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* In a narrow list, the name and address take their own line, and the buttons go under them, lined up with the name. */
+@container (max-width: 36rem) {
+  .channel-row {
+    flex-wrap: wrap;
+    row-gap: 12px;
+    padding-block: 16px;
+  }
+
+  .channel-what {
+    flex-basis: calc(100% - var(--channel-dot) - var(--channel-gap));
+  }
+
+  .channel-row > :last-child:not(.channel-what) {
+    margin-left: calc(var(--channel-dot) + var(--channel-gap));
+  }
+}
+
+.channel-what strong {
+  font-size: var(--text-large);
+}
+
+.channel-what .muted:not(.mono) {
+  font-size: var(--text-small);
+}
+
+.channel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-actions button.quiet {
+  padding-inline: 12px;
+}
+
+.window-times {
+  display: flex;
+  gap: 12px;
+  margin-top: 11px;
+}
+
+.window-times input {
+  width: 131px;
+}
+
+/* The tick sits a little apart from the times, and leaves room under it, as drawn. */
+label.security-fixes {
+  min-height: 0;
+  margin-top: 26.5px;
+}
+
+.settings-card:has(.security-fixes) {
+  padding-bottom: 30.5px;
+}
+
+.settings-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 18px 20px;
+}
+
+.settings-row-what {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-row-what strong {
+  font-size: var(--text-large);
+}
+
+.settings-row.offbox {
+  background: var(--warm-banner);
+  border-color: var(--panel-border);
+  color: var(--warm-text);
+}
+
+.settings-row.offbox button {
+  background: var(--warning-wash);
+  border-color: var(--warning-ring);
+  color: var(--warm-strong);
+}
+
+.offbox-how {
+  flex-basis: 100%;
+  margin-bottom: 16px;
+}
+
+.keys-card {
+  gap: 0;
+  padding: 0;
+}
+
+.keys-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px 10px;
+}
+
+.keys-head h3 {
+  font-size: var(--text-card-title);
+}
+
+.keys-created {
+  margin: 0 20px 18px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 17px;
+  min-height: 68px;
+  padding: 0 20px;
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.key-row .mono {
+  margin-right: auto;
+  font-weight: var(--weight-medium);
+}
+
+/* A fingerprint has nowhere to break: at a phone's width it wraps inside its row rather than widening the page. */
+.key-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.key-row button.quiet {
+  padding-inline: 12px;
+}
+
+/* How the person's own request came in, with the proxy to trust beside it. */
+.key-row .arrival {
+  margin-right: auto;
+  padding-block: 12px;
+}
+
+.key-form {
+  padding: 15px 20px 14.5px;
+  background: var(--surface-muted);
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.key-form label {
+  gap: 5px;
+}
+
+/* The name, what the key reads, and Create: on a phone they wrap rather than run off the screen. */
+.key-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.key-form-row input {
+  width: min(240px, 100%);
+}
+
+/* What the .env sets, three to a row, each in its own cell. */
+.system-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+@media (min-width: 64rem) {
+  .system-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.system-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3.5px;
+  min-height: 42px;
+  padding: 6px 10px;
+  border-right: var(--border-width) solid var(--border);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.system-grid dt {
+  font-size: var(--text-badge);
+  color: var(--text-muted);
+}
+
+.system-grid dd {
+  margin: 0;
+  font-size: var(--text-large);
+  overflow-wrap: anywhere;
+}
+
+.system-grid dd.mono {
+  font-size: var(--text-body);
+}

@@ -2,14 +2,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API_ROUTES, apiPath, type ContainerView, type JobView } from "../../../src/shared/api.js";
 import {
+  ROLLOUT_LIMITS,
   ROLLOUT_ROUTES,
+  ROLLOUT_STATUS,
   rolloutCreateSchema,
   type RolloutCreate,
   type RolloutView,
 } from "../../../src/shared/rollouts.js";
 import { operationPreviewAnswerSchema, type OperationImpactView } from "../../../src/shared/topology.js";
 import { api, ReadableError } from "../api-client.js";
+import { ROLLOUT_FORM, TEXT } from "../constants.js";
 import { ErrorNotice } from "./common.js";
+
+const text = TEXT.rollout;
+// A plan still moving, which a person may hold.
+const HOLDABLE: readonly string[] = [ROLLOUT_STATUS.updating, ROLLOUT_STATUS.observing, ROLLOUT_STATUS.ready];
 import { UpdateStream } from "./update-stream.js";
 function RolloutProgress({ plan }: { plan: RolloutView }) {
   const jobId = plan.targets[plan.current]?.jobId;
@@ -37,7 +44,7 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
     { key: "", targetReference: "" },
     { key: "", targetReference: "" },
   ]);
-  const [minutes, setMinutes] = useState(5);
+  const [minutes, setMinutes] = useState<number>(ROLLOUT_FORM.observeMinutes);
   const [isolated, setIsolated] = useState(false);
   const [serviceRequired, setServiceRequired] = useState(true);
   const [verified, setVerified] = useState<Record<string, number>>({});
@@ -56,7 +63,7 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
     mutationFn: async () => {
       const selected = targets.map((target) => {
         const container = containers.data?.find((value) => `${value.hostId}/${value.name}` === target.key);
-        if (!container) throw new ReadableError("Select every rollout target.");
+        if (!container) throw new ReadableError(text.selectEvery);
         return { hostId: container.hostId, containerName: container.name, targetReference: target.targetReference };
       });
       const views: OperationImpactView[] = [];
@@ -74,9 +81,7 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
           !answer.data.rolloutSafety.platform ||
           !answer.data.rolloutSafety.sourceContainerId
         )
-          throw new ReadableError(
-            "Every target needs a fresh stateless and platform proof. Writable or unknown data cannot use this rollout.",
-          );
+          throw new ReadableError(text.needsProof);
         views.push({ ...view, answer: answer.data });
       }
       const body = rolloutCreateSchema.parse({
@@ -107,26 +112,17 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
   const editing = !review.data && !review.isPending && !submit.isPending;
   return (
     <details className="card" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Staged cross-host rollout</summary>
+      <summary>{text.title}</summary>
       {open && (
         <>
-          <p>
-            Update one canary, observe it, then explicitly promote each follower. At most 12 targets across 8 hosts;
-            pulls and updates run one at a time. Each selected digest stays pinned: later mutable-tag update checks stop
-            for these containers.
-          </p>
-          <p className="notice warning">
-            Only verified stateless single-container affected sets are supported; namespace groups and shared writers
-            require a separate update. Local dependency reports cannot prove external database or network storage
-            safety. Successful startup commits the old rollback artifacts; later failures require manual recovery. No
-            automatic rollback is promised during observation.
-          </p>
+          <p>{text.explanation(ROLLOUT_LIMITS.targets, ROLLOUT_LIMITS.hosts)}</p>
+          <p className="notice warning">{text.limits}</p>
           <fieldset disabled={!editing}>
-            <legend>Ordered cohorts — first target is the canary</legend>
+            <legend>{text.cohorts}</legend>
             {targets.map((target, index) => (
               <div className="stack" key={index}>
                 <label>
-                  Target {index + 1}
+                  {text.target(index + 1)}
                   <select
                     value={target.key}
                     onChange={(event) =>
@@ -135,7 +131,7 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                       )
                     }
                   >
-                    <option value="">Choose a container</option>
+                    <option value="">{text.chooseContainer}</option>
                     {[...(containers.data ?? [])]
                       .sort((a, b) => Number(b.hostId === hostId) - Number(a.hostId === hostId))
                       .map((container) => (
@@ -143,13 +139,15 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                           key={`${container.hostId}/${container.name}`}
                           value={`${container.hostId}/${container.name}`}
                         >
-                          {container.hostLabel} · {container.name}
+                          {container.hostLabel}
+                          {TEXT.separator}
+                          {container.name}
                         </option>
                       ))}
                   </select>
                 </label>
                 <label>
-                  Reviewed immutable image (repository@sha256:…)
+                  {text.image}
                   <input
                     value={target.targetReference}
                     onChange={(event) =>
@@ -163,32 +161,31 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                 </label>
                 {targets.length > 2 && (
                   <button type="button" onClick={() => setTargets(targets.filter((_, at) => at !== index))}>
-                    Remove target {index + 1}
+                    {text.removeTarget(index + 1)}
                   </button>
                 )}
               </div>
             ))}
             <button
               type="button"
-              disabled={targets.length >= 12}
+              disabled={targets.length >= ROLLOUT_LIMITS.targets}
               onClick={() => setTargets([...targets, { key: "", targetReference: "" }])}
             >
-              Add follower
+              {text.addFollower}
             </button>
             <label>
-              Observe each cohort (minutes, 1–60)
+              {text.observe(ROLLOUT_LIMITS.observeMinutes.min, ROLLOUT_LIMITS.observeMinutes.max)}
               <input
                 type="number"
-                min={1}
-                max={60}
+                min={ROLLOUT_LIMITS.observeMinutes.min}
+                max={ROLLOUT_LIMITS.observeMinutes.max}
                 value={minutes}
                 onChange={(event) => setMinutes(Number(event.target.value))}
               />
             </label>
             <label>
-              <input type="checkbox" checked={isolated} onChange={(event) => setIsolated(event.target.checked)} /> I
-              verified external data isolation, compatible service dependencies, and that these canaries cannot write
-              incompatible shared production data.
+              <input type="checkbox" checked={isolated} onChange={(event) => setIsolated(event.target.checked)} />{" "}
+              {text.isolated}
             </label>
             <label>
               <input
@@ -196,33 +193,34 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                 checked={serviceRequired}
                 onChange={(event) => setServiceRequired(event.target.checked)}
               />{" "}
-              Require explicit service verification after each observation
+              {text.serviceRequired}
             </label>
             <button type="button" disabled={!isolated} onClick={() => review.mutate()}>
-              Review rollout
+              {text.review}
             </button>
           </fieldset>
           {review.data && (
             <section className="notice warning">
-              <h3>Confirm immutable plan</h3>
+              <h3>{text.confirm}</h3>
               <ol>
                 {review.data.views.map((view, index) => (
                   <li key={view.id}>
-                    {view.containerName}: {review.data!.body.targets[index]!.targetReference}
+                    {text.plannedTarget(view.containerName, review.data!.body.targets[index]!.targetReference)}
                     <br />
-                    Affected: {view.answer.ok ? view.answer.members.map((member) => member.name).join(", ") : "unknown"}
+                    {text.affected(
+                      view.answer.ok
+                        ? view.answer.members.map((member) => member.name).join(TEXT.listComma)
+                        : text.unknown,
+                    )}
                   </li>
                 ))}
               </ol>
-              <p>
-                The runner will reject changed source IDs, affected sets, platform, writable data, permission, or
-                maintenance state.
-              </p>
+              <p>{text.runnerRejects}</p>
               <button type="button" disabled={submit.isPending} onClick={() => submit.mutate(review.data!.body)}>
-                Start canary
+                {text.start}
               </button>
               <button type="button" onClick={() => review.reset()}>
-                Cancel review
+                {text.cancel}
               </button>
             </section>
           )}
@@ -231,17 +229,19 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
           ))}
           {plans.data?.map((plan) => (
             <section key={plan.id} className="card">
-              <h3>Rollout · {plan.status}</h3>
+              <h3>{text.plan(plan.status)}</h3>
               <p role="status">
-                {plan.targets.length > 0 &&
-                  `Cohort ${plan.current + 1}/${plan.targets.length} · ${plan.samples} distinct host reports · `}
+                {plan.targets.length > 0 && text.cohort(plan.current + 1, plan.targets.length, plan.samples)}
                 {plan.reason}
               </p>
               <ol>
                 {plan.targets.map((target) => (
                   <li key={`${target.hostId}/${target.containerName}`}>
-                    {target.containerName} · <span className="mono">{target.targetReference}</span>
-                    {target.jobId ? " · update queued/recorded" : " · awaiting promotion"}
+                    {target.containerName}
+                    {TEXT.separator}
+                    <span className="mono">{target.targetReference}</span>
+                    {TEXT.separator}
+                    {target.jobId ? text.queued : text.awaiting}
                   </li>
                 ))}
               </ol>
@@ -256,7 +256,7 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                         setVerified({ ...verified, [plan.id]: event.target.checked ? plan.current : -1 })
                       }
                     />{" "}
-                    I verified the service for this cohort.
+                    {text.verified}
                   </label>
                   <button
                     type="button"
@@ -265,17 +265,17 @@ export function RolloutPlan({ hostId }: { hostId: string }) {
                     }
                     onClick={() => action.mutate({ id: plan.id, kind: "promote", cohort: plan.current })}
                   >
-                    {plan.current === plan.targets.length - 1 ? "Accept final cohort" : "Promote next cohort"}
+                    {plan.current === plan.targets.length - 1 ? text.accept : text.promote}
                   </button>
                 </>
               )}
-              {["updating", "observing", "ready"].includes(plan.status) && (
+              {HOLDABLE.includes(plan.status) && (
                 <button
                   type="button"
                   disabled={action.isPending}
                   onClick={() => action.mutate({ id: plan.id, kind: "hold", cohort: plan.current })}
                 >
-                  Hold rollout
+                  {text.hold}
                 </button>
               )}
             </section>

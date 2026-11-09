@@ -35,6 +35,20 @@ export function parseDiskFree(output: string): FilesystemSpace | null {
 }
 
 /**
+ * The host's clock as its `date` gives it, in milliseconds since the epoch. A date without %N gives whole seconds,
+ * which is read as the middle of its second.
+ */
+export function clockReadingOf(output: string): number | null {
+  const reading = SSH_HOST_FILES.clockReading.exec(output.trim());
+  if (reading === null) {
+    return null;
+  }
+  const withinSecond =
+    reading[2] === undefined ? MILLISECONDS_PER_SECOND / 2 : Number(`0.${reading[2]}`) * MILLISECONDS_PER_SECOND;
+  return Number(reading[1]) * MILLISECONDS_PER_SECOND + withinSecond;
+}
+
+/**
  * An SSH host's files, read over its session as the host's user: by SFTP, one channel kept open for every read,
  * and a filesystem's space by `df`. What the user cannot read reads as missing, as a missing file would.
  */
@@ -134,6 +148,17 @@ export class SshHostFiles implements HostFiles {
       kernel: kernel?.trim() ?? "",
       architecture,
     };
+  }
+
+  // Its `date` set against this machine's clock halfway through the asking: it answered somewhere in that round trip.
+  async clockOffset(): Promise<number | null> {
+    const askedAt = Date.now();
+    const result = await this.session
+      .exec(SSH_HOST_FILES.clockCommand, SSH_HOST_FILES.commandTimeoutMilliseconds)
+      .catch(() => null);
+    const answeredAt = Date.now();
+    const reading = result === null || result.exitCode !== 0 ? null : clockReadingOf(result.stdout);
+    return reading === null ? null : Math.round(reading - (askedAt + answeredAt) / 2);
   }
 
   private async architectureOf(): Promise<string | null> {

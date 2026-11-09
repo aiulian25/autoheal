@@ -4,6 +4,7 @@ import { API_ROUTES, apiPath, type HostView } from "../../../src/shared/api.js";
 import { REGISTRY_CREDENTIALS } from "../../../src/shared/constants.js";
 import type { RegistryCredentialTestView, RegistryCredentialView } from "../../../src/shared/registry-credentials.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { TEXT } from "../constants.js";
 import { hostsQuery, registryCredentialsQuery } from "../queries.js";
@@ -42,6 +43,7 @@ const requestFrom = (form: FormData): CredentialRequest => ({
  */
 export function RegistryCredentialsCard() {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const credentials = useQuery(registryCredentialsQuery);
   const hosts = useQuery(hostsQuery);
   const [tested, setTested] = useState<{ id: string; answer: RegistryCredentialTestView } | null>(null);
@@ -87,7 +89,7 @@ export function RegistryCredentialsCard() {
     event.currentTarget.reset();
   };
   const confirmRemove = (credential: RegistryCredentialView) => {
-    if (window.confirm(text.removeConfirm(scopeOf(credential)))) remove.mutate(credential.id);
+    asking.confirm(text.removeConfirm(scopeOf(credential)), () => remove.mutate(credential.id));
   };
   const list = credentials.data ?? [];
   const fleet = (hosts.data ?? []).filter(({ label }) => label !== "");
@@ -155,6 +157,7 @@ export function RegistryCredentialsCard() {
           )}
         </div>
       ))}
+      {asking.question}
       <ErrorNotice error={addCredential.error ?? rotate.error ?? remove.error ?? check.error} />
       <form className="step-form" onSubmit={submit} aria-label={text.add}>
         <h4>{text.add}</h4>

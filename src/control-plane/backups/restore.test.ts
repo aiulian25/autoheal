@@ -23,11 +23,12 @@ import {
   type RestoreResultView,
 } from "../../shared/api.js";
 import { APPLICATION_BACKUP_FAILURE } from "../../shared/application-backups.js";
-import { RESTORE_UPLOAD_LIMIT_BYTES } from "../../shared/constants.js";
+import { RESTORE_UPLOAD_LIMIT_BYTES, SET_ASIDE_KEPT_MILLISECONDS } from "../../shared/constants.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
 import { AuditLog } from "../audit/audit-log.js";
 import { DatabaseHandle } from "../database/connection.js";
 import { identityMigration } from "../database/migrations/0001-identity.js";
+import { RetentionSweep } from "../database/retention-sweep.js";
 import { hosts, incidents, jobs, users, workItems } from "../database/schema.js";
 import { SecretBox } from "../database/secret-box.js";
 import { encryptBackup } from "./backup-crypto.js";
@@ -646,12 +647,13 @@ describe("restore", () => {
     controlPlane.services.databaseHandle.close();
 
     const stdout: string[] = [];
+    const now = Date.now();
     const result = await restoreOffline(
       () => new DatabaseHandle(databasePath),
       (handle) => new AuditLog(handle, (line) => stdout.push(line)),
       { databasePath, temporaryDirectory: join(databasePath, "..", "tmp"), passphrase: TEST_BACKUP_PASSPHRASE },
       backupPath,
-      Date.now(),
+      now,
     );
     expect(existsSync(result.previousKeptAt)).toBe(true);
     const restored = new DatabaseHandle(databasePath);
@@ -662,6 +664,13 @@ describe("restore", () => {
         .all()
         .map((user) => user.username),
     ).toEqual(["admin"]);
+    // The old file is kept as long as the local backups reach back, and the daily sweep lets it go after.
+    const sweptAt = (moment: number) =>
+      new RetentionSweep(restored, new AuditLog(restored, () => undefined), () => moment).sweep();
+    expect(sweptAt(now + SET_ASIDE_KEPT_MILLISECONDS)).toMatchObject({ previousDatabases: 0 });
+    expect(existsSync(result.previousKeptAt)).toBe(true);
+    expect(sweptAt(now + SET_ASIDE_KEPT_MILLISECONDS + 1)).toMatchObject({ previousDatabases: 1 });
+    expect(existsSync(result.previousKeptAt)).toBe(false);
     restored.close();
     expect(stdout.join("")).toContain("command_line");
     controlPlane = await startTestControlPlane({ databasePath: databaseFile() });

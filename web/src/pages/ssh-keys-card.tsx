@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { API_ROUTES, apiPath, type MadeSshKeyView, type SshKeyView } from "../../../src/shared/api.js";
 import { SSH_KEY } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice } from "../components/common.js";
 import { TEXT } from "../constants.js";
 import { sshKeysQuery } from "../queries.js";
@@ -14,6 +15,7 @@ const add = TEXT.ssh.add;
 /** The keys Autoheal signs in to SSH hosts with: which hosts use each, and one more given or made here. */
 export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const keys = useQuery(sshKeysQuery);
   const refresh = () => queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
   const addKey = useMutation({
@@ -49,7 +51,7 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
     event.currentTarget.reset();
   };
   const confirmRemove = (key: SshKeyView) => {
-    if (window.confirm(text.removeConfirm(key.name))) remove.mutate(key.id);
+    asking.confirm(text.removeConfirm(key.name), () => remove.mutate(key.id));
   };
   const list = keys.data ?? [];
   return (
@@ -131,6 +133,7 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
           </button>
         </span>
       </form>
+      {asking.question}
       <ErrorNotice error={keys.error ?? addKey.error ?? make.error ?? remove.error} />
     </section>
   );

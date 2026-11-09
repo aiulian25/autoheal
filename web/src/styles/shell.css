@@ -1,0 +1,268 @@
+/* --- the shell: the menu on the left, the page beside it ------------------------------------ */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--sidebar-padding) 20px;
+  background: var(--sidebar);
+  border-right: var(--border-width) solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 80px;
+  padding: 0 10px;
+  font-size: 1rem;
+  font-weight: var(--weight-strong);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand-mark {
+  width: var(--brand-mark-size);
+  height: var(--brand-mark-size);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.nav a {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.nav a:hover {
+  color: var(--text);
+}
+
+.nav a.active {
+  background: var(--nav-active);
+  color: var(--nav-active-text);
+  font-weight: var(--weight-medium);
+}
+
+.nav a.active .icon {
+  color: var(--nav-active-icon);
+}
+
+.nav .count {
+  margin-left: auto;
+}
+
+.count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 18px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--warning);
+  color: var(--on-warning);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-strong);
+}
+
+/* What Autoheal leans on, at the foot of the menu: Ollama, the notification channels, Home Assistant. */
+.connections {
+  list-style: none;
+  margin: auto 0 0;
+  padding: 0 10px var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.connections li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: auto 10px 0;
+  padding-top: 15px;
+  border-top: var(--border-width) solid var(--border);
+}
+
+.connections + .account {
+  margin-top: 0;
+}
+
+.account a {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.account button.link {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  text-decoration: underline;
+}
+
+.main {
+  padding: 14px var(--page-padding) var(--page-padding);
+  min-width: 0;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.page-header .lede {
+  margin-top: var(--space-2);
+}
+
+.lede {
+  font-size: var(--text-large);
+  color: var(--text-muted);
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+.crumbs a {
+  color: var(--text-muted);
+}
+
+.crumbs a:hover {
+  color: var(--text);
+}
+
+.centered {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--space-5);
+  padding: var(--space-4);
+}
+
+/* "Or continue with" between the password and a passkey, with a line either side. */
+.divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  border-top: var(--border-width) solid var(--border);
+}
+
+.auth-logo {
+  width: var(--auth-logo-size);
+  height: var(--auth-logo-size);
+}
+
+.panel {
+  width: 100%;
+  max-width: var(--form-width);
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Phone layout. Media queries cannot read custom properties, so this one width is written here. */
+@media (max-width: 48rem) {
+  /* minmax(0, …): the one-row menu scrolls inside itself instead of widening the page. */
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The name and the account on the first line, the menu on its own line under them. */
+  .sidebar {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-right: none;
+    border-bottom: var(--border-width) solid var(--border);
+  }
+
+  .brand {
+    height: auto;
+    padding: var(--space-2) 0;
+  }
+
+  .nav {
+    order: 1;
+    flex-basis: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .nav a {
+    white-space: nowrap;
+  }
+
+  .connections {
+    display: none;
+  }
+
+  .account {
+    margin-left: auto;
+    padding: 0;
+    gap: var(--space-3);
+    border-top: none;
+  }
+
+  .main {
+    padding: var(--space-4);
+  }
+}

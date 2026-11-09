@@ -1,0 +1,296 @@
+/* --- reboot and shut down: the buttons, their confirm in place, and the strip that follows the host ------------ */
+
+.header-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.power-actions {
+  position: relative;
+  display: flex;
+  gap: 10px;
+}
+
+.power-actions button .icon,
+.power-icon .icon {
+  width: 15px;
+  height: 15px;
+}
+
+button.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.power-confirm {
+  position: absolute;
+  top: 0;
+  right: 0;
+  /* Over the host's sticky tabs, which come after it on the page; under a terminal filling the window. */
+  z-index: 10;
+  width: min(470px, 86vw);
+  padding: 14px 16px;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.45);
+  animation: power-pop 0.25s ease-out;
+}
+
+.power-confirm p {
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.power-confirm-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.power-strip {
+  --tone: var(--warning);
+  margin: var(--space-3) 0;
+  padding: 16px 20px 14px;
+  border: var(--border-width) solid color-mix(in srgb, var(--tone) 35%, var(--border));
+  border-radius: var(--radius-large);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 9%, var(--surface)), var(--surface));
+  animation: power-slide 0.35s ease-out;
+  transition:
+    background 0.6s,
+    border-color 0.6s;
+}
+
+.power-strip.power-danger {
+  --tone: var(--danger);
+}
+
+.power-strip.power-neutral {
+  --tone: var(--text-muted);
+}
+
+.power-strip.power-blue {
+  --tone: var(--series-blue);
+}
+
+.power-strip.power-good {
+  --tone: var(--good);
+  animation: power-glow 1.6s ease-out;
+}
+
+.power-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.power-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--tone) 22%, transparent);
+  color: var(--tone);
+}
+
+.power-spin .icon {
+  animation: power-spin 1.4s linear infinite;
+}
+
+.power-clock {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.power-steps {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  margin: 14px 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.power-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  transition: color 0.4s;
+}
+
+.power-steps li.done,
+.power-steps li.active {
+  color: var(--text);
+}
+
+.power-steps li.active {
+  font-weight: var(--weight-strong);
+}
+
+.power-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  transition: all 0.4s;
+}
+
+.power-mark .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.power-steps li.done .power-mark {
+  background: var(--tone);
+  border-color: var(--tone);
+  color: var(--surface);
+}
+
+.power-steps li.active .power-mark {
+  border-color: var(--tone);
+  animation: power-ring 1.2s infinite;
+}
+
+.power-track {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--border);
+}
+
+.power-track-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--tone);
+  box-shadow: 0 0 12px var(--tone);
+  transition:
+    width 1.2s ease-in-out,
+    background 0.6s;
+}
+
+.power-seen {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+}
+
+.badge.blue {
+  color: var(--series-blue);
+  background: color-mix(in srgb, var(--series-blue) 16%, transparent);
+}
+
+.badge-moving .status-dot {
+  animation: power-blink 0.9s infinite;
+}
+
+/* Away or off: its dials stand for nothing now, and say so. */
+.power-away {
+  position: relative;
+}
+
+.power-away > :not(.power-away-note) {
+  opacity: 0.14;
+  filter: grayscale(1) blur(1.5px);
+  transition:
+    opacity 0.8s,
+    filter 0.8s;
+}
+
+.power-away-note {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  margin: 0;
+}
+
+.power-away-pulse {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: power-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes power-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+
+@keyframes power-slide {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes power-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes power-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--tone) 70%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+@keyframes power-glow {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 26px transparent;
+  }
+}
+
+@keyframes power-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes power-breathe {
+  50% {
+    opacity: 0.2;
+    transform: scale(1.7);
+  }
+}
+
+/* Asked for less motion: the steps, the colours and the words still say where it stands. */
+@media (prefers-reduced-motion: reduce) {
+  .power-strip,
+  .power-strip *,
+  .power-confirm,
+  .power-away-pulse,
+  .badge-moving .status-dot {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .header-actions {
+    flex-wrap: wrap;
+  }
+
+  .power-steps {
+    grid-auto-flow: row;
+    gap: 6px;
+  }
+}

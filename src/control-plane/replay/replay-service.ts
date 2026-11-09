@@ -6,6 +6,7 @@ import {
   PRIORITY_REPLAY,
   REPLAY_FINISHED,
   REPLAY_LIST_LIMIT,
+  REPLAY_MODEL_SEPARATOR,
   REPLAY_RUNNING,
   TARGET_REPLAY,
 } from "../../shared/constants.js";
@@ -13,13 +14,12 @@ import { parseDecision } from "../../shared/decision.js";
 import { describeError } from "../../shared/errors.js";
 import { log } from "../../shared/log.js";
 import { buildPrompt, composeSystemPrompt } from "../../shared/prompt.js";
-import type { OllamaClient } from "../../ollama/ollama-client.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { incidents, replayResults, replayRuns, users } from "../database/schema.js";
-import type { DecisionQueue } from "../decisions/decision-queue.js";
 import { DomainError } from "../domain-error.js";
 import type { IncidentRow, IncidentsService } from "../incidents/incidents-service.js";
+import { oneServer, type HostModels, type OllamaPool } from "../ollama/ollama-pool.js";
 import type { RunbooksService } from "../runbooks/runbooks-service.js";
 
 export interface ReplayRequest {
@@ -27,15 +27,15 @@ export interface ReplayRequest {
   incidentCount: number;
   // These instead of the most recent ones.
   incidentIds?: string[] | undefined;
-  // Another model of the same Ollama instead of the one in use.
+  // Another model of the default Ollama instead of the one each host's Ollama uses.
   modelName?: string | undefined;
 }
 
 interface ReplayContext {
   incidents: IncidentsService;
   runbooks: RunbooksService;
-  queue: DecisionQueue;
-  ollama: OllamaClient;
+  // Each host's own server, as for its live incidents; the default also tries another model.
+  models: Pick<OllamaPool, "askFor" | "serverFor" | "defaultServer">;
 }
 
 /**
@@ -54,10 +54,11 @@ export class ReplayService {
 
   async start(actor: Actor, request: ReplayRequest): Promise<ReplayRunView> {
     this.context.runbooks.assertVersionsExist(request.draftVersionIds);
-    const ollama = await this.candidate(request.modelName);
+    const models = await this.candidate(request.modelName);
     const database = this.databaseHandle.database;
     const targets =
       request.incidentIds === undefined ? this.recent(request.incidentCount) : this.chosen(request.incidentIds);
+    const { modelName, modelDigest } = await this.modelsAsked(models, targets, request.modelName);
     const run = database
       .insert(replayRuns)
       .values({
@@ -65,8 +66,8 @@ export class ReplayService {
         createdBy: actor.userId,
         createdAt: this.clock(),
         status: REPLAY_RUNNING,
-        modelName: ollama.model,
-        modelDigest: await ollama.modelDigest(),
+        modelName,
+        modelDigest,
         draftVersionIdsJson: JSON.stringify(request.draftVersionIds),
         incidentCount: targets.length,
       })
@@ -79,27 +80,42 @@ export class ReplayService {
       {
         incidents: targets.length,
         drafts: request.draftVersionIds.length,
-        model: ollama.model,
+        model: modelName,
       },
     );
-    const work = this.replayAll(ollama, run.id, targets, request.draftVersionIds)
+    const work = this.replayAll(models, run.id, targets, request.draftVersionIds)
       .catch((error: unknown) => log(describeError(error)))
       .finally(() => this.running.delete(run.id));
     this.running.set(run.id, work);
     return this.get(run.id);
   }
 
-  // The model in use, or another the same Ollama has: one it lacks is refused before anything is stored.
-  private async candidate(modelName: string | undefined): Promise<OllamaClient> {
+  // Each host's own server with the model in use, or another model the default server has: one it lacks is refused
+  // before anything is stored.
+  private async candidate(modelName: string | undefined): Promise<HostModels> {
+    const { models } = this.context;
     if (modelName === undefined) {
-      return this.context.ollama;
+      return models;
     }
+    const { client, queue } = models.defaultServer;
     // An Ollama that does not answer has no model to try either.
-    const present = await this.context.ollama.hasModel(modelName).catch(() => false);
+    const present = await client.hasModel(modelName).catch(() => false);
     if (!present) {
       throw new DomainError(API_ERRORS.modelNotFound);
     }
-    return this.context.ollama.withModel(modelName);
+    return oneServer(client.withModel(modelName), queue);
+  }
+
+  // Each model the run asks, once, and its digest when only one server answers. A run with no incident is named after
+  // the model it would have asked.
+  private async modelsAsked(models: HostModels, targets: readonly IncidentRow[], modelName: string | undefined) {
+    const clients = [...new Set(targets.map(({ hostId }) => models.serverFor(hostId).client))];
+    const unasked = modelName ?? this.context.models.defaultServer.client.model;
+    const names = clients.length === 0 ? [unasked] : [...new Set(clients.map(({ model }) => model))];
+    return {
+      modelName: names.join(REPLAY_MODEL_SEPARATOR),
+      modelDigest: clients.length === 1 ? await clients[0]!.modelDigest() : null,
+    };
   }
 
   // The most recent incidents the model decided.
@@ -196,9 +212,9 @@ export class ReplayService {
     };
   }
 
-  private async replayAll(ollama: OllamaClient, replayId: string, targets: IncidentRow[], drafts: string[]) {
+  private async replayAll(models: HostModels, replayId: string, targets: IncidentRow[], drafts: string[]) {
     for (const incident of targets) {
-      await this.replayOne(ollama, replayId, incident, drafts);
+      await this.replayOne(models, replayId, incident, drafts);
     }
     this.databaseHandle.database
       .update(replayRuns)
@@ -207,8 +223,8 @@ export class ReplayService {
       .run();
   }
 
-  private async replayOne(ollama: OllamaClient, replayId: string, incident: IncidentRow, drafts: string[]) {
-    const { incidents: incidentsService, runbooks, queue } = this.context;
+  private async replayOne(models: HostModels, replayId: string, incident: IncidentRow, drafts: string[]) {
+    const { incidents: incidentsService, runbooks } = this.context;
     const original = {
       replayRunId: replayId,
       incidentId: incident.id,
@@ -218,10 +234,12 @@ export class ReplayService {
     const report = incidentsService.reportOf(incident.id);
     try {
       const { systemPrompt } = composeSystemPrompt(runbooks.instructionsFor(report!, drafts));
-      const prompt = buildPrompt(report!, ollama.contextTokens, systemPrompt, incidentsService.evidenceOf(incident.id));
-      const { content } = await queue.enqueue(PRIORITY_REPLAY, (signal) =>
-        ollama.chat(prompt.systemPrompt, prompt.userPrompt, signal),
-      );
+      const evidence = incidentsService.evidenceOf(incident.id);
+      // Built for the server that answers, as a live prompt is: the default, when the host's own cannot, may read less.
+      const { content } = await models.askFor(incident.hostId, PRIORITY_REPLAY, (server, signal) => {
+        const prompt = buildPrompt(report!, server.client.contextTokens, systemPrompt, evidence);
+        return server.client.chat(prompt.systemPrompt, prompt.userPrompt, signal);
+      });
       const decision = parseDecision(content, report!);
       const changed = decision.action !== incident.action || decision.target !== incident.target;
       this.databaseHandle.database

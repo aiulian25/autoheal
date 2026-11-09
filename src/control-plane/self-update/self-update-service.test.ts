@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -202,6 +202,32 @@ describe("Autoheal updating itself, from the dashboard", () => {
     await expect(service(null).start(actor)).rejects.toMatchObject({ code: API_ERRORS.selfUpdateUnavailable });
     expect(await service(null).view()).toMatchObject({ unavailable: SELF_UPDATE_TEXT.noSocket, runningImage: null });
     expect(engine.creations).toEqual([]);
+  });
+
+  it("finds the Docker socket where DOCKER_SOCKET_PATH puts it, and gives the helper that socket's group", async () => {
+    const HOST_SOCKET = "/run/user/1000/docker.sock";
+    // Mounted where the control plane's .env says, not at /var/run/docker.sock: the engine's own socket, here.
+    engine.containers.get(NAME)!.Mounts = [
+      { Type: "bind", Source: HOST_SOCKET, Destination: engine.socketPath, RW: true },
+      DATA,
+    ] as never;
+    const elsewhere = new SelfUpdateService({
+      docker: new DockerClient(engine.socketPath),
+      reference: REFERENCE,
+      outcomes,
+      auditLog: controlPlane.services.auditLog,
+      clock: () => controlPlane.clock.now,
+      ownContainer: containerIdOf(NAME),
+      socketPath: engine.socketPath,
+    });
+    expect((await elsewhere.view()).unavailable).toBeNull();
+    await elsewhere.start(actor);
+    expect(helperCreations()[0]!.specification).toMatchObject({
+      HostConfig: {
+        Binds: [`${HOST_SOCKET}:/var/run/docker.sock`, `${DATA_VOLUME}:/data`],
+        GroupAdd: [String(statSync(engine.socketPath).gid)],
+      },
+    });
   });
 
   describe("admitting one update at a time", () => {

@@ -5,7 +5,6 @@ import { volumeLookAnswerSchema } from "../../shared/volumes.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
-  APPLICATION_BOOT_DRILL,
   APPLICATION_ARTIFACT_ERRORS,
   APPLICATION_BACKUPS,
   applicationBackupResultSchema,
@@ -22,14 +21,17 @@ import {
   HTTP_HEADERS,
   NO_STORE,
   LIVE_EVENT,
+  RUNNER_CAPABILITY,
   TERMINAL_INPUT_WAIT_MILLISECONDS,
 } from "../../shared/constants.js";
+import { API_ERRORS } from "../../shared/api.js";
 import {
   RUNNER_ROUTES,
   handledIncidentSchema,
   heartbeatSchema,
   incidentNoticeSchema,
   incidentSubmissionSchema,
+  joinRequestSchema,
   type HeartbeatResponse,
   jobProgressSchema,
   jobResultSchema,
@@ -63,15 +65,23 @@ function deliveryHost(request: FastifyRequest) {
   const host = request.runnerHost!;
   return {
     ...host,
-    rollouts: host.rollouts && capabilities.has("rollouts"),
-    applicationBackups: host.applicationBackups && capabilities.has("application-backups"),
-    applicationBootDrills: capabilities.has(APPLICATION_BOOT_DRILL.capability),
-    resourcePermissions: host.resourcePermissions && capabilities.has("resource-permissions"),
-    operationPreviews: host.operationPreviews && capabilities.has("operation-previews"),
+    rollouts: host.rollouts && capabilities.has(RUNNER_CAPABILITY.rollouts),
+    applicationBackups: host.applicationBackups && capabilities.has(RUNNER_CAPABILITY.applicationBackups),
+    applicationBootDrills: capabilities.has(RUNNER_CAPABILITY.applicationBootDrills),
+    resourcePermissions: host.resourcePermissions && capabilities.has(RUNNER_CAPABILITY.resourcePermissions),
+    operationPreviews: host.operationPreviews && capabilities.has(RUNNER_CAPABILITY.operationPreviews),
   };
 }
 
 export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlaneServices) {
+  app.post(RUNNER_ROUTES.join, async (request, reply) => {
+    const { enrolment, token } = parseBody(joinRequestSchema, request.body);
+    if (!services.hostsService.redeemJoinCode(enrolment, token)) {
+      return reply.code(HTTP_STATUS.unauthorized).send({ error: API_ERRORS.joinCodeRefused });
+    }
+    return reply.code(HTTP_STATUS.noContent).send();
+  });
+
   app.get(RUNNER_ROUTES.resultDelivery, async () => ({ version: 1 }));
 
   const applicationTask = z.object({ taskId: z.uuid() });

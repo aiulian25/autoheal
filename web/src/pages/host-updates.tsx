@@ -3,45 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { hasNewerVersion, hasUpdate, type ContainerView, type HostView } from "../../../src/shared/api.js";
 import { UPDATE_CHECK_INTERVAL_MILLISECONDS } from "../../../src/shared/constants.js";
-import { imageTag } from "../../../src/shared/image-reference.js";
 import { ErrorNotice } from "../components/common.js";
 import { ImageVersions } from "../components/container-actions.js";
-import { INVENTORY_REFRESH_MILLISECONDS, MILLISECONDS_PER_HOUR, NEWER_VERSIONS_SHOWN, TEXT } from "../constants.js";
+import { NewerVersions } from "../components/newer-versions.js";
+import { INVENTORY_REFRESH_MILLISECONDS, MILLISECONDS_PER_HOUR, TEXT } from "../constants.js";
 import { hostContainersQuery } from "../queries.js";
 import { runLine, stateIn, useUpdateRun } from "../update-runs.js";
 import { HostPackages, UpdateActions } from "./host-packages.js";
-
-/** Newer versions of the tags containers are pinned to: the first few, the rest a click away. */
-function NewerVersions({ containers }: { containers: readonly ContainerView[] }) {
-  const [open, setOpen] = useState(false);
-  const text = TEXT.containerImages;
-  const hidden = containers.length - NEWER_VERSIONS_SHOWN;
-  const shown = open ? containers : containers.slice(0, NEWER_VERSIONS_SHOWN);
-  return (
-    <>
-      <h4>{text.newerTitle}</h4>
-      <ul className="update-rows">
-        {shown.map((container) => (
-          <li key={container.name} className="update-row">
-            <span className="tick-space" />
-            <span className="update-what">
-              <span className="mono">{container.name}</span>
-              <span className="small">
-                {TEXT.updates.versions(imageTag(container.image), container.update.newerTag!)}
-              </span>
-            </span>
-          </li>
-        ))}
-      </ul>
-      {hidden > 0 && (
-        <button type="button" className="link" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? text.newerShowFewer : text.newerShowAll(containers.length)}
-        </button>
-      )}
-      <p className="small muted">{text.newerHint}</p>
-    </>
-  );
-}
 
 /**
  * New images for the host's containers, each ticked to begin with, and the way to apply the ticked ones:
@@ -107,7 +75,7 @@ function ContainerImages({
           </ul>
         )}
         {latest !== null && <p className="small muted">{runLine(latest)}</p>}
-        {newerVersions.length > 0 && <NewerVersions containers={newerVersions} />}
+        <NewerVersions host={host} admin={admin} containers={containers.data ?? []} />
       </div>
       {admin && waiting.length > 0 && (
         <footer className="update-card-foot">

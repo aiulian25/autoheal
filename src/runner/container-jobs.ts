@@ -17,6 +17,7 @@ import {
 import { sharesRollbackData } from "./rollback-data.js";
 import { updateGroupOf } from "./update-group.js";
 import {
+  COMPOSE_PROJECT_LABEL,
   HOST_DEPLOY_REFUSALS,
   INSTALL_OUTCOMES,
   CONTAINER_ACCESS_REFUSALS,
@@ -47,6 +48,7 @@ import type {
   StackAction,
   StackJob,
   BackupJob,
+  TagChangeJob,
   UpdateProgress,
 } from "../shared/protocol.js";
 import { redactSecrets } from "../shared/redaction.js";
@@ -55,7 +57,7 @@ import type { DockerClient, DockerNetwork, ImageSummary } from "./docker-client.
 import type { ImageUpdateChecker } from "./image-updates.js";
 import type { RemedyGuard } from "./remedy-guard.js";
 import { networksReport } from "./networks.js";
-import type { SettingsWrite, Stacks } from "./stacks.js";
+import type { DataKeeper, SettingsWrite, Stacks } from "./stacks.js";
 import { volumesReport } from "./volumes.js";
 import { isKeptByUpdate, namesOf, sizeOf, unusedImages } from "./unused-images.js";
 import { containerResources } from "./operation-coordinator.js";
@@ -99,7 +101,9 @@ export interface ContainerJobsDependencies {
   settingsOf: (jobId: string) => Promise<ContainerSettings>;
   // Putting a new app on the host, where this runner can; its details fetched as an edit's settings are.
   installs?: Pick<Installs, "install" | "installOwn" | "uninstall">;
-  stacks?: Pick<Stacks, "run" | "membersOf" | "applySettings">;
+  stacks?: Pick<Stacks, "run" | "membersOf" | "applySettings" | "changeTag">;
+  // What keeps a container's data aside while its tag changes; absent where this host cannot keep a copy.
+  checkpoints?: DataKeeper;
   backups?: Pick<ContainerBackups, "run">;
   installSpecOf?: (jobId: string) => Promise<InstallDetails>;
   updates: Pick<ImageUpdateChecker, "checkAll">;
@@ -134,6 +138,7 @@ type ChangingAction = Exclude<
   | typeof JOB_ACTION.removeVolumes
   | typeof JOB_ACTION.backupContainer
   | typeof JOB_ACTION.restoreContainer
+  | typeof JOB_ACTION.changeTag
   | StackAction
   | typeof JOB_ACTION.install
   | typeof JOB_ACTION.uninstall
@@ -155,6 +160,7 @@ const STACK_ACTIONS: ReadonlySet<string> = new Set([
   JOB_ACTION.stackRemove,
 ]);
 const isStackJob = (job: DockerJob): job is StackJob => STACK_ACTIONS.has(job.action);
+const isTagChangeJob = (job: DockerJob): job is TagChangeJob => job.action === JOB_ACTION.changeTag;
 const isBackupJob = (job: DockerJob): job is BackupJob =>
   job.action === JOB_ACTION.backupContainer || job.action === JOB_ACTION.restoreContainer;
 
@@ -362,7 +368,8 @@ export class ContainerJobs {
         job.action === JOB_ACTION.createVolume ||
         job.action === JOB_ACTION.removeVolumes ||
         isBackupJob(job) ||
-        isStackJob(job))
+        isStackJob(job) ||
+        isTagChangeJob(job))
     )
       return Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
     if (job.action === JOB_ACTION.pruneImages) {
@@ -400,6 +407,11 @@ export class ContainerJobs {
     if (isStackJob(job)) {
       return this.dependencies.guard.operations.host(() =>
         this.maintenanceBlocks(job) ? Promise.resolve(this.maintenanceRefusal()) : this.runStack(job),
+      );
+    }
+    if (isTagChangeJob(job)) {
+      return this.dependencies.guard.operations.host(() =>
+        this.maintenanceBlocks(job) ? Promise.resolve(this.maintenanceRefusal()) : this.changeTag(job),
       );
     }
     if (job.action === JOB_ACTION.createVolume) {
@@ -874,12 +886,31 @@ export class ContainerJobs {
 
   // Held while Compose works, so Autoheal does not take what it stops or replaces for a failure to heal.
   private async runStack(job: StackJob): Promise<JobResult> {
-    const { stacks, guard, reportInventory } = this.dependencies;
+    const { stacks, guard, reportInventory, reportProgress } = this.dependencies;
     if (stacks === undefined) return asJobResult({ succeeded: false, outcome: HOST_DEPLOY_REFUSALS.off });
     const members = await stacks.membersOf(job.stack.project);
     members.forEach((member) => guard.hold(member));
+    const report = new UpdateReport((progress) => void reportProgress(job.id, progress).catch(() => undefined));
     try {
-      return await stacks.run(job.action, job.stack);
+      return await stacks.run(job.action, job.stack, report);
+    } finally {
+      members.forEach((member) => guard.release(member));
+      reportInventory();
+    }
+  }
+
+  // Held while its Compose project changes, so Autoheal does not take what it stops or replaces for a failure to heal.
+  private async changeTag(job: TagChangeJob): Promise<JobResult> {
+    const { stacks, checkpoints, guard, docker, reportInventory, reportProgress } = this.dependencies;
+    if (stacks === undefined) return asJobResult({ succeeded: false, outcome: HOST_DEPLOY_REFUSALS.off });
+    if (checkpoints === undefined)
+      return asJobResult({ succeeded: false, outcome: JOB_OUTCOMES.checkpointUnavailable });
+    const project = (await docker.inspect(job.containerName))?.Config.Labels?.[COMPOSE_PROJECT_LABEL];
+    const members = project === undefined ? [job.containerName] : await stacks.membersOf(project);
+    members.forEach((member) => guard.hold(member));
+    const report = new UpdateReport((progress) => void reportProgress(job.id, progress).catch(() => undefined));
+    try {
+      return await stacks.changeTag(job.containerName, job.tag, checkpoints, report);
     } finally {
       members.forEach((member) => guard.release(member));
       reportInventory();

@@ -18,6 +18,7 @@ import {
   CPU_TEMPERATURE_LIMIT,
   DRIVE_KINDS,
   CONTAINER_STATES,
+  ENROLMENT_PATTERN,
   FILE_CONTENT_CHARACTERS,
   FILE_ENTRIES_LIMIT,
   FILE_FIELD_CHARACTERS,
@@ -68,6 +69,7 @@ import {
   RECOVERY_HOLD_REASONS,
   REPORT_LIMITS,
   RESTART_POLICY_CHARACTERS,
+  RUNNER_TOKEN_PATTERN,
   RUNNER_VERSION_MAXIMUM_LENGTH,
   SHORT_CONTAINER_ID_LENGTH,
   TERMINAL_OUTPUT_CHUNK_BYTES,
@@ -134,7 +136,14 @@ export const RUNNER_ROUTES = {
   terminalOutput: "/runner/v1/terminals/:terminalId/output",
   terminalEnd: "/runner/v1/terminals/:terminalId/end",
   notifications: "/runner/v1/notifications",
+  // A join code that works once, traded for the token its runner made: the one request sent with no token.
+  join: "/runner/v1/join",
 } as const;
+
+export const joinRequestSchema = z
+  .object({ enrolment: z.string().regex(ENROLMENT_PATTERN), token: z.string().regex(RUNNER_TOKEN_PATTERN) })
+  .strict();
+export type JoinRequest = z.infer<typeof joinRequestSchema>;
 
 const containerName = z.string().min(1).max(REPORT_LIMITS.nameCharacters);
 const byteCount = z.number().int().min(0);
@@ -187,6 +196,9 @@ export const containerSnapshotSchema = z.object({
   hostNetwork: z.boolean().optional(),
   // The version its image's labels name; null when they name none. Absent from runners from before it.
   version: imageLabel.optional(),
+  // Where its image's code lives, as its labels say; only http and https links, null when they name none. Absent from
+  // runners from before it.
+  source: z.string().max(WEB_LINK_CHARACTERS).regex(WEB_LINK_PATTERN).nullable().optional(),
   // The runner's latest registry check of its image; null until checked, or when an image can't be
   // checked (built locally, or pinned to a digest).
   update: z
@@ -333,6 +345,9 @@ export const hostHealthSchema = z.object({
     .array(z.object({ label: z.string().max(HOST_TEXT_LIMIT), celsius: z.number() }))
     .max(CPU_TEMPERATURE_LIMIT)
     .optional(),
+  // Whether a time service (NTP) keeps its clock, as the units systemd runs say; null where systemd lists none.
+  // Absent from runners from before it.
+  ntpActive: z.boolean().nullable().optional(),
 });
 
 export type HostHealth = z.infer<typeof hostHealthSchema>;
@@ -396,6 +411,18 @@ export const probeReportSchema = z.object({
 });
 export type ProbeReport = z.infer<typeof probeReportSchema>;
 
+// What a heartbeat too large for the runner API leaves out, least needed first. Each, absent (the host's health, null),
+// leaves the dashboard with what it was told last; the containers and the service checks' results are always sent.
+export const TRIMMABLE_HEARTBEAT_PARTS = [
+  "topology",
+  "stackDrift",
+  "unusedImages",
+  "networks",
+  "volumes",
+  "host",
+] as const;
+export type TrimmableHeartbeatPart = (typeof TRIMMABLE_HEARTBEAT_PARTS)[number];
+
 export const heartbeatSchema = z.object({
   // Absent until a runner has looked: says nothing either way.
   stackDrift: stackDriftReportSchema.optional(),
@@ -404,7 +431,16 @@ export const heartbeatSchema = z.object({
   topology: topologySnapshotSchema.optional(),
   operationPreviews: z.boolean().optional(),
   resourcePermissions: z.boolean().optional(),
+  // It can move a container to a newer tag by its Compose files, as its .env allows; absent from runners from before.
+  tagChanges: z.boolean().optional(),
   maintenanceGeneration: z.number().int().nonnegative().safe().optional(),
+  // How far its clock is from the control plane's, in seconds (ahead is positive), while that keeps it from taking
+  // the maintenance policy, and so pauses its automatic actions. Absent otherwise, and from runners from before it.
+  clockSkewSeconds: z.number().int().safe().optional(),
+  // What the host's clock read as this report left, in milliseconds since the epoch: the control plane sets it against
+  // its own as the report arrives. In a full report only; absent when the clock could not be read, and from runners
+  // from before it.
+  hostClock: z.number().int().nonnegative().safe().optional(),
   runnerVersion: z.string().max(RUNNER_VERSION_MAXIMUM_LENGTH),
   // What the runner calls its host; a host added without a name takes it.
   hostLabel: z.string().regex(HOST_LABEL_PATTERN).optional(),
@@ -422,6 +458,11 @@ export const heartbeatSchema = z.object({
   host: hostHealthSchema.nullable(),
   // Every container on the host, every time: a full picture can't drift the way changes can.
   containers: z.array(containerSnapshotSchema).max(REPORT_LIMITS.containers),
+  // True when Docker could not list them this time: the containers are the last ones it could, not as they are now.
+  // Absent while they are current, and from runners from before it.
+  containersStale: z.boolean().optional(),
+  // What this report left out to fit the runner API; absent when nothing was, and from runners from before it.
+  trimmed: z.array(z.enum(TRIMMABLE_HEARTBEAT_PARTS)).max(TRIMMABLE_HEARTBEAT_PARTS.length).optional(),
   // Absent from runners from before it, and when Docker could not list them this time.
   unusedImages: z.array(unusedImageSchema).max(REPORT_LIMITS.unusedImages).optional(),
   // Absent from runners from before it, and when Docker could not list them this time.
@@ -672,6 +713,7 @@ export interface ContainerJob extends JobBase {
     | typeof JOB_ACTION.removeVolumes
     | typeof JOB_ACTION.backupContainer
     | typeof JOB_ACTION.restoreContainer
+    | typeof JOB_ACTION.changeTag
     | StackAction
   >;
   // An update put back at once when the new container does not come back healthy: the owner chose so.
@@ -731,6 +773,13 @@ export interface StackJob extends JobBase {
   stack: StackJobDetails;
 }
 
+/** A container moved to a newer version by changing its tag where its Compose files write it. */
+export interface TagChangeJob extends JobBase {
+  action: typeof JOB_ACTION.changeTag;
+  // The version to move to: a tag of the image it runs.
+  tag: string;
+}
+
 /** A container or a stack kept in a folder on its host, or put back from there. */
 export interface BackupJob extends JobBase {
   action: typeof JOB_ACTION.backupContainer | typeof JOB_ACTION.restoreContainer;
@@ -741,6 +790,7 @@ export interface BackupJob extends JobBase {
 export type DockerJob =
   | BackupJob
   | StackJob
+  | TagChangeJob
   | ContainerJob
   | ImageJob
   | NetworkCreationJob
@@ -937,6 +987,18 @@ export const containerDetailsSchema = z.object({
   // Where Autoheal installed it; absent from what it did not install, which it will not take away.
   installedIn: detailText.optional(),
   networkMode: detailText.optional(),
+  // Each port it has in the container, lowest first, and where the host publishes it, on every address where the
+  // address is empty; absent from runners from before that.
+  ports: z
+    .array(
+      z.object({
+        port,
+        protocol: z.enum(PORT_PROTOCOLS),
+        published: z.array(z.object({ address: detailText, port })).max(CONTAINER_DETAILS.entries),
+      }),
+    )
+    .max(PORTS_PER_CONTAINER)
+    .optional(),
   mounts: z
     .array(z.object({ kind: detailText, source: detailText, target: detailText, readOnly: z.boolean() }))
     .max(CONTAINER_DETAILS.entries),

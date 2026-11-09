@@ -1,0 +1,181 @@
+/* The dependency map: Compose projects as bubbles, lines coloured by kind, the lit container's links bright. */
+.stack-map {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.stack-map button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  color: var(--text);
+}
+
+.stack-map-stage {
+  position: relative;
+}
+
+.stack-map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 34rem;
+  touch-action: none;
+}
+
+.map-bubble rect {
+  fill: color-mix(in srgb, var(--accent) 6%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 35%, transparent);
+  stroke-dasharray: 4 4;
+}
+
+.map-bubble text {
+  fill: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.map-link {
+  fill: none;
+  stroke-width: 1.6;
+  transition:
+    opacity 0.3s,
+    stroke-width 0.3s;
+}
+
+.map-link.shared_writable_data {
+  stroke: var(--warning);
+}
+
+.map-link.declared_dependency {
+  stroke: var(--good);
+  stroke-width: 2.2;
+}
+
+.map-link.compose_association {
+  stroke: var(--text-muted);
+  stroke-dasharray: 5 5;
+}
+
+.map-link.network_namespace {
+  stroke: var(--accent);
+}
+
+.map-dot.shared_writable_data {
+  fill: var(--warning);
+}
+
+.map-dot.declared_dependency {
+  fill: var(--good);
+}
+
+.map-dot.compose_association {
+  fill: var(--text-muted);
+}
+
+.map-dot.network_namespace {
+  fill: var(--accent);
+}
+
+.map-node {
+  cursor: grab;
+  outline: none;
+  transition: opacity 0.3s;
+}
+
+.map-node circle {
+  fill: var(--text);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.map-node.hub circle {
+  stroke: var(--warning);
+  stroke-dasharray: 3 3;
+}
+
+.map-node.focus circle,
+.map-node:focus-visible circle {
+  fill: var(--accent);
+}
+
+.map-node rect {
+  fill: color-mix(in srgb, var(--warning) 16%, var(--surface));
+  stroke: var(--warning);
+}
+
+.map-node text {
+  fill: var(--text);
+  font-size: 12px;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.map-node.folder text,
+.map-node.volume text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.map-node.focus text {
+  font-weight: 700;
+}
+
+.stack-map-svg.dimmed .map-link {
+  opacity: 0.07;
+}
+
+.stack-map-svg.dimmed .map-link.lit {
+  opacity: 1;
+  stroke-width: 2.6;
+}
+
+.stack-map-svg.dimmed .map-node:not(.lit),
+.stack-map-svg.dimmed .map-bubble {
+  opacity: 0.2;
+}
+
+.stack-map-tip {
+  position: absolute;
+  z-index: 2;
+  max-width: 18rem;
+  margin: 12px 0 0 14px;
+  padding: 10px 12px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 14px 32px rgb(0 0 0 / 45%);
+  font-size: var(--text-small);
+  pointer-events: none;
+}
+
+.stack-map-tip p {
+  margin: 4px 0 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-link,
+  .map-node {
+    transition: none;
+  }
+}
+
+/* Fingers need more room than a mouse. */
+@media (hover: none) and (pointer: coarse) {
+  :root {
+    --control-height: 2.5rem;
+  }
+}
+
+.global-search label:has(input[type="checkbox"]) {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.nav a {
+  white-space: nowrap;
+}

@@ -9,7 +9,7 @@ import { isWaiting } from "../components/container-actions.js";
 import { Icon } from "../components/icons.js";
 import { TEXT } from "../constants.js";
 import { hostContainersQuery } from "../queries.js";
-import { Choices, Row } from "./add-container.js";
+import { Choices, Row } from "./add-container/choices.js";
 
 const text = TEXT.hostNetworks.create;
 const BRIDGE = "bridge";

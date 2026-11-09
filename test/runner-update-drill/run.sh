@@ -3,8 +3,10 @@
 # this machine's engine. A control plane and a runner from this checkout's image run inside it; the runner is on a
 # channel tag (localhost:5000/autoheal:latest), and a registry in there serves a newer image under that tag. The
 # runner is given an "Update runner" job and must come back on the new image, keeping how it was run.
-# Removes all it made.   test/runner-update-drill/run.sh
+# Removes all it made.   test/runner-update-drill/run.sh [where the runner's container has the Docker socket]
 set -u
+# A path other than the default is the runner's DOCKER_SOCKET_PATH too.
+RUNNER_SOCKET="${1:-/var/run/docker.sock}"
 ENGINE_IMAGE=docker:29.9.0-dind
 OLD=autoheal:runner-drill-old
 NEW=autoheal:runner-drill-new
@@ -83,8 +85,8 @@ for _ in $(seq 60); do
 done
 inner run -d --name autoheal --network host --add-host control-plane:127.0.0.1 --restart unless-stopped \
   --user 65532:65532 --group-add "$(id -g)" --read-only --tmpfs /tmp:size=8m --cap-drop ALL \
-  --security-opt no-new-privileges:true -v /fixture-run/docker.sock:/var/run/docker.sock -v cp-join:/join:ro \
-  -e AUTOHEAL_CONTAINER_NAME=autoheal "$CHANNEL" runner >/dev/null
+  --security-opt no-new-privileges:true -v "/fixture-run/docker.sock:$RUNNER_SOCKET" -v cp-join:/join:ro \
+  -e DOCKER_SOCKET_PATH="$RUNNER_SOCKET" -e AUTOHEAL_CONTAINER_NAME=autoheal "$CHANNEL" runner >/dev/null
 HOST_ID=""
 for _ in $(seq 90); do
   HOST_ID=$(query "SELECT id FROM hosts WHERE last_heartbeat_at IS NOT NULL LIMIT 1" 2>/dev/null)
@@ -139,6 +141,8 @@ for setting in '{{.HostConfig.NetworkMode}}' '{{.HostConfig.ReadonlyRootfs}}' '{
 done
 [[ "$(inner inspect -f '{{.HostConfig.ReadonlyRootfs}} {{.Config.User}}' autoheal)" == "true 65532:65532" ]] ||
   fail "the new runner lost its hardening"
+SOCKET_NOW=$(inner inspect -f '{{range .Mounts}}{{if eq .Source "/fixture-run/docker.sock"}}{{.Destination}}{{end}}{{end}}' autoheal)
+[[ "$SOCKET_NOW" == "$RUNNER_SOCKET" ]] || fail "the new runner has the socket at $SOCKET_NOW, not $RUNNER_SOCKET"
 LEFT=$(inner ps -a --format '{{.Names}}' | sort | tr '\n' ' ')
 [[ "$LEFT" == "autoheal autoheal-control-plane drill-registry " ]] || fail "left behind: $LEFT"
 SEEN=$(query "SELECT last_heartbeat_at FROM hosts WHERE id = ?" "$HOST_ID")

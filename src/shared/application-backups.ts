@@ -10,6 +10,9 @@ export const APPLICATION_BACKUPS = {
   plans: 32,
   retained: 8,
   scheduleMinimumHours: 1,
+  scheduleMaximumHours: 24 * 365,
+  nameCharacters: 100,
+  containerNameCharacters: 256,
   taskMilliseconds: 15 * 60 * 1000,
   transferMilliseconds: 120000,
   // A writer review stays good for this long: a restore must follow it at once.
@@ -39,10 +42,47 @@ export const APPLICATION_ARTIFACT_ERRORS = {
   uploadTimedOut: "Application backup upload timed out.",
   downloadTimedOut: "Application backup download timed out.",
 } as const;
+export const APPLICATION_BACKUP_RUN_STATUS = {
+  queued: "queued",
+  running: "running",
+  succeeded: "succeeded",
+  failed: "failed",
+  recoveryRequired: "recovery-required",
+} as const;
+export type ApplicationBackupRunStatus =
+  (typeof APPLICATION_BACKUP_RUN_STATUS)[keyof typeof APPLICATION_BACKUP_RUN_STATUS];
+// A run its host may still be acting on.
+export const OPEN_APPLICATION_BACKUP_RUN_STATUSES = [
+  APPLICATION_BACKUP_RUN_STATUS.queued,
+  APPLICATION_BACKUP_RUN_STATUS.running,
+  APPLICATION_BACKUP_RUN_STATUS.recoveryRequired,
+] as const;
+export const APPLICATION_BACKUP_OPERATION = {
+  capture: "capture",
+  drill: "drill",
+  bootDrill: "boot-drill",
+  restore: "restore",
+  preview: "preview",
+} as const;
+export type ApplicationBackupOperation =
+  (typeof APPLICATION_BACKUP_OPERATION)[keyof typeof APPLICATION_BACKUP_OPERATION];
+// The ones a person or the schedule asks for by name; a preview and a restore come by their own routes.
+export type RequestedApplicationBackupOperation =
+  | typeof APPLICATION_BACKUP_OPERATION.capture
+  | typeof APPLICATION_BACKUP_OPERATION.drill
+  | typeof APPLICATION_BACKUP_OPERATION.bootDrill;
+// The ones that open a backup already made.
+export const ARTIFACT_OPENING_OPERATIONS: readonly ApplicationBackupOperation[] = [
+  APPLICATION_BACKUP_OPERATION.drill,
+  APPLICATION_BACKUP_OPERATION.bootDrill,
+  APPLICATION_BACKUP_OPERATION.restore,
+];
+export const APPLICATION_BACKUP_ARTIFACT_STATUS = { pending: "pending", ready: "ready", failed: "failed" } as const;
+export type ApplicationBackupArtifactStatus =
+  (typeof APPLICATION_BACKUP_ARTIFACT_STATUS)[keyof typeof APPLICATION_BACKUP_ARTIFACT_STATUS];
 // Starting a backed-up application on its restored copy, only for a plan that asks: fresh volumes, its own image, no
 // network, nothing of the live container's settings but its user.
 export const APPLICATION_BOOT_DRILL = {
-  capability: "application-boot-drills",
   label: "autoheal.application-backup.boot-drill",
   volumeLabel: "autoheal.application-backup.drill",
   containerPrefix: "autoheal-helper-boot-drill-",
@@ -80,7 +120,7 @@ const identifier = z.string().uuid();
 const name = z
   .string()
   .min(1)
-  .max(256)
+  .max(APPLICATION_BACKUPS.containerNameCharacters)
   .regex(/^[^\0\r\n/]+$/u);
 const relativePath = z
   .string()
@@ -110,7 +150,7 @@ export type BootDrillRecipe = z.infer<typeof bootDrillRecipeSchema>;
 export const applicationPlanDefinitionSchema = z
   .object({
     version: z.literal(1),
-    name: z.string().trim().min(1).max(100),
+    name: z.string().trim().min(1).max(APPLICATION_BACKUPS.nameCharacters),
     containerName: name,
     consistency: z.literal("coordinated-clean-stop"),
     exclusiveDockerWriters: z.literal(true),
@@ -119,8 +159,8 @@ export const applicationPlanDefinitionSchema = z
     intervalHours: z
       .number()
       .int()
-      .min(1)
-      .max(24 * 365)
+      .min(APPLICATION_BACKUPS.scheduleMinimumHours)
+      .max(APPLICATION_BACKUPS.scheduleMaximumHours)
       .nullable(),
     retain: z.number().int().min(1).max(APPLICATION_BACKUPS.retained),
     // Absent or null: this plan's application is never started.
@@ -142,7 +182,7 @@ export const applicationBackupTaskSchema = z
     attempt: z.number().int().nonnegative().default(0),
     planId: identifier,
     hostId: identifier,
-    operation: z.enum(["capture", "drill", "boot-drill", "restore", "preview"]),
+    operation: z.enum(APPLICATION_BACKUP_OPERATION),
     artifactId: identifier,
     definition: applicationPlanDefinitionSchema,
     // The image the backup was made with, for a boot drill.
@@ -202,11 +242,11 @@ export const applicationBackupResultSchema = z
 export type ApplicationBackupResult = z.input<typeof applicationBackupResultSchema>;
 // A run that ended either way; the others may still act on the host.
 export const FINISHED_APPLICATION_BACKUP_RUN_STATUSES = [
-  "succeeded",
-  "failed",
-] as const satisfies readonly ApplicationBackupRun["status"][];
+  APPLICATION_BACKUP_RUN_STATUS.succeeded,
+  APPLICATION_BACKUP_RUN_STATUS.failed,
+] as const;
 // Clean-up marks an artifact this way once its files and key are gone.
-export const SPENT_APPLICATION_BACKUP_ARTIFACT_STATUS = "failed" satisfies ApplicationBackupArtifact["status"];
+export const SPENT_APPLICATION_BACKUP_ARTIFACT_STATUS = APPLICATION_BACKUP_ARTIFACT_STATUS.failed;
 // Why the dashboard ended a run itself, where no report from its runner says why.
 export const APPLICATION_BACKUP_FAILURE = {
   requesterLostAccess: "requester_lost_access",
@@ -220,8 +260,8 @@ export interface ApplicationBackupRun {
   id: string;
   planId: string;
   hostId: string;
-  operation: "capture" | "drill" | "boot-drill" | "restore" | "preview";
-  status: "queued" | "running" | "succeeded" | "failed" | "recovery-required";
+  operation: ApplicationBackupOperation;
+  status: ApplicationBackupRunStatus;
   artifactId: string;
   createdAt: number;
   finishedAt: number | null;
@@ -232,7 +272,7 @@ export interface ApplicationBackupArtifact {
   id: string;
   planId: string;
   hostId: string;
-  status: "pending" | "ready" | "failed";
+  status: ApplicationBackupArtifactStatus;
   createdAt: number;
   payloadBytes: number | null;
   verifiedAt: number | null;

@@ -70,7 +70,6 @@ const sent = (fetch: ReturnType<typeof show>, method: string, path: string) =>
 
 describe("an SSH host's own card", () => {
   it("checks and saves a root password, says how it is used, never shows it, and removes it", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const fetch = show(details({ rootMethod: "su" }));
     expect(await screen.findByText(text.rootSaved("su"))).toBeTruthy();
     fireEvent.change(screen.getByLabelText(text.rootPassword), { target: { value: "root's password" } });
@@ -82,6 +81,7 @@ describe("an SSH host's own card", () => {
     );
     expect((screen.getByLabelText(text.rootPassword) as HTMLInputElement).value).toBe("");
     fireEvent.click(screen.getByRole("button", { name: text.rootRemove }));
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
     await waitFor(() =>
       expect(
         fetch.mock.calls.some(
@@ -122,6 +122,11 @@ describe("an SSH host's own card", () => {
     fireEvent.change(screen.getByRole("textbox", { name: new RegExp(text.protectedContainers) }), {
       target: { value: "postgres, npm  redis" },
     });
+    fireEvent.click(screen.getByRole("checkbox", { name: text.hostTerminal }));
+    fireEvent.click(screen.getByRole("checkbox", { name: text.hostDeploy }));
+    fireEvent.change(screen.getByRole("textbox", { name: new RegExp(text.hostFilesystems) }), {
+      target: { value: "/ /mnt/data" },
+    });
     fireEvent.change(screen.getByRole("combobox", { name: text.hostPackages }), { target: { value: "check" } });
     fireEvent.change(screen.getByRole("spinbutton", { name: text.checkpointLimit }), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: text.save }));
@@ -131,6 +136,9 @@ describe("an SSH host's own card", () => {
           dryRun: !DEFAULT_SSH_HOST_SETTINGS.dryRun,
           protectedContainers: ["postgres", "npm", "redis"],
           containerAccess: DEFAULT_SSH_HOST_SETTINGS.containerAccess,
+          hostTerminal: !DEFAULT_SSH_HOST_SETTINGS.hostTerminal,
+          hostDeploy: !DEFAULT_SSH_HOST_SETTINGS.hostDeploy,
+          hostFilesystems: ["/", "/mnt/data"],
           hostPackages: "check",
           checkpointLimitGigabytes: 5,
         },

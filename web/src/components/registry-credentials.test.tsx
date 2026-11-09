@@ -100,7 +100,6 @@ it("adds one for the hosts that were ticked, and leaves the repository out for a
 });
 
 it("replaces a password without changing the scope, and asks before removing one", async () => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   show();
 
   fireEvent.change(await screen.findByLabelText(text.newPassword), { target: { value: "rotated-secret" } });
@@ -113,6 +112,8 @@ it("replaces a password without changing the scope, and asks before removing one
   });
 
   fireEvent.click(screen.getByRole("button", { name: text.remove }));
+  expect(sent).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
   await waitFor(() => expect(sent).toHaveLength(2));
   expect(sent[1]).toMatchObject({ method: "DELETE" });
 });

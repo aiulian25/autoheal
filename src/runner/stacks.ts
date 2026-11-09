@@ -7,11 +7,13 @@ import {
   STACK_OUTCOMES,
   RESTART_POLICY_ALWAYS,
   RESTART_POLICY_UNLESS_STOPPED,
+  UPDATE_PHASE,
   UPDATE_VERIFY,
   VERIFY_PROBLEMS,
 } from "../shared/constants.js";
 import { isHostFolder } from "../shared/container-backups.js";
 import { describeError } from "../shared/errors.js";
+import { imageTag } from "../shared/image-reference.js";
 import { redactSecrets } from "../shared/redaction.js";
 import {
   STACK_ASK,
@@ -35,14 +37,19 @@ import {
   composeAgrees,
   definesService,
   editedCompose,
+  editedImageTag,
   isEmptyChange,
+  servicesMovedByTag,
   settingsChange,
   type ResolvedService,
+  type TagPlace,
 } from "./compose-edit.js";
 import { settingsOf } from "./container-settings.js";
 import type { ContainerSummary, DockerClient, ImageDetails } from "./docker-client.js";
 import { restartPolicyOf, type ContainerDetails } from "./incident-report.js";
 import type { HostScript } from "./installs.js";
+import type { UpdateReport } from "./update-progress.js";
+import type { TakenCheckpoint, VolumeCheckpoints } from "./volume-checkpoints.js";
 import { COMPOSE_COMMANDS, shellQuoted } from "./install-script.js";
 import { driftOf, reconcilableServices, type DeclaredService } from "./stack-drift.js";
 import {
@@ -121,6 +128,9 @@ const bindSources = (container: ContainerSummary) =>
 const relativeTo = (folder: string, path: string) =>
   path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : path;
 const refused = (error: string): StackAnswer => ({ error });
+// What sends a stack's files, or what Compose read in them, back to the dashboard: the host's own files read as root,
+// so only where its .env lets apps be changed as well, not where it only opens its containers.
+const READS_FILES: ReadonlySet<string> = new Set([STACK_ASK.read, STACK_ASK.check]);
 
 /** How a lifecycle action on a whole stack went, as its job reports it. */
 interface StackRun {
@@ -130,6 +140,18 @@ interface StackRun {
 }
 const didNotRun = (outcome: string, output: string | null = null): StackRun => ({ succeeded: false, outcome, output });
 
+// What keeps a container's data aside while its tag changes, and puts it back if the change does not hold.
+export type DataKeeper = Pick<VolumeCheckpoints, "take" | "restore" | "discard">;
+
+// A container a tag change moves: how it was before, and the copy of its data taken then.
+interface Moving {
+  name: string;
+  service: string;
+  running: boolean;
+  details: ContainerDetails;
+  kept: TakenCheckpoint;
+}
+
 interface Stack {
   project: string;
   folder: string;
@@ -138,27 +160,37 @@ interface Stack {
   members: ContainerSummary[];
 }
 
-// A marked block for each file, so what a shell prints around them is never taken for their contents.
-function readFilesScript(mark: string, paths: readonly string[], folder: string | null = null): string {
-  const lines = [`limit=${STACK_LIMITS.fileBytes}`];
+// A marked block for each file, so what a shell prints around them is never taken for their contents. Labels say where
+// a stack's files are, and anything can write labels: only a file inside its folder, every link followed, is read.
+function readFilesScript(mark: string, paths: readonly string[], folder: string, withJournal = false): string {
+  const lines = [
+    `limit=${STACK_LIMITS.fileBytes}`,
+    `root=$(readlink -f -- ${shellQuoted(folder)})`,
+    'inside() { [ -n "$root" ] && case "$(readlink -f -- "$1")" in "$root"/*) true ;; *) false ;; esac; }',
+  ];
   paths.forEach((path, index) => {
     const quoted = shellQuoted(path);
     lines.push(
       `echo "${mark} ${index} file"`,
       `if [ -f ${quoted} ]; then`,
-      `  if [ "$(wc -c < ${quoted})" -gt "$limit" ]; then echo "${mark} ${index} big"; else base64 < ${quoted} | tr -d '\\n'; echo; fi`,
+      `  if ! inside ${quoted}; then echo "${mark} ${index} outside"`,
+      `  elif [ "$(wc -c < ${quoted})" -gt "$limit" ]; then echo "${mark} ${index} big"`,
+      `  else base64 < ${quoted} | tr -d '\\n'; echo; fi`,
       `else echo "${mark} ${index} absent"; fi`,
       `[ -f ${shellQuoted(`${path}${PREVIOUS_SUFFIX}`)} ] && echo "${mark} ${index} previous"`,
     );
   });
   // Said alongside the first read, so that a read costs no extra trip to the host.
-  if (folder !== null) lines.push(`[ -f ${shellQuoted(journalPath(folder))} ] && echo "${mark} ${JOURNAL_SEEN_LINE}"`);
+  if (withJournal) lines.push(`[ -f ${shellQuoted(journalPath(folder))} ] && echo "${mark} ${JOURNAL_SEEN_LINE}"`);
   lines.push("exit 0");
   return lines.join("\n");
 }
 
 function parseFiles(mark: string, output: string) {
-  const parsed = new Map<number, { text: string | null; big: boolean; hasPrevious: boolean; encoded: string[] }>();
+  const parsed = new Map<
+    number,
+    { text: string | null; big: boolean; outside: boolean; hasPrevious: boolean; encoded: string[] }
+  >();
   let current: number | null = null;
   for (const line of output.split("\n")) {
     if (!line.startsWith(`${mark} `)) {
@@ -168,14 +200,15 @@ function parseFiles(mark: string, output: string) {
     const [, indexText, what] = line.trim().split(" ");
     const index = Number(indexText);
     if (what === "file") {
-      parsed.set(index, { text: "", big: false, hasPrevious: false, encoded: [] });
+      parsed.set(index, { text: "", big: false, outside: false, hasPrevious: false, encoded: [] });
       current = index;
       continue;
     }
     const entry = parsed.get(index);
     if (entry === undefined) continue;
-    if (what === "absent") entry.text = null;
+    if (what === "absent" || what === "outside") entry.text = null;
     if (what === "big") entry.big = true;
+    if (what === "outside") entry.outside = true;
     if (what === "previous") entry.hasPrevious = true;
     current = null;
   }
@@ -407,7 +440,7 @@ export class Stacks {
     const defaultEnv = stack.environmentFile ?? `${stack.folder}/${DEFAULT_ENV_FILE}`;
     const firstEnv = isInside(defaultEnv, stack.folder) ? [defaultEnv] : [];
     const first = await hostScript(
-      readFilesScript(mark, [...stack.composeFiles, ...firstEnv], stack.folder),
+      readFilesScript(mark, [...stack.composeFiles, ...firstEnv], stack.folder, true),
       READ_TIMEOUT_MILLISECONDS,
     );
     // Nobody should open a mix of two versions. Within a change this is that change's own journal, or already handled.
@@ -421,6 +454,8 @@ export class Stacks {
     }
     if (first.exitCode !== 0) return refused(STACK_OUTCOMES.notRead(stack.project, tail(first.output)));
     const firstFiles = parseFiles(mark, first.output);
+    const outside = stack.composeFiles.find((_, index) => firstFiles.get(index)?.outside === true);
+    if (outside !== undefined) return refused(STACK_OUTCOMES.outsideFolder(outside, stack.folder));
     if (stack.composeFiles.some((_, index) => firstFiles.get(index)?.big === true))
       return refused(STACK_OUTCOMES.tooBig(stack.project));
     const composeTexts = stack.composeFiles.map((_, index) => firstFiles.get(index)?.text ?? null);
@@ -432,7 +467,9 @@ export class Stacks {
     // A second trip only for settings files the Compose files name beyond the usual one.
     const unread = envPaths.filter((path) => !firstEnv.includes(path));
     const second =
-      unread.length === 0 ? null : await hostScript(readFilesScript(mark, unread), READ_TIMEOUT_MILLISECONDS);
+      unread.length === 0
+        ? null
+        : await hostScript(readFilesScript(mark, unread, stack.folder), READ_TIMEOUT_MILLISECONDS);
     if (second !== null && second.exitCode !== 0)
       return refused(STACK_OUTCOMES.notRead(stack.project, tail(second.output)));
     const later = second === null ? new Map() : parseFiles(mark, second.output);
@@ -451,9 +488,11 @@ export class Stacks {
     });
     const files = [
       ...stack.composeFiles.map((path, index) => entry(path, STACK_FILE_KIND.compose, firstFiles.get(index))),
-      // Big settings files are left out rather than cut short.
+      // Big settings files are left out rather than cut short, and those outside its folder are not its to show.
       ...envPaths.flatMap((path) =>
-        envFileOf(path)?.big === true ? [] : [entry(path, STACK_FILE_KIND.env, envFileOf(path))],
+        envFileOf(path)?.big === true || envFileOf(path)?.outside === true
+          ? []
+          : [entry(path, STACK_FILE_KIND.env, envFileOf(path))],
       ),
     ];
     return {
@@ -470,7 +509,11 @@ export class Stacks {
   /** Has the host's own Compose read the edited files, without touching the real ones, and says what would change. */
   private async check(stack: Stack, edited: readonly EditedStackFile[], read?: StackAnswer): Promise<StackCheck> {
     const { hostScript } = this.dependencies;
-    const allowed = await this.allowedPaths(stack, read);
+    const current = read ?? (await this.read(stack));
+    const empty = { recreate: [], unchanged: [], added: [], removed: [], warnings: [] };
+    // Compose is asked about no file the read would not open: what it says of one could quote it.
+    if (current.files == null) return { ...empty, problem: current.error ?? STACK_OUTCOMES.unreadable };
+    const allowed = await this.allowedPaths(stack, current);
     const usable = edited.filter(({ path }) => allowed.has(path));
     const overrides = new Map(usable.map(({ path }, index) => [path, `"$work/${index}"`]));
     const writes = usable.map(
@@ -491,7 +534,6 @@ export class Stacks {
         `$compose ${this.composeArguments(stack, overrides)} config --format json 2>/dev/null; } | base64 | tr -d '\\n'`,
     ].join("\n");
     const ran = await hostScript(script, READ_TIMEOUT_MILLISECONDS);
-    const empty = { recreate: [], unchanged: [], added: [], removed: [], warnings: [] };
     if (ran.exitCode !== 0) {
       const named = usable.reduce(
         (output, { path }, index) =>
@@ -636,10 +678,7 @@ export class Stacks {
       COMPOSE_LINE,
       `$compose -p ${shellQuoted(stack.project)} logs --no-color --timestamps --tail=${LOG_LINES} 2>&1`,
     ].join("\n");
-    const ran = await this.dependencies.hostScript(
-      script.replace(" --no-log-prefix=false", ""),
-      READ_TIMEOUT_MILLISECONDS,
-    );
+    const ran = await this.dependencies.hostScript(script, READ_TIMEOUT_MILLISECONDS);
     const lines = ran.output.split("\n").filter((line) => line.trim() !== "");
     const time = (line: string) => /\d{4}-\d{2}-\d{2}T[\d:.]+/.exec(line)?.[0] ?? "";
     const ordered = lines.toSorted((first, second) => time(first).localeCompare(time(second)));
@@ -717,6 +756,9 @@ export class Stacks {
   async answer(request: StackRequest): Promise<StackAnswer> {
     try {
       if (!this.dependencies.settings.containerAccess) return refused(STACK_OUTCOMES.accessOff);
+      if (READS_FILES.has(request.kind) && !this.dependencies.settings.hostDeploy) {
+        return refused(STACK_OUTCOMES.filesOff);
+      }
       const stack = await this.stackOf(request.project);
       if (stack === null) return refused(STACK_OUTCOMES.notCompose(request.project));
       if (request.kind === STACK_ASK.read) return await this.read(stack);
@@ -737,13 +779,28 @@ export class Stacks {
     return (await this.resolvedConfig(stack)).services[service];
   }
 
-  private async resolvedConfig(stack: Stack): Promise<ParsedConfig> {
+  /** How Compose reads the stack's files, or, given edits, how it would read them with those, nothing written. */
+  private async resolvedConfig(
+    stack: Stack,
+    edited: readonly EditedStackFile[] = [],
+    read?: StackAnswer,
+  ): Promise<ParsedConfig> {
+    const allowed = edited.length === 0 ? new Set<string>() : await this.allowedPaths(stack, read);
+    const usable = edited.filter(({ path }) => allowed.has(path));
+    const overrides = new Map(usable.map(({ path }, index) => [path, `"$work/${index}"`]));
+    const writes = usable.map(
+      ({ text }, index) =>
+        `printf %s ${shellQuoted(Buffer.from(text).toString("base64"))} | base64 -d > "$work/${index}"`,
+    );
     const mark = `AUTOHEAL-${randomUUID()}`;
     const script = [
       PATH_LINE,
       COMPOSE_LINE,
+      "work=$(mktemp -d) || exit 1",
+      `trap 'rm -rf "$work"' EXIT`,
+      ...writes,
       `echo "${mark}"`,
-      `$compose ${this.composeArguments(stack)} config --format json 2>/dev/null | base64 | tr -d '\\n'`,
+      `$compose ${this.composeArguments(stack, overrides)} config --format json 2>/dev/null | base64 | tr -d '\\n'`,
     ].join("\n");
     const ran = await this.dependencies.hostScript(script, READ_TIMEOUT_MILLISECONDS);
     return parseConfig(ran.output.split(mark)[1] ?? "");
@@ -867,6 +924,199 @@ export class Stacks {
   }
 
   /**
+   * A newer version handed to the agent: its tag changed where the files write it, and only that, as Compose itself
+   * reads the files before and after; every container the change moves stopped and its data copied aside first; and,
+   * when one does not come back well, the data, the files and the old containers all put back.
+   */
+  async changeTag(name: string, tag: string, keeper: DataKeeper, report?: Pick<UpdateReport, "enter">) {
+    const details = await this.dependencies.docker.inspect(name);
+    const project = details?.Config.Labels?.[COMPOSE_PROJECT_LABEL];
+    const service = details?.Config.Labels?.[LABELS.service];
+    if (details === null || project === undefined || service === undefined) {
+      return didNotRun(STACK_OUTCOMES.tagNotChanged(STACK_OUTCOMES.notCompose(name)));
+    }
+    const stack = await this.stackOf(project);
+    if (stack === null) return didNotRun(STACK_OUTCOMES.tagNotChanged(STACK_OUTCOMES.notCompose(project)));
+    return this.whileChanging(stack, didNotRun, () => this.retag(stack, service, tag, keeper, report));
+  }
+
+  private async retag(
+    stack: Stack,
+    service: string,
+    tag: string,
+    keeper: DataKeeper,
+    report?: Pick<UpdateReport, "enter">,
+  ): Promise<StackRun> {
+    const notChanged = (reason: string) => didNotRun(STACK_OUTCOMES.tagNotChanged(reason));
+    const read = await this.read(stack);
+    if (read.files == null) return notChanged(read.error ?? STACK_OUTCOMES.unreadable);
+    const files = read.files.files;
+    const compose = files.findLast(
+      ({ kind, text }) => kind === STACK_FILE_KIND.compose && text !== null && definesService(text, service),
+    );
+    if (compose === undefined) return notChanged(COMPOSE_EDIT_PROBLEMS.serviceNotFound(service));
+    const environmentPath = stack.environmentFile ?? `${stack.folder}/${DEFAULT_ENV_FILE}`;
+    const envTexts = new Map(
+      files.flatMap(({ kind, path, text }) => (kind === STACK_FILE_KIND.env ? [[path, text] as const] : [])),
+    );
+    const edit = editedImageTag({ text: compose.text!, service, environmentPath, envTexts, tag });
+    if (edit.problem !== null) return notChanged(edit.problem);
+    const envEdits = [...edit.envTexts].map(([path, text]) => ({
+      path,
+      text,
+      file: files.find((each) => each.path === path),
+    }));
+    if (envEdits.some(({ file }) => file === undefined)) return notChanged(STACK_OUTCOMES.tooBig(stack.project));
+    const edited: EditedStackFile[] = [
+      ...(edit.text === compose.text ? [] : [{ path: compose.path, text: edit.text, hash: compose.hash }]),
+      ...envEdits.map(({ path, text, file }) => ({ path, text, hash: file!.hash })),
+    ];
+    // Compose's own reading of both, before anything is stopped or written: only the tag may move.
+    const variable = edit.place.variable;
+    const before = await this.resolvedConfig(stack);
+    const after = await this.resolvedConfig(stack, edited, read);
+    const unread = Object.keys(before.services).length === 0 || Object.keys(after.services).length === 0;
+    if (unread) return notChanged(STACK_OUTCOMES.unreadable);
+    const services = servicesMovedByTag(before.services, after.services, tag, variable);
+    if (services === null || !services.includes(service)) return notChanged(STACK_OUTCOMES.tagMoreThanTag);
+    const where = this.placeOf(stack, edit.place, compose.path);
+    const moving = await this.keptAside(stack, services, keeper, report);
+    if (typeof moving === "string") return didNotRun(moving);
+    const saved = await this.save(stack, edited);
+    if (saved.error !== null) {
+      await this.bringUp(stack, moving);
+      return notChanged(saved.error);
+    }
+    report?.enter(UPDATE_PHASE.recreating);
+    const ran = await this.bringUp(stack, moving);
+    report?.enter(UPDATE_PHASE.checking);
+    const problem = ran.exitCode !== 0 ? tail(ran.output) : await this.firstProblem(stack, moving);
+    // What it ran before: the tag the files are put back on when the new one does not hold.
+    const was = imageTag(moving.find((each) => each.service === service)?.details.Config.Image ?? "");
+    if (problem !== null) return this.putBackTag(stack, moving, { problem, was }, keeper, report);
+    for (const { name } of moving) await keeper.discard(name);
+    void this.refreshDrift().catch(() => undefined);
+    const names = moving.map(({ name }) => name);
+    const running = moving.some((each) => each.running);
+    return {
+      succeeded: true,
+      outcome: running
+        ? STACK_OUTCOMES.tagChanged(names, tag, where)
+        : STACK_OUTCOMES.tagChangedStopped(names, tag, where),
+      output: null,
+    };
+  }
+
+  // Where the tag was written, as a person reads it: the image line of a Compose file, or one variable in the .env.
+  private placeOf(stack: Stack, place: TagPlace, composePath: string): string {
+    return place.variable === null
+      ? STACK_OUTCOMES.tagLine(relativeTo(stack.folder, composePath))
+      : STACK_OUTCOMES.tagVariable(place.variable, relativeTo(stack.folder, place.path));
+  }
+
+  /**
+   * Stops the containers of these services and copies their data aside, as they are before the change. The words
+   * why when a copy could not be made: nothing is changed then, and they start again. Data over the host's limit goes
+   * ahead without a copy, as an update's does.
+   */
+  private async keptAside(
+    stack: Stack,
+    services: readonly string[],
+    keeper: DataKeeper,
+    report?: Pick<UpdateReport, "enter">,
+  ): Promise<Moving[] | string> {
+    const { docker } = this.dependencies;
+    const members = stack.members.filter(
+      (each) => services.includes(each.Labels?.[LABELS.service] ?? "") && !isOneOff(each),
+    );
+    report?.enter(UPDATE_PHASE.stopping);
+    const stopped = await this.onServices(stack, "stop", services);
+    if (stopped.exitCode !== 0) {
+      await this.onServices(stack, "start", services);
+      return STACK_OUTCOMES.tagNotChanged(tail(stopped.output) || STACK_OUTCOMES.failed(stack.project));
+    }
+    report?.enter(UPDATE_PHASE.keepingData);
+    const moving: Moving[] = [];
+    for (const member of members) {
+      const name = nameOf(member);
+      const details = await docker.inspect(name);
+      if (details === null) continue;
+      const kept = await keeper.take(name, details);
+      const service = member.Labels?.[LABELS.service] ?? "";
+      moving.push({ name, service, running: member.State !== EXITED_STATE, details, kept });
+    }
+    const notKept = moving.find(({ kept }) => !kept.complete && kept.oversized !== true);
+    if (notKept === undefined) return moving;
+    for (const { name } of moving) await keeper.discard(name);
+    await this.bringUp(stack, moving);
+    return STACK_OUTCOMES.tagNoCopy(notKept.kept.outcome);
+  }
+
+  // Each as it was: the ones that ran are brought up, the ones that were stopped are made but stay stopped.
+  private async bringUp(stack: Stack, moving: readonly Moving[]) {
+    const running = moving.filter((each) => each.running).map(({ service }) => service);
+    const stopped = moving.filter((each) => !each.running).map(({ service }) => service);
+    const made = stopped.length === 0 ? null : await this.onServices(stack, "up --no-start --no-deps", stopped);
+    if (made !== null && made.exitCode !== 0) return made;
+    return running.length === 0
+      ? (made ?? { exitCode: 0, output: "" })
+      : this.onServices(stack, "up -d --no-deps", running);
+  }
+
+  private onServices(stack: Stack, command: string, services: readonly string[]) {
+    const script = [
+      PATH_LINE,
+      COMPOSE_LINE,
+      `$compose ${this.composeArguments(stack)} ${command} ${services.map(shellQuoted).join(" ")} 2>&1`,
+    ].join("\n");
+    return this.dependencies.hostScript(script, UP_TIMEOUT_MILLISECONDS);
+  }
+
+  private async firstProblem(stack: Stack, moving: readonly Moving[]): Promise<string | null> {
+    for (const { service } of moving.filter((each) => each.running)) {
+      const problem = await this.settled(stack, service);
+      if (problem !== null) return problem;
+    }
+    return null;
+  }
+
+  // The change did not hold: the new containers stop, their data goes back, the files go back, the old ones return.
+  private async putBackTag(
+    stack: Stack,
+    moving: readonly Moving[],
+    { problem, was }: { problem: string; was: string },
+    keeper: DataKeeper,
+    report?: Pick<UpdateReport, "enter">,
+  ): Promise<StackRun> {
+    report?.enter(UPDATE_PHASE.undoing);
+    const failedToo = (undo: string, output: string | null = null) =>
+      didNotRun(STACK_OUTCOMES.tagNotPutBack(problem, undo), output);
+    await this.onServices(
+      stack,
+      "stop",
+      moving.map(({ service }) => service),
+    );
+    for (const { name, details } of moving.filter((each) => each.kept.complete)) {
+      const restored = await keeper.restore(name, details);
+      if (restored.problem !== null) return failedToo(restored.problem);
+    }
+    const files = await this.restore(stack);
+    if (files.error != null) return failedToo(files.error);
+    const ran = await this.bringUp(stack, moving);
+    if (ran.exitCode !== 0) return failedToo(STACK_OUTCOMES.failed(stack.project), redactSecrets(tail(ran.output)));
+    const back = await this.firstProblem(stack, moving);
+    if (back !== null) return failedToo(back);
+    for (const { name } of moving) await keeper.discard(name);
+    const names = moving.map(({ name }) => name);
+    const dataKept = moving.some((each) => each.kept.oversized === true);
+    return didNotRun(
+      dataKept
+        ? STACK_OUTCOMES.tagPutBackDataKept(names, was, problem)
+        : STACK_OUTCOMES.tagPutBack(names, was, problem),
+    );
+  }
+
+  /**
    * Null once everything this change should have left is there and well; otherwise what is not. With a service, that
    * service alone; without one, every service Compose says the stack has now, and only those: a container of a service
    * since taken out of the file, or one `compose run` left, is not this change's doing.
@@ -917,16 +1167,22 @@ export class Stacks {
     return ((await this.stackOf(project))?.members ?? []).map(nameOf);
   }
 
-  async run(action: string, details: StackJobDetails): Promise<StackRun> {
+  async run(action: string, details: StackJobDetails, report?: Pick<UpdateReport, "enter">): Promise<StackRun> {
     const stack = await this.stackOf(details.project);
     if (stack === null) return didNotRun(STACK_OUTCOMES.notCompose(details.project));
     // Held for the whole of it, not only to start from files an interrupted save left whole: Compose reads those
     // files as it runs, and what it brought up is looked at afterwards, so a save waits its turn instead of cutting
     // in. Another project's is its own lock, and a body that throws or times out still gives this one up.
-    return this.whileChanging(stack, didNotRun, () => this.lifecycle(action, details, stack));
+    return this.whileChanging(stack, didNotRun, () => this.lifecycle(action, details, stack, report));
   }
 
-  private async lifecycle(action: string, details: StackJobDetails, stack: Stack): Promise<StackRun> {
+  private async lifecycle(
+    action: string,
+    details: StackJobDetails,
+    stack: Stack,
+    report?: Pick<UpdateReport, "enter">,
+  ): Promise<StackRun> {
+    const bringsUp = action === JOB_ACTION.stackUp || action === JOB_ACTION.stackRebuild;
     const reconciling = action === JOB_ACTION.stackUp ? details.reconcile : undefined;
     let reconciled: string[] = [];
     if (reconciling !== undefined) {
@@ -971,11 +1227,13 @@ export class Stacks {
       chosen.line,
       ...(dataLines.length === 0 ? [] : ["code=$?", "[ $code -eq 0 ] || exit $code", ...dataLines]),
     ].join("\n");
+    if (bringsUp) report?.enter(UPDATE_PHASE.recreating);
     const ran = await this.dependencies.hostScript(script, chosen.timeout);
     const output = redactSecrets(tail(ran.output));
     if (ran.exitCode === EXIT_FILES_MISSING) return didNotRun(STACK_OUTCOMES.filesMissing(stack.project), output);
     if (ran.exitCode !== 0) return didNotRun(STACK_OUTCOMES.failed(stack.project), output);
-    if (action === JOB_ACTION.stackUp || action === JOB_ACTION.stackRebuild) {
+    if (bringsUp) {
+      report?.enter(UPDATE_PHASE.checking);
       const problem = await this.settled(stack);
       void this.refreshDrift().catch(() => undefined);
       if (problem !== null) return didNotRun(STACK_OUTCOMES.cameBackBadly(problem), output);

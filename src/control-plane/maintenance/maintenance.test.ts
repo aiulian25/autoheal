@@ -9,9 +9,13 @@ import { hosts, users, maintenanceWindows } from "../database/schema.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { MAINTENANCE_MAX_MILLISECONDS, type MaintenanceView } from "../../shared/maintenance.js";
-import { startTestControlPlane, type TestControlPlane, type TestClient } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestControlPlane,
+  type TestClient,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { AGENT_AUTOHEAL, JOB_ACTION } from "../../shared/constants.js";
@@ -27,7 +31,7 @@ describe("maintenance windows", () => {
     plane.runnerApp.inject({
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,
-      headers: { authorization: `Bearer ${decodeJoinCode(host.joinCode)!.token}` },
+      headers: { authorization: `Bearer ${runnerTokenOf(host)}` },
       payload: { ...heartbeatWith(), ...(supported ? { maintenanceGeneration: generation } : {}) },
     });
   beforeEach(async () => {

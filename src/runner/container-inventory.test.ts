@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeDockerEngine, containerIdOf, exitedContainer } from "../../test/fakes/fake-docker-engine.js";
 import { ContainerInventory } from "./container-inventory.js";
 import { DockerClient } from "./docker-client.js";
+import { answerHostProfile } from "./host-profile.js";
 
 const MEBIBYTE = 1024 ** 2;
 const GIBIBYTE = 1024 ** 3;
@@ -126,6 +127,46 @@ describe("ContainerInventory", () => {
 
   afterEach(() => engine.close());
 
+  it("leaves out Autoheal's own helpers, and shows Compose's copy of a container it replaces as that one row", async () => {
+    const docker = new DockerClient(engine.socketPath);
+    const copyId = "c0ffee0123456789".padEnd(64, "0");
+    const helperId = "deadbeef".padEnd(64, "0");
+    const copy = { ...runningContainer("paperless"), Id: copyId, Name: `/${copyId.slice(0, 12)}_paperless` };
+    const helper = {
+      ...runningContainer("autoheal-terminal-1"),
+      Id: helperId,
+      Config: { Image: "autoheal", Labels: { "com.autoheal.terminal": "1" } },
+    };
+    const summaryOf = (details: typeof copy) => ({
+      Id: details.Id,
+      Names: [details.Name],
+      State: "running",
+      Status: "Up 2 seconds",
+      Labels: details.Config.Labels,
+    });
+    const swapping = new ContainerInventory(
+      {
+        containerSummaries: async () => [
+          ...(await docker.containerSummaries()),
+          summaryOf(copy),
+          summaryOf(helper as typeof copy),
+        ],
+        inspect: async (id: string) => (id === copyId ? copy : id === helperId ? helper : docker.inspect(id)),
+        statsOnce: (id: string) => docker.statsOnce(id),
+        inspectImage: (reference: string) => docker.inspectImage(reference),
+      } as never,
+      () => now,
+    );
+
+    const names = async () => (await swapping.snapshot()).map(({ name }) => name);
+    expect(await names()).toEqual(["paperless", "tika"]);
+    // The moment between Compose renaming the old one and making the new one: still one row, under its own name.
+    engine.remove("paperless");
+    const during = await swapping.snapshot();
+    expect(during.map(({ name }) => name)).toEqual(["paperless", "tika"]);
+    expect(during[0]!.containerId).toBe(copyId.slice(0, 12));
+  });
+
   it("reports every container with its state, health, compose project and restart policy", async () => {
     const [paperless, tika] = await inventory.snapshot();
     expect(paperless).toEqual({
@@ -144,6 +185,7 @@ describe("ContainerInventory", () => {
       composeService: "paperless",
       link: null,
       version: null,
+      source: null,
       updatePolicy: null,
       update: null,
       ports: [],
@@ -179,6 +221,20 @@ describe("ContainerInventory", () => {
       hostNetwork: false,
     });
     expect(snapshots.find((snapshot) => snapshot.name === "plex")).toMatchObject({ ports: [], hostNetwork: true });
+  });
+
+  it("gives the host's profile what it already read, asking Docker about none of it again", async () => {
+    await inventory.snapshot();
+    engine.inspected.length = 0;
+    const answer = await answerHostProfile({
+      docker: new DockerClient(engine.socketPath),
+      details: (summary) => inventory.detailsOf(summary),
+      files: { filesystem: async () => null },
+      hostRoot: "/host",
+      containerAccess: true,
+    });
+    expect(answer).toMatchObject({ error: null, profile: { containers: 2 } });
+    expect(engine.inspected).toEqual([]);
   });
 
   it("inspects a container again only when its state or health changes, or after one of its events", async () => {
@@ -264,6 +320,29 @@ describe("ContainerInventory", () => {
     forgotten.Image = `sha256:${"c".repeat(64)}`;
     engine.add(forgotten);
     expect(await versionOf("forgotten")).toBeNull();
+  });
+
+  it("reads where its image's code lives from its labels, OCI's or Label Schema's, and only an http or https link", async () => {
+    const [oci, schema, script] = ["d", "e", "f"].map((digit) => `sha256:${digit.repeat(64)}`);
+    engine.imageLabels.set(oci!, { "org.opencontainers.image.source": "https://github.com/immich-app/immich" });
+    engine.imageLabels.set(schema!, { "org.label-schema.vcs-url": "https://codeberg.org/example/radicale" });
+    engine.imageLabels.set(script!, { "org.opencontainers.image.source": "javascript:alert(1)" });
+    for (const [name, image] of [
+      ["immich", oci!],
+      ["radicale", schema!],
+      ["tool", script!],
+    ] as const) {
+      const container = runningContainer(name);
+      container.Image = image;
+      engine.add(container);
+    }
+    const sourceOf = async (name: string) =>
+      (await inventory.snapshot()).find((container) => container.name === name)?.source;
+    expect(await sourceOf("immich")).toBe("https://github.com/immich-app/immich");
+    expect(await sourceOf("radicale")).toBe("https://codeberg.org/example/radicale");
+    expect(await sourceOf("tool")).toBeNull();
+    // Asked of Docker once for each image, with its version.
+    expect([...engine.imagesInspected].sort()).toEqual([oci, schema, script]);
   });
 
   it("drops a container once it is removed", async () => {

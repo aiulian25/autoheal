@@ -9,6 +9,7 @@ import { hosts, jobs, users } from "../database/schema.js";
 export type JobRow = typeof jobs.$inferSelect;
 
 const storedPackages = z.array(packageNameSchema).max(HOST_PACKAGE_LIMIT);
+const storedStack = z.object({ project: z.string() });
 
 /** The packages a job names, as stored with it; none for a job that names none. */
 export const packagesOf = (json: string | null): string[] =>
@@ -42,5 +43,6 @@ export function jobViews(databaseHandle: DatabaseHandle, condition: SQL | undefi
       recoveryBackupId: job.recoveryBackupId,
       // Kept in memory while it runs: the jobs service adds it.
       progress: null,
+      stack: job.stackJson === null ? null : (storedStack.safeParse(JSON.parse(job.stackJson)).data?.project ?? null),
     }));
 }

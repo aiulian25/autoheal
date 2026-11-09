@@ -1,0 +1,394 @@
+/* --- an incident: Ollama's call, the guard's checks, and what happened, step by step -------------- */
+
+.page.incident {
+  gap: 0;
+}
+
+.crumbs {
+  font-size: var(--text-small);
+}
+
+.crumbs .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.crumbs [aria-current="page"] {
+  color: var(--text);
+}
+
+.incident .crumbs {
+  margin-top: -8px;
+}
+
+.incident-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 24px;
+  font-size: var(--text-small);
+}
+
+.incident-title {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: 11.5px;
+}
+
+.incident-title h1 {
+  font-size: 1.625rem;
+  letter-spacing: -0.01em;
+}
+
+/* The way to the container sits on the title's last line, a little below its box. */
+.incident-title > a {
+  margin-bottom: -6px;
+}
+
+.incident-title .on-host {
+  margin-left: 6px;
+  font-family: var(--font-body);
+  font-size: 1.125rem;
+  font-weight: var(--weight-normal);
+  color: var(--text-muted);
+}
+
+.decision-panel {
+  margin-top: 28px;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+}
+
+.decision-panel.waiting {
+  background: var(--panel-wash);
+  border-color: var(--panel-border);
+}
+
+.decision-panel.waiting .decision-panel-actions {
+  background: var(--panel-footer);
+  border-radius: 0 0 var(--radius-large) var(--radius-large);
+}
+
+.decision-panel-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  padding: 24px 26px;
+}
+
+@media (min-width: 64rem) {
+  .decision-panel-body {
+    grid-template-columns: minmax(0, 1fr) 506px;
+    gap: 48px;
+  }
+}
+
+.call h2 {
+  margin-top: 18px;
+  font-size: 1.5rem;
+  line-height: 1.2;
+  letter-spacing: var(--title-tracking);
+}
+
+.call .diagnosis {
+  margin-top: 16.5px;
+  font-size: var(--text-large);
+  font-style: italic;
+  color: var(--text-soft);
+}
+
+.call > p.small {
+  margin-top: 11px;
+  font-size: var(--text-body);
+}
+
+.call strong {
+  color: var(--text);
+}
+
+.checks {
+  list-style: none;
+  margin: 13.5px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12.2px;
+}
+
+.checks li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.2;
+}
+
+.checks .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--good);
+}
+
+.decision-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 16px 26px;
+  border-top: var(--border-width) solid var(--warning-border);
+}
+
+.decision-panel:not(.waiting) .decision-panel-actions {
+  border-top-color: var(--border);
+}
+
+.decision-panel-actions .push {
+  margin-left: auto;
+}
+
+.decision-panel-actions button.primary {
+  padding-inline: 23px;
+}
+
+/* A second way out that still restarts something: warm, not primary. */
+button.warm {
+  background: var(--warm-control);
+  border-color: var(--warm-control-border);
+}
+
+.decision-panel-actions button.quiet:not(.push) {
+  padding-inline: 14px;
+}
+
+.decision-panel-actions button.quiet.push {
+  padding-right: 0;
+  color: var(--text-soft);
+}
+
+.dependency-chooser {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.dependency-chooser label {
+  min-width: 14rem;
+}
+
+.incident-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 30px;
+  align-items: start;
+  margin-top: 24px;
+}
+
+@media (min-width: 64rem) {
+  .incident-layout {
+    grid-template-columns: minmax(0, 1fr) var(--side-column-width);
+  }
+}
+
+/* The main column: the steps, then the container's last half hour when it was measured. */
+.incident-main {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  min-width: 0;
+}
+
+.incident-steps > h2,
+.incident-usage > h2 {
+  margin-top: 1.5px;
+  font-size: 1.125rem;
+}
+
+.incident-usage > .chart-grid {
+  margin-top: 17px;
+}
+
+.steps-timeline {
+  list-style: none;
+  margin: 17px 0 0;
+  padding: 0;
+}
+
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  column-gap: 14.5px;
+  padding-bottom: 24px;
+}
+
+/* The line that joins each step to the next one. */
+.step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 26px;
+  bottom: 0;
+  width: 2px;
+  background: var(--track);
+}
+
+.step-marker {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-top: -1.5px;
+  border-radius: 50%;
+  background: var(--control);
+  border: var(--border-width) solid var(--control-border);
+}
+
+.step-marker::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.step.danger .step-marker {
+  background: var(--danger-wash);
+  border-color: var(--danger-ring);
+}
+
+.step.danger .step-marker::before {
+  background: var(--danger);
+}
+
+.step.warning .step-marker {
+  background: var(--warning-wash);
+  border-color: var(--warning-ring);
+}
+
+.step.warning .step-marker::before {
+  background: var(--warning);
+}
+
+.step.good .step-marker {
+  background: var(--good-wash);
+  border-color: var(--good-ring);
+  color: var(--good);
+}
+
+.step.good .step-marker::before {
+  content: none;
+}
+
+.step.good .step-marker .icon {
+  width: 12px;
+  height: 12px;
+  stroke-width: 3;
+}
+
+.step.next .step-marker {
+  background: none;
+  border: 1.5px dashed var(--next-ring);
+}
+
+.step.next .step-marker::before {
+  content: none;
+}
+
+.step-body h3 {
+  font-size: var(--text-large);
+  font-weight: var(--weight-strong);
+}
+
+.step.warning .step-body h3 {
+  color: var(--warning);
+}
+
+.step.next .step-body h3 {
+  font-weight: var(--weight-medium);
+  color: var(--text-faint);
+}
+
+.step-body > p {
+  margin-top: 3.5px;
+}
+
+.step-body > .log.excerpt {
+  margin-top: 9px;
+  padding: 12px 18px;
+  font-size: var(--text-small);
+  line-height: 1.63;
+  color: var(--text-soft);
+}
+
+/* Each on its own line: a step can offer more than one thing to open. */
+.step-body > button.link {
+  display: block;
+  margin-top: 11px;
+  font-size: var(--text-small);
+  text-decoration: underline;
+}
+
+.step-body > p + button.link {
+  margin-top: 3.5px;
+}
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.report h4 {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+/* Ollama's steps to fix it by hand, in their order. */
+.repair-steps {
+  list-style: decimal;
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.record {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 88.5px minmax(0, 1fr);
+  gap: 10px 0;
+  margin: 3px 0 0;
+  font-size: var(--text-small);
+}
+
+.facts dt {
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.side-card .button {
+  align-self: flex-start;
+}
+
+.facts-card {
+  padding-bottom: 17.5px;
+}
+
+.runbook-name {
+  margin-top: 3.5px;
+}

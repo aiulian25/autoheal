@@ -46,6 +46,8 @@ export interface SelfUpdateDependencies {
   clock: () => number;
   // Docker names a container's hostname after its id: how the control plane finds its own container.
   ownContainer?: string;
+  // Where the Docker socket is inside its container: DOCKER_SOCKET_PATH, or the default.
+  socketPath?: string;
   // The socket's group, which the helper is given as the control plane was.
   socketGroup?: () => number;
   // Where the admin asks for a signed image: the helper holds the Docker socket, so it is held to that like any update.
@@ -69,6 +71,7 @@ const isClearable = (helper: ContainerDetails | null) =>
  */
 export class SelfUpdateService {
   private readonly ownContainer: string;
+  private readonly socketPath: string;
   private readonly socketGroup: () => number;
   // One update at a time, from before the first wait until its helper runs or it has failed: seeing no helper running
   // cannot be the lock, as a pull can take minutes and another request would see the same.
@@ -76,7 +79,8 @@ export class SelfUpdateService {
 
   constructor(private readonly dependencies: SelfUpdateDependencies) {
     this.ownContainer = dependencies.ownContainer ?? hostname();
-    this.socketGroup = dependencies.socketGroup ?? (() => statSync(DEFAULT_DOCKER_SOCKET_PATH).gid);
+    this.socketPath = dependencies.socketPath ?? DEFAULT_DOCKER_SOCKET_PATH;
+    this.socketGroup = dependencies.socketGroup ?? (() => statSync(this.socketPath).gid);
   }
 
   async view(): Promise<SelfUpdateView> {
@@ -214,7 +218,7 @@ export class SelfUpdateService {
       HostConfig: {
         AutoRemove: true,
         Binds: [
-          `${sourceOf(own, DEFAULT_DOCKER_SOCKET_PATH)}:${DEFAULT_DOCKER_SOCKET_PATH}`,
+          `${sourceOf(own, this.socketPath)}:${DEFAULT_DOCKER_SOCKET_PATH}`,
           `${sourceOf(own, DEFAULT_DATA_DIRECTORY)}:${DEFAULT_DATA_DIRECTORY}`,
         ],
         GroupAdd: [String(this.socketGroup())],
@@ -269,7 +273,7 @@ export class SelfUpdateService {
       return SELF_UPDATE_TEXT.noSocket;
     }
     const mounted = own !== null && sourceOf(own, DEFAULT_DATA_DIRECTORY) !== null;
-    if (!mounted || sourceOf(own, DEFAULT_DOCKER_SOCKET_PATH) === null) {
+    if (!mounted || sourceOf(own, this.socketPath) === null) {
       return SELF_UPDATE_TEXT.noOwnContainer;
     }
     return null;

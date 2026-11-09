@@ -302,6 +302,18 @@ describe("runner config", () => {
     expect(error.message).not.toContain("ahj_garbled");
   });
 
+  it("keeps a code that works once to trade for its token, as one with a token has none of its own yet", () => {
+    const enrolment = `ahe_${"E".repeat(43)}`;
+    const code = encodeJoinCode({ url: "https://192.168.10.83:9443", enrolment, pin });
+    const joining = loadRunnerConfig({ AUTOHEAL_JOIN: code }, noJoinFile);
+    expect(joining.enrolment).toEqual({ url: "https://192.168.10.83:9443", enrolment, pin });
+    expect([joining.controlPlane, joining.ollama, joining.joinFile]).toEqual([null, null, null]);
+    const moved = loadRunnerConfig({ AUTOHEAL_JOIN: code, CONTROL_PLANE_URL: "https://mini.lan:9443" }, noJoinFile);
+    expect(moved.enrolment?.url).toBe("https://mini.lan:9443");
+    const withToken = encodeJoinCode({ url: "https://192.168.10.83:9443", token: runnerToken, pin });
+    expect(loadRunnerConfig({ AUTOHEAL_JOIN: withToken }, noJoinFile).enrolment).toBeNull();
+  });
+
   it("needs a control plane or, on its own, an Ollama", () => {
     expect(configErrorOf(() => loadRunnerConfig({}, noJoinFile)).problems).toEqual([
       "OLLAMA_URL: set AUTOHEAL_JOIN (from the dashboard: Hosts > Add a host), or OLLAMA_URL for a runner on its own",

@@ -22,10 +22,12 @@ export type RunnerUpdateDocker = Pick<
   "pull" | "inspect" | "inspectImage" | "createVolume" | "create" | "start" | "remove"
 >;
 
-/** Where this runner's container is, as Docker knows it, and the group that may use the socket. */
+/** Where this runner's container is, as Docker knows it, where its Docker socket is, and who may use that. */
 export interface OwnContainer {
   /** Its name or id, as Docker knows it. */
   reference: string;
+  /** Where the socket is inside its container: DOCKER_SOCKET_PATH, or the default. */
+  socketPath: string;
   socketGroup: number;
 }
 
@@ -84,7 +86,7 @@ export async function handOverToRelease(
   const details = await docker.inspect(own.reference);
   if (details === null) return refused(RUNNER_UPDATE_TEXT.ownContainerUnknown);
   const reference = updateTarget(referenceOf(details, release), release);
-  const socket = sourceOf(details, DEFAULT_DOCKER_SOCKET_PATH);
+  const socket = sourceOf(details, own.socketPath);
   if (socket === null) return refused(RUNNER_UPDATE_TEXT.noSocket);
   try {
     await docker.pull(reference);

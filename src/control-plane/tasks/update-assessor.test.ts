@@ -22,6 +22,7 @@ const container = (image: string, overrides: Partial<ContainerView> = {}): Conta
   composeService: null,
   link: null,
   version: null,
+  source: null,
   ports: null,
   hostNetwork: false,
   update: { status: "available", checkedAt: 1, policy: "auto", remote: null, reason: null },

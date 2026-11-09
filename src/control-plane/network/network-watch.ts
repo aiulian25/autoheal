@@ -4,6 +4,7 @@ import { describeError } from "../../shared/errors.js";
 import {
   CHECK_RESULT,
   INTERNET_PROBES,
+  INTERNET_PROBE_EVERY_MILLISECONDS,
   INTERNET_PROBE_TIMEOUT_MILLISECONDS,
   INTERNET_STATE_WORDS,
   SPEED_SOURCE,
@@ -95,11 +96,12 @@ export class NetworkWatch {
   private recentBusy: number[] = [];
   private lastInternet: InternetHealth | null = null;
   private exposureReadable = false;
+  private lastOwnCheck: { at: number; works: boolean } | null = null;
   private speedTestRefused = false;
   private lastSpeedTestAsked = 0;
   private logLastAt: number | null = null;
   private logWindow = { second: 0, lines: 0 };
-  private logRefused: { sender: string; at: number } | null = null;
+  private logRefused: { sender: string; at: number; lines: number } | null = null;
   private receiver: Socket | null = null;
   private readonly logSenders: RouterLogSenders;
 
@@ -141,16 +143,14 @@ export class NetworkWatch {
     }
     const at = this.now();
     this.polls += 1;
-    const [works] = await Promise.all([
-      (this.dependencies.ownCheck ?? ownCheck)().catch(() => false),
-      this.dependencies.logPort == null ? undefined : this.logSenders.refresh(),
-    ]);
+    const sendersRefreshed = this.dependencies.logPort == null ? undefined : this.logSenders.refresh();
     try {
       const [clients, devices, internet] = await Promise.all([
         adapter.clients(),
         adapter.devices(),
         adapter.internet(),
       ]);
+      const works = await this.internetWorks(internet.lines[0]?.up === true, at);
       this.reachable = true;
       this.problem = null;
       this.lastDevices = devices;
@@ -165,9 +165,21 @@ export class NetworkWatch {
       // No reading is no news of any device: an unreachable router makes nothing look dropped.
       this.reachable = false;
       this.problem = this.problemIn(error);
-      this.recordInternet([], null, false, works, at);
+      this.recordInternet([], null, false, await this.internetWorks(false, at), at);
     }
+    await sendersRefreshed;
     this.store.sweep(at);
+  }
+
+  // Autoheal's own look past the router, at two public sites: while the router says the line is up and the last look
+  // got out, it holds for a few minutes; a line down, a router that cannot be read or a look that failed looks again now.
+  private async internetWorks(routerSaysUp: boolean, at: number): Promise<boolean> {
+    const last = this.lastOwnCheck;
+    const holds = routerSaysUp && last !== null && last.works && at - last.at < INTERNET_PROBE_EVERY_MILLISECONDS;
+    if (holds) return true;
+    const works = await (this.dependencies.ownCheck ?? ownCheck)().catch(() => false);
+    this.lastOwnCheck = { at, works };
+    return works;
   }
 
   private problemIn(error: unknown): string {
@@ -287,7 +299,7 @@ export class NetworkWatch {
   logLine(line: string, sender: string) {
     const at = this.now();
     if (!this.logSenders.allows(sender)) {
-      this.logRefused = { sender, at };
+      this.logRefused = { sender, at, lines: (this.logRefused?.lines ?? 0) + 1 };
       return;
     }
     const second = Math.floor(at / SECOND);
@@ -488,6 +500,8 @@ export class NetworkWatch {
     const flows = this.store.flows(at - NETWORK_PERIODS.week);
     const logging = this.dependencies.logPort != null;
     const logsFresh = this.logLastAt !== null && at - this.logLastAt < LOG_QUIET_MILLISECONDS;
+    const refused =
+      this.logRefused !== null && at - this.logRefused.at < LOG_QUIET_MILLISECONDS ? this.logRefused : null;
     const rulesResult = () => {
       if (latest === null) return CHECK_RESULT.notTested;
       return latest.confirmed ? CHECK_RESULT.passed : CHECK_RESULT.failed;
@@ -520,10 +534,8 @@ export class NetworkWatch {
         { key: CHECK_KEY.outside, result: CHECK_RESULT.notTested },
       ],
       logLastAt: this.logLastAt,
-      logRefusedSender:
-        !logsFresh && this.logRefused !== null && at - this.logRefused.at < LOG_QUIET_MILLISECONDS
-          ? this.logRefused.sender
-          : null,
+      logRefusedSender: !logsFresh && refused !== null ? refused.sender : null,
+      logIgnored: refused,
       logNameUnresolved: this.logSenders.unresolved,
       exposureReadable: this.exposureReadable || latest !== null,
     };

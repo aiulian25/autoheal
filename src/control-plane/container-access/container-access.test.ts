@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   runnerTokenOf,
   startTestControlPlane,
+  TEST_BACKUP_PASSPHRASE,
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
@@ -14,15 +15,19 @@ import {
   NEW_ADMIN_PASSWORD,
 } from "../../../test/support/second-factor.js";
 import {
+  API_ERRORS,
   API_ROUTES,
   apiPath,
+  type AssignableView,
   type EnrolledHostView,
   type HostView,
   type JobView,
   type TerminalView,
 } from "../../shared/api.js";
 import {
+  FILE_OPERATION,
   HTTP_HEADERS,
+  JOB_EXPIRY_MILLISECONDS,
   SESSION_ID_LENGTH,
   SESSION_IDLE_MILLISECONDS,
   TERMINAL_ENDINGS,
@@ -41,7 +46,10 @@ import {
   type TerminalInput,
   type WorkResponse,
 } from "../../shared/protocol.js";
+import { SecretBox } from "../database/secret-box.js";
 import { auditEvents, sessions, users } from "../database/schema.js";
+import type { HostRow } from "../hosts/hosts-service.js";
+import { SettingsService } from "./settings-service.js";
 
 const SECONDS_PER_STEP = 30_000;
 
@@ -240,6 +248,36 @@ describe("reaching inside containers", () => {
       );
       terminals.printed(host, id, base64("next output"));
       expect(printed).toHaveLength(1);
+    });
+
+    it("ends a revoked host's shells at once, and its runner's waiting poll takes nothing more", async () => {
+      const { files, hostsService, terminals, waitingRunners } = controlPlane.services;
+      const adminId = (await admin.get(API_ROUTES.assignees)).json<AssignableView>().users[0]!.id;
+      const actor = { userId: adminId, username: "admin", ip: "127.0.0.1", requestId: "test" };
+      const { id } = (await openShell()).json<TerminalView>();
+      await started();
+      const stream = admin.get(paths(id).stream);
+      // Its runner waits for keystrokes, and for work, as its host is revoked.
+      const askedForInput = vi.spyOn(terminals, "takeInput");
+      const waited = vi.spyOn(waitingRunners, "wait");
+      const input = asked(id);
+      const polled = runner("GET", RUNNER_ROUTES.containerAccess);
+      while (askedForInput.mock.calls.length === 0 || waited.mock.calls.length === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      // A person's request wakes the poll, and the revoke comes before the poll has looked again.
+      const listing = files
+        .ask(actor, hostId, "paperless", { operation: FILE_OPERATION.list, path: "/", to: null, content: null })
+        .then(
+          () => "answered",
+          (error: { code: string }) => error.code,
+        );
+      hostsService.revoke(actor, hostId);
+
+      expect((await polled).json<ContainerAccessWork>().files).toEqual([]);
+      expect(await listing).toBe(API_ERRORS.hostRevoked);
+      expect(await input).toEqual({ data: [], size: null, closed: true });
+      expect((await stream).body).toContain(TERMINAL_ENDINGS.hostRevoked);
     });
 
     it("ends an open stream and discards queued input when another session revokes its owner", async () => {
@@ -736,6 +774,52 @@ describe("reaching inside containers", () => {
       expect(audit).toContain('"action":"container.settings_changed"');
       expect(audit).toContain("PAPERLESS_SECRET_KEY");
       expect(audit).not.toContain("do-not-log-me");
+    });
+
+    describe("an edit's settings, sealed in its job", () => {
+      const apply = async () =>
+        (await admin.request({ method: "PUT", url: settingsPath(), payload: settings })).json<JobView>();
+      const sealedIn = (jobId: string) =>
+        (
+          controlPlane.services.databaseHandle.sqlite
+            .prepare("SELECT edit_settings AS sealed FROM jobs WHERE id = ?")
+            .get(jobId) as { sealed: string | null }
+        ).sealed;
+
+      it("outlast a restart of the control plane, for its runner to fetch once", async () => {
+        const job = await apply();
+        expect(sealedIn(job.id)).not.toContain("do-not-log-me");
+        const { containerAccess, jobsService, auditLog, waitingRunners, databaseHandle } = controlPlane.services;
+        // A control plane started again: the same database and passphrase, and nothing the last one held in memory.
+        const restarted = new SettingsService(
+          containerAccess,
+          jobsService,
+          auditLog,
+          waitingRunners,
+          databaseHandle,
+          SecretBox.fromPassphrase(TEST_BACKUP_PASSPHRASE),
+        );
+        const host = { id: hostId } as HostRow;
+        expect(restarted.forJob(host, job.id)).toEqual(settings);
+        expect(() => restarted.forJob(host, job.id)).toThrow(
+          expect.objectContaining({ code: API_ERRORS.runnerRequestNotFound }),
+        );
+        expect(sealedIn(job.id)).toBeNull();
+      });
+
+      it("go once nobody can fetch them: when the job is over, or its host is revoked", async () => {
+        const expiring = await apply();
+        controlPlane.clock.now += JOB_EXPIRY_MILLISECONDS;
+        await runner("GET", RUNNER_ROUTES.work);
+        expect(sealedIn(expiring.id)).toBeNull();
+
+        const revoked = await apply();
+        expect(sealedIn(revoked.id)).not.toBeNull();
+        const adminId = (await admin.get(API_ROUTES.assignees)).json<AssignableView>().users[0]!.id;
+        const actor = { userId: adminId, username: "admin", ip: "127.0.0.1", requestId: "test" };
+        controlPlane.services.hostsService.revoke(actor, hostId);
+        expect(sealedIn(revoked.id)).toBeNull();
+      });
     });
 
     it("are changed only through their own route, with plain values", async () => {

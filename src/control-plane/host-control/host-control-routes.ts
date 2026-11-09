@@ -3,6 +3,8 @@ import { z } from "zod";
 import { API_ROUTES } from "../../shared/api.js";
 import {
   ACCESS_ADMIN,
+  IGNORE_EVERY_VERSION,
+  IMAGE_TAG_PATTERN,
   HOST_RESTART_CHOICES,
   HOST_UPDATE_CHOICES,
   HTTP_STATUS,
@@ -36,6 +38,18 @@ const containerControlBody = z
   })
   .refine((change) => change.restart !== undefined || change.update !== undefined);
 
+const ignoredVersionsBody = z.object({
+  changes: z
+    .array(
+      z.object({
+        container: z.string().min(1).max(REPORT_LIMITS.nameCharacters),
+        version: z.union([z.literal(IGNORE_EVERY_VERSION), z.string().regex(IMAGE_TAG_PATTERN)]).nullable(),
+      }),
+    )
+    .min(1)
+    .max(REPORT_LIMITS.containers),
+});
+
 export function registerHostControlRoutes(app: FastifyInstance, hostControl: HostControlService) {
   app.get(API_ROUTES.hostControl, async (request) =>
     hostControl.view(parseBody(hostParameters, request.params).hostId),
@@ -49,6 +63,12 @@ export function registerHostControlRoutes(app: FastifyInstance, hostControl: Hos
   app.put(API_ROUTES.containerControls, { config: { access: ACCESS_ADMIN } }, async (request, reply) => {
     const { hostId } = parseBody(hostParameters, request.params);
     hostControl.setContainers(actorOf(request), hostId, parseBody(containerControlBody, request.body));
+    return reply.code(HTTP_STATUS.noContent).send();
+  });
+
+  app.put(API_ROUTES.hostIgnoredVersions, { config: { access: ACCESS_ADMIN } }, async (request, reply) => {
+    const { hostId } = parseBody(hostParameters, request.params);
+    hostControl.ignoreVersions(actorOf(request), hostId, parseBody(ignoredVersionsBody, request.body).changes);
     return reply.code(HTTP_STATUS.noContent).send();
   });
 

@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestClient,
+  type TestControlPlane,
+} from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { PROBE_LIMITS, PROBE_SCOPE, PROBE_STATE, type ProbeBody, type ProbeView } from "../../shared/probes.js";
 import { RUNNER_ROUTES, type HeartbeatResponse, type ProbeReport } from "../../shared/protocol.js";
 import { ServiceProbes } from "../../runner/service-probes.js";
@@ -49,7 +53,7 @@ describe("checks made from a host rather than from Autoheal", () => {
     tokens = {};
     for (const label of ["Alder", "Birch"]) {
       const enrolled = (await admin.post(API_ROUTES.hosts, { label })).json<EnrolledHostView>();
-      tokens[label] = decodeJoinCode(enrolled.joinCode)!.token;
+      tokens[label] = runnerTokenOf(enrolled);
       await heartbeat(label);
     }
     const hosts = (await admin.get(API_ROUTES.hosts)).json<{ id: string; label: string }[]>();

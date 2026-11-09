@@ -156,6 +156,24 @@ describe("persistent runner safety state", () => {
     expect(guard.restartsUsed()).toEqual({ app: 1 });
     expect(f.volumes.size).toBe(1);
   });
+  it("says Docker could not be read, not that its state is damaged, when Docker is not up yet", async () => {
+    const f = await initialized();
+    const notUp = Object.assign(new Error("connect ENOENT /var/run/docker.sock"), { code: "ENOENT" });
+    const opening = GuardState.open(
+      {
+        ...f.store,
+        volumes: async () => {
+          throw notUp;
+        },
+      },
+      f.timing,
+    );
+    await expect(opening).rejects.toThrow(/from Docker \(connect ENOENT \/var\/run\/docker\.sock\)/);
+    await expect(opening).rejects.not.toThrow("unreadable or invalid");
+    // Once it is up, the state it kept is there as it was.
+    await expect(GuardState.open(f.store, f.timing)).resolves.toBeInstanceOf(GuardState);
+  });
+
   it("refuses duplicate names and impossible future timestamps", async () => {
     const f = await initialized();
     f.guard.takeRestart("app");

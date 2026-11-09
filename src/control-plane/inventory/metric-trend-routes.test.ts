@@ -3,10 +3,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { TREND } from "../../shared/metric-trends.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { metricAnomalies, metricSeries, metricRollups } from "./metric-rollups-schema.js";
 import { jobs, workItems } from "../database/schema.js";
-import { startTestControlPlane, type TestControlPlane, type TestClient } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestControlPlane,
+  type TestClient,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { heartbeatWith, hostHealth, hostMetrics } from "../../../test/support/inventory.js";
 describe("metric trend read and review API", () => {
@@ -19,7 +23,7 @@ describe("metric trend read and review API", () => {
     await plane.runnerApp.inject({
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,
-      headers: { authorization: `Bearer ${decodeJoinCode(enrolled.joinCode)!.token}` },
+      headers: { authorization: `Bearer ${runnerTokenOf(enrolled)}` },
       payload: heartbeatWith({ host: hostHealth({ bootId: "12345678-1234-1234-1234-123456789abc" }) }),
     });
     plane.services.metricsStore.record(hostId, { host: hostMetrics(), containers: [] });

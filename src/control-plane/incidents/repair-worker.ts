@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   hasUpdate,
+  updatesWithoutAsking,
   type ContainerView,
   type HostView,
   type IncidentSummaryView,
@@ -44,7 +45,16 @@ import type { IncidentsService } from "./incidents-service.js";
 export interface RepairWorkerDependencies {
   incidents: Pick<
     IncidentsService,
-    "list" | "find" | "update" | "addEvent" | "reportOf" | "evidenceOf" | "latestEvent" | "latestKind" | "eventsSince"
+    | "list"
+    | "find"
+    | "update"
+    | "updateIf"
+    | "addEvent"
+    | "reportOf"
+    | "evidenceOf"
+    | "latestEvent"
+    | "latestKind"
+    | "eventsSince"
   >;
   inventory: Pick<InventoryService, "hosts" | "containers">;
   jobs: Pick<JobsService, "request" | "view">;
@@ -226,10 +236,21 @@ export class RepairWorker {
       return;
     }
     const offered = this.offered(host, container, dispatched);
-    // Off the person's list while Ollama works on it.
+    // Off the person's list while Ollama works on it: only if it is still on it. This pass listed it before asking
+    // Ollama about the others, so a person may have decided on it since, and their choice stands.
+    const taken = incidents.updateIf(incident.id, INCIDENT_STATUS.awaitingApproval, {
+      status: INCIDENT_STATUS.approved,
+    });
+    if (taken === null) {
+      return;
+    }
     incidents.addEvent(incident.id, TRACE.repairStarted, { offered });
-    incidents.update(incident.id, { status: INCIDENT_STATUS.approved });
     const answer = await this.ask(incident, offered);
+    // Ollama may take minutes, and what ended or decided the incident meanwhile is not undone.
+    if (incidents.find(incident.id).status !== INCIDENT_STATUS.approved) {
+      incidents.addEvent(incident.id, TRACE.repairSkipped, { reason: REPAIR_TEXT.changedMeanwhile });
+      return;
+    }
     if (answer.plan === null) {
       incidents.addEvent(incident.id, TRACE.repairSkipped, { reason: REPAIR_TEXT.unusableAnswer(answer.reason) });
       incidents.update(incident.id, { status: INCIDENT_STATUS.awaitingApproval });
@@ -268,12 +289,14 @@ export class RepairWorker {
 
   /**
    * What may be done to it now: recreate it, always; roll it back while an update keeps its old container aside;
-   * update it when a newer image is out and it is no database, unless a person handed it over; or report.
+   * update it when a newer image is out, as its own answer on new images lets Autoheal apply one alone and it is no
+   * database, or once a person handed it over; or report. One set never to update has no update to offer.
    */
   private offered(host: HostView, container: ContainerView, dispatched: boolean): Repair[] {
     const parked = `${container.name}${OLD_CONTAINER_SUFFIX}`;
     const keptAside = this.dependencies.inventory.containers({ hostId: host.id }).some(({ name }) => name === parked);
-    const updatable = hasUpdate(container) && (dispatched || !isDatabaseImage(container.image));
+    const onItsOwn = updatesWithoutAsking(container) && !isDatabaseImage(container.image);
+    const updatable = hasUpdate(container) && (dispatched || onItsOwn);
     return [
       REPAIR.recreate,
       ...(keptAside ? [REPAIR.rollBack] : []),

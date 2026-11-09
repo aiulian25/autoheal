@@ -29,7 +29,8 @@ import type { DatabaseHandle } from "../database/connection.js";
 import { hosts } from "../database/schema.js";
 import type { SecretBox } from "../database/secret-box.js";
 import { DomainError } from "../domain-error.js";
-import { newToken, type HostRow } from "../hosts/hosts-service.js";
+import type { HostRow } from "../hosts/hosts-service.js";
+import { newToken } from "../../shared/join-code.js";
 import { toHostView } from "../inventory/host-views.js";
 import type { SshKeysService } from "./ssh-keys-service.js";
 import { probeSsh, type SshProbe, type SshTarget } from "./ssh-session.js";
@@ -87,6 +88,8 @@ function settingsAsReported(runner: HostRow): SshHostSettings {
     dryRun: runner.dryRun ?? DEFAULT_SSH_HOST_SETTINGS.dryRun,
     protectedContainers,
     containerAccess: runner.containerAccess ?? DEFAULT_SSH_HOST_SETTINGS.containerAccess,
+    hostTerminal: runner.hostTerminal ?? DEFAULT_SSH_HOST_SETTINGS.hostTerminal,
+    hostDeploy: runner.hostDeploy ?? DEFAULT_SSH_HOST_SETTINGS.hostDeploy,
     hostPackages: reported?.packages?.setting ?? DEFAULT_SSH_HOST_SETTINGS.hostPackages,
   });
 }
@@ -300,7 +303,10 @@ export class SshHostsService {
 
   settingsOf(hostId: string): SshHostSettings {
     const stored = this.sshHost(hostId).sshSettingsJson;
-    return stored === null ? DEFAULT_SSH_HOST_SETTINGS : sshHostSettingsSchema.parse(JSON.parse(stored));
+    // A row saved before a setting existed has none for it: it reads as a runner's .env that leaves it unset.
+    return stored === null
+      ? DEFAULT_SSH_HOST_SETTINGS
+      : sshHostSettingsSchema.parse({ ...DEFAULT_SSH_HOST_SETTINGS, ...JSON.parse(stored) });
   }
 
   updateSettings(actor: Actor, hostId: string, settings: SshHostSettings): SshHostSettings {

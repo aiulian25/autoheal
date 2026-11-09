@@ -12,7 +12,7 @@ import {
   type LifecycleStatus,
 } from "../../shared/constants.js";
 import type { PackageFacts } from "../../shared/protocol.js";
-import { DISTRIBUTION_LIFECYCLE, type ReleaseLifecycle } from "./distribution-lifecycle.js";
+import { DISTRIBUTION_LIFECYCLE, LIFECYCLE_DATES_AS_OF, type ReleaseLifecycle } from "./distribution-lifecycle.js";
 
 // endoflife.date's product and release; a Proxmox VE node counts by Proxmox's release, not Debian's.
 function productOf(release: NonNullable<PackageFacts["release"]>, proxmox: boolean) {
@@ -59,5 +59,6 @@ export function lifecycleOf(facts: PackageFacts | null, now: number): LifecycleV
     status: statusOf(cycle, now),
     securityUntil: dayOf(cycle.eol),
     extendedUntil: dayOf(cycle.extendedSupport),
+    datesAsOf: LIFECYCLE_DATES_AS_OF,
   };
 }

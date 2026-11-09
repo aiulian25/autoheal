@@ -1,5 +1,5 @@
 import type { CookieSerializeOptions } from "@fastify/cookie";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { API_ERRORS, API_ROUTES } from "../../shared/api.js";
 import {
@@ -36,6 +36,12 @@ export const signInRateLimit = { max: SIGN_IN_RATE_LIMIT_PER_MINUTE, timeWindow:
 // A step that gives a session a new token found it gone: signed out, or expired, meanwhile.
 export const sessionEnded = () => new HttpError(HTTP_STATUS.unauthorized, API_ERRORS.notSignedIn);
 
+// Refused before the password is looked at: try again after this many seconds.
+function throttled(reply: FastifyReply, retryAfterSeconds: number) {
+  reply.header(HTTP_HEADERS.retryAfter, String(retryAfterSeconds));
+  return new HttpError(HTTP_STATUS.tooManyRequests, API_ERRORS.tooManyAttempts, { retryAfterSeconds });
+}
+
 export function registerAuthRoutes(app: FastifyInstance, authService: AuthService) {
   app.post(
     API_ROUTES.login,
@@ -43,10 +49,7 @@ export function registerAuthRoutes(app: FastifyInstance, authService: AuthServic
     async (request, reply) => {
       const result = await authService.login(parseBody(loginBody, request.body), requestContext(request));
       if (result.kind === "throttled") {
-        reply.header(HTTP_HEADERS.retryAfter, String(result.retryAfterSeconds));
-        throw new HttpError(HTTP_STATUS.tooManyRequests, API_ERRORS.tooManyAttempts, {
-          retryAfterSeconds: result.retryAfterSeconds,
-        });
+        throw throttled(reply, result.retryAfterSeconds);
       }
       if (result.kind === "rejected") {
         throw new HttpError(HTTP_STATUS.unauthorized, API_ERRORS.wrongCredentials);
@@ -71,6 +74,9 @@ export function registerAuthRoutes(app: FastifyInstance, authService: AuthServic
   app.post(API_ROUTES.changePassword, changePasswordRoute, async (request, reply) => {
     const change = parseBody(changePasswordBody, request.body);
     const result = await authService.changePassword(request.authSession!, change, requestContext(request));
+    if (result.kind === "throttled") {
+      throw throttled(reply, result.retryAfterSeconds);
+    }
     if (result.kind === "wrong_password") {
       throw new HttpError(HTTP_STATUS.badRequest, API_ERRORS.wrongPassword);
     }

@@ -1,0 +1,88 @@
+/* --- the board: every open problem in the column of who has it now ---------------------------- */
+
+.board-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* Below the width for both side by side, the chosen card's details come first, above the columns. */
+.drawer {
+  order: -1;
+}
+
+/* Columns that do not fit beside each other wrap onto the next row: none is hidden sideways. */
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--board-column-minimum-width), 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: var(--board-column-minimum-height);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface-muted);
+}
+
+.column h2 {
+  font-size: var(--text-badge);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.flow-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-height: 0;
+  padding: var(--space-3);
+  text-align: left;
+  white-space: normal;
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: var(--radius);
+}
+
+.flow-card:hover {
+  border-color: var(--control-border);
+}
+
+.flow-card[aria-pressed="true"] {
+  border-color: var(--primary);
+  box-shadow: inset var(--step-bar-width) 0 0 var(--primary);
+}
+
+/* Wide enough for the columns and the details side by side. */
+@media (min-width: 64rem) {
+  .board-layout.with-drawer {
+    grid-template-columns: minmax(0, 1fr) var(--drawer-width);
+  }
+
+  .drawer {
+    order: 0;
+    position: sticky;
+    top: var(--space-4);
+    max-height: calc(100vh - 2 * var(--space-4));
+    overflow-y: auto;
+  }
+}
+
+/* On a phone the columns stack, and what needs you comes first. */
+@media (max-width: 48rem) {
+  .board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .column.needsYou {
+    order: -1;
+  }
+}

@@ -9,6 +9,7 @@ import {
 } from "../../../src/shared/availability-groups.js";
 import { AVAILABILITY_GROUPS } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { TEXT } from "../constants.js";
 import { availabilityGroupsQuery, containersQuery, hostsQuery } from "../queries.js";
@@ -50,6 +51,7 @@ function Standing({ standing, hosts }: { standing: MemberStanding; hosts: readon
  */
 export function AvailabilityGroups({ admin }: { admin: boolean }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const groups = useQuery(availabilityGroupsQuery);
   const hosts = useQuery(hostsQuery);
   const containers = useQuery(containersQuery);
@@ -118,7 +120,7 @@ export function AvailabilityGroups({ admin }: { admin: boolean }) {
                 type="button"
                 aria-label={text.removeFor(group.name)}
                 onClick={() => {
-                  if (window.confirm(text.removeConfirm(group.name))) remove.mutate(group.id);
+                  asking.confirm(text.removeConfirm(group.name), () => remove.mutate(group.id));
                 }}
               >
                 {text.remove}
@@ -130,6 +132,7 @@ export function AvailabilityGroups({ admin }: { admin: boolean }) {
           ))}
         </div>
       ))}
+      {asking.question}
       <ErrorNotice error={add.error ?? remove.error} />
       {admin && (
         <form className="step-form" onSubmit={submit} aria-label={text.add}>

@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { utils } from "ssh2";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeSshServer } from "../../../test/fakes/fake-ssh-server.js";
@@ -197,5 +198,25 @@ describe("SSH keys and SSH hosts", () => {
     expect(sshHosts().settingsOf(host.id)).toEqual(settings);
     expect(() => sshHosts().updateSettings(actor, host.id, { ...settings, hostPackages: "always" as never })).toThrow();
     expect(() => sshHosts().settingsOf("not a host")).toThrow("ssh_host_not_found");
+  });
+
+  it("reads settings saved before its shell, installs and disks could be set, as a runner's .env without them", async () => {
+    const key = keys().add(actor, "own", own.private, PASSPHRASE);
+    const host = sshHosts().confirm(actor, (await sshHosts().add(actor, request(key.id))).pendingId);
+    const older = {
+      dryRun: false,
+      protectedContainers: ["npm"],
+      containerAccess: DEFAULT_SSH_HOST_SETTINGS.containerAccess,
+      hostPackages: DEFAULT_SSH_HOST_SETTINGS.hostPackages,
+      checkpointLimitGigabytes: DEFAULT_SSH_HOST_SETTINGS.checkpointLimitGigabytes,
+    };
+    controlPlane.services.databaseHandle.database
+      .update(hosts)
+      .set({ sshSettingsJson: JSON.stringify(older) })
+      .where(eq(hosts.id, host.id))
+      .run();
+    expect(sshHosts().settingsOf(host.id)).toEqual({ ...DEFAULT_SSH_HOST_SETTINGS, ...older });
+    const relative = { ...DEFAULT_SSH_HOST_SETTINGS, hostFilesystems: ["mnt/data"] };
+    expect(() => sshHosts().updateSettings(actor, host.id, relative)).toThrow();
   });
 });

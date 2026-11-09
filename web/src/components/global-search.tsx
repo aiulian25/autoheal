@@ -4,15 +4,11 @@ import { Link, useNavigate } from "react-router";
 import { API_ROUTES } from "../../../src/shared/api.js";
 import { SEARCH_KINDS, SEARCH_LIMITS, type SearchKind, type SearchResponse } from "../../../src/shared/search.js";
 import { api } from "../api-client.js";
+import { TEXT } from "../constants.js";
 import { ErrorNotice, TimeAgo } from "./common.js";
-const LABELS: Record<SearchKind, string> = {
-  host: "Hosts",
-  container: "Containers",
-  task: "Tasks",
-  incident: "Incidents",
-  runbook: "Runbooks",
-  change: "Host changes",
-};
+
+const text = TEXT.globalSearch;
+const LABELS: Record<SearchKind, string> = text.kinds;
 export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
   const id = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -68,7 +64,7 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
       }}
     >
       <label className="small" htmlFor={`${id}-query`}>
-        Search infrastructure
+        {text.label}
       </label>
       <input
         ref={input}
@@ -77,7 +73,7 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
         role="combobox"
         autoComplete="off"
         maxLength={SEARCH_LIMITS.query}
-        placeholder="Name, title or #task · Ctrl K"
+        placeholder={text.placeholder}
         value={query}
         aria-expanded={show}
         aria-controls={`${id}-results`}
@@ -118,16 +114,16 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
               setSelected(0);
             }}
           />{" "}
-          Only this host
+          {text.onlyThisHost}
         </label>
       )}
       {show && (
         <div className="search-results card">
-          <p className="small muted">Matches the beginning of display names/titles. Logs and settings are excluded.</p>
-          {result.isFetching && <p role="status">Searching…</p>}
+          <p className="small muted">{text.explanation}</p>
+          {result.isFetching && <p role="status">{text.searching}</p>}
           <ErrorNotice error={result.error} />
-          {debounced === term && result.isSuccess && results.length === 0 && <p role="status">No matching items.</p>}
-          <div role="listbox" id={`${id}-results`} aria-label="Infrastructure search results">
+          {debounced === term && result.isSuccess && results.length === 0 && <p role="status">{text.none}</p>}
+          <div role="listbox" id={`${id}-results`} aria-label={text.results}>
             {SEARCH_KINDS.map(
               (kind) =>
                 results.some((item) => item.kind === kind) && (
@@ -145,7 +141,9 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
                         >
                           <strong>{item.title}</strong>
                           <span className="small muted">
-                            {item.snippet} · <TimeAgo timestamp={item.at} />
+                            {item.snippet}
+                            {TEXT.separator}
+                            <TimeAgo timestamp={item.at} />
                           </span>
                         </Link>
                       ),
@@ -156,7 +154,7 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
           </div>
           {result.data?.partial && (
             <p role="status" className="small warning">
-              Results are limited. Refine the prefix or search within a host.
+              {text.limited}
             </p>
           )}
         </div>

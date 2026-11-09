@@ -8,10 +8,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
-import { AGENT_AUTOHEAL, DETECTOR_KEYS, HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { AGENT_AUTOHEAL, DETECTOR_KEYS, HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 import {
   PROBE_LIMITS,
@@ -121,7 +121,7 @@ describe("a host's service checks", () => {
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,
       payload: { ...heartbeatWith({ dryRun: false, containers: [] }), maintenanceGeneration: 0 },
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
     hits = 0;
     status = 200;
@@ -279,7 +279,7 @@ describe("a host's service checks", () => {
     const work = await plane.runnerApp.inject({
       method: "GET",
       url: RUNNER_ROUTES.work,
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
     expect(work.json<WorkResponse>().jobs).toEqual([]);
   });

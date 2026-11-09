@@ -1,16 +1,18 @@
 import type { ResourceMember } from "../auth/resource-permissions.js";
 import { randomUUID } from "node:crypto";
+import { and, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { API_ERRORS, type JobView } from "../../shared/api.js";
+import { AUDIT_ACTIONS, JOB_ACTION, JOB_STATUS, TARGET_CONTAINER, type AuditAction } from "../../shared/constants.js";
 import {
-  AUDIT_ACTIONS,
-  JOB_ACTION,
-  JOB_EXPIRY_MILLISECONDS,
-  JOB_STATUS,
-  TARGET_CONTAINER,
-  type AuditAction,
-} from "../../shared/constants.js";
-import type { ContainerSettings, SettingsAnswer, SettingsRequest } from "../../shared/protocol.js";
+  containerSettingsSchema,
+  type ContainerSettings,
+  type SettingsAnswer,
+  type SettingsRequest,
+} from "../../shared/protocol.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
+import type { DatabaseHandle } from "../database/connection.js";
+import { jobs } from "../database/schema.js";
+import type { SecretBox } from "../database/secret-box.js";
 import { DomainError } from "../domain-error.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import type { JobsService } from "../jobs/jobs-service.js";
@@ -18,7 +20,8 @@ import type { ContainerAccessService } from "./container-access-service.js";
 import { RunnerRelay } from "./runner-relay.js";
 import type { WaitingRunners } from "./waiting-runners.js";
 
-const OPEN_STATUSES = new Set<string>([JOB_STATUS.pending, JOB_STATUS.delivered]);
+const OPEN_JOBS = [JOB_STATUS.pending, JOB_STATUS.delivered];
+const OPEN_STATUSES: ReadonlySet<string> = new Set(OPEN_JOBS);
 
 // What the audit log keeps of new settings: names, ports and paths; never a value.
 const shapeOf = (settings: ContainerSettings) => ({
@@ -31,8 +34,9 @@ const shapeOf = (settings: ContainerSettings) => ({
 
 /**
  * A container's own settings: read through its runner (environment values included, for admins who gave a
- * code), and changed by an edit job, which recreates it as an update does. The new settings wait in memory for
- * the runner to fetch, once; the job row holds none of them.
+ * code), and changed by an edit job, which recreates it as an update does. The new settings are sealed in the job's
+ * own row, written with it, so a restart here loses no edit: its runner fetches them once, and they go then, or
+ * once the job is over without them.
  */
 export class SettingsService {
   private readonly authorizations = new Map<
@@ -40,17 +44,24 @@ export class SettingsService {
     { hostId: string; containerName: string; userId: string; tokenHash: string }
   >();
   private readonly relay: RunnerRelay<SettingsRequest, SettingsAnswer>;
-  private readonly waiting = new Map<string, { hostId: string; settings: ContainerSettings; until: number }>();
 
   constructor(
     private readonly access: Pick<ContainerAccessService, "require"> &
       Partial<Pick<ContainerAccessService, "operatorUserId" | "authorizeOperator">>,
-    private readonly jobs: Pick<JobsService, "request" | "list">,
+    private readonly jobs: Pick<JobsService, "request" | "list" | "onFinished">,
     private readonly auditLog: AuditLog,
     runners: Pick<WaitingRunners, "wake">,
-    private readonly clock: () => number = Date.now,
+    private readonly databaseHandle: DatabaseHandle,
+    private readonly secretBox: Pick<SecretBox, "seal" | "open">,
   ) {
-    this.relay = new RunnerRelay(runners);
+    // Reading a container's settings may go to the runner twice; joining or leaving a network never does.
+    this.relay = new RunnerRelay(runners, (request) => request.network === undefined);
+    jobs.onFinished(() => this.retire());
+    this.retire();
+  }
+
+  private get database() {
+    return this.databaseHandle.database;
   }
 
   read(
@@ -101,9 +112,15 @@ export class SettingsService {
     if (editing) {
       throw new DomainError(API_ERRORS.editBusy);
     }
-    const job = this.jobs.request({ kind: "user", actor }, hostId, containerName, JOB_ACTION.edit, null);
-    this.forgetExpired();
-    this.waiting.set(job.id, { hostId, settings, until: this.clock() + JOB_EXPIRY_MILLISECONDS });
+    const job = this.database.transaction(() => {
+      const requested = this.jobs.request({ kind: "user", actor }, hostId, containerName, JOB_ACTION.edit, null);
+      this.database
+        .update(jobs)
+        .set({ editSettings: this.secretBox.seal(JSON.stringify(settings)) })
+        .where(and(eq(jobs.id, requested.id), isNull(jobs.editSettings)))
+        .run();
+      return requested;
+    });
     this.audit(actor, AUDIT_ACTIONS.settingsChanged, hostId, containerName, { jobId: job.id, ...shapeOf(settings) });
     return job;
   }
@@ -136,29 +153,43 @@ export class SettingsService {
     this.relay.answer(host.id, requestId, answer);
   }
 
-  /** The settings an edit job applies, handed to its runner once. */
+  /** The settings an edit job applies, handed once to its own host's runner while the job is open. */
   forJob(host: HostRow, jobId: string): ContainerSettings {
-    const entry = this.waiting.get(jobId);
-    if (entry === undefined || entry.hostId !== host.id) {
+    const sealed = this.database.transaction(() => {
+      const mine = and(eq(jobs.id, jobId), eq(jobs.hostId, host.id), inArray(jobs.status, OPEN_JOBS));
+      const row = this.database.select({ sealed: jobs.editSettings }).from(jobs).where(mine).get();
+      this.database.update(jobs).set({ editSettings: null }).where(mine).run();
+      return row?.sealed ?? null;
+    });
+    const opened = sealed === null ? null : this.secretBox.open(sealed);
+    if (opened === null) {
       throw new DomainError(API_ERRORS.runnerRequestNotFound);
     }
-    this.waiting.delete(jobId);
-    return entry.settings;
+    return containerSettingsSchema.parse(JSON.parse(opened));
   }
 
   reset() {
     this.authorizations.clear();
     this.relay.reset();
-    this.waiting.clear();
   }
 
-  private forgetExpired() {
-    const now = this.clock();
-    for (const [jobId, entry] of this.waiting) {
-      if (entry.until <= now) {
-        this.waiting.delete(jobId);
-      }
-    }
+  // A revoked host's runner fetches none of the settings kept for it, so they go now, not when its jobs expire.
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
+    this.database
+      .update(jobs)
+      .set({ editSettings: null })
+      .where(and(eq(jobs.hostId, hostId), isNotNull(jobs.editSettings)))
+      .run();
+  }
+
+  // Every job over by now: this runs when one ends, and at the start, for what a crash left between the two.
+  private retire() {
+    this.database
+      .update(jobs)
+      .set({ editSettings: null })
+      .where(and(isNotNull(jobs.editSettings), notInArray(jobs.status, OPEN_JOBS)))
+      .run();
   }
 
   private audit(actor: Actor, action: AuditAction, hostId: string, containerName: string, details: object) {

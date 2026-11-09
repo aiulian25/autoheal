@@ -167,6 +167,29 @@ describe("catching up once the event stream connects", () => {
 describe("a stop someone made", () => {
   const event = (Action: string, name: string) => ({ Type: "container", Action, Actor: { Attributes: { name } } });
 
+  it("saves the stops of a burst together, as a stack taken down gives, not one save for each", async () => {
+    const fixture = guardStateFixture();
+    const state = await GuardState.open(fixture.store, fixture.timing);
+    let saves = 0;
+    const createVolume = fixture.store.createVolume;
+    // As an engine takes a moment over each save.
+    fixture.store.createVolume = async (name, labels) => {
+      saves += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await createVolume(name, labels);
+    };
+    const guard = new RemedyGuard(PROTECTED, undefined, null, state);
+    const { watcher } = setup({}, [], [], undefined, guard);
+
+    for (const name of Array.from({ length: 10 }, (_, index) => `service-${index}`)) {
+      await watcher.handleEvent(event(EVENT_KILL, name));
+    }
+    await guard.persisted();
+    expect(saves).toBeLessThanOrEqual(2);
+    // Each stop is kept, and each was deliberate: none of them is a failure to heal.
+    expect(guard.claim("service-9")).toBe(false);
+  });
+
   it("goes on to the next event once the guard can no longer save: its hold says so, not a lost stream", async () => {
     const fixture = guardStateFixture();
     const state = await GuardState.open(fixture.store, fixture.timing);
@@ -178,6 +201,7 @@ describe("a stop someone made", () => {
 
     // The first stop's save fails; neither it nor the next stop takes Docker's event stream down with it.
     await expect(watcher.handleEvent(event(EVENT_KILL, "paperless"))).resolves.toBeUndefined();
+    await guard.persisted().catch(() => undefined);
     expect(guard.recoveryHold()).toMatchObject({ reason: RECOVERY_HOLD.saveFailed });
     await expect(watcher.handleEvent(event(EVENT_KILL, "redis"))).resolves.toBeUndefined();
     await expect(watcher.handleEvent(event(TRIGGER_DIE, "redis"))).resolves.toBeUndefined();

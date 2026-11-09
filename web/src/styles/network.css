@@ -1,0 +1,354 @@
+/* --- The Network page: its numbers, speed test and map. */
+
+.network-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-2);
+}
+
+button.network-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+  height: auto;
+  padding: var(--space-3);
+  text-align: left;
+  white-space: normal;
+}
+
+.network-stat strong {
+  font-size: 1.25rem;
+}
+
+.network-stat.good strong {
+  color: var(--good);
+}
+
+.network-stat.warning strong {
+  color: var(--warning);
+}
+
+.network-bar-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 10rem) minmax(4rem, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding-block: var(--space-1);
+}
+
+.network-bar {
+  display: block;
+  min-width: 4rem;
+  height: 7px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+}
+
+.network-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.network-bar i.warning {
+  background: var(--warning);
+}
+
+.network-bar-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.network-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.network-detail p {
+  margin: 0;
+}
+
+.network-answer {
+  padding: var(--space-3);
+  background: var(--surface-muted);
+  border-radius: var(--radius);
+}
+
+.network-two {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-2);
+}
+
+.network-big {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 600;
+}
+
+.speed-chart {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 170px;
+  border-bottom: var(--border-width) solid var(--divider);
+}
+
+.speed-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 24px;
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+
+.speed-bar.unfair {
+  background: var(--control-border);
+}
+
+.speed-bar.own {
+  background: var(--series-blue);
+}
+
+.speed-line {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed var(--good);
+}
+
+.speed-line em {
+  position: absolute;
+  top: -18px;
+  right: 0;
+  color: var(--good);
+  font-size: var(--text-badge);
+  font-style: normal;
+}
+
+.network-map-stage {
+  position: relative;
+}
+
+.network-map {
+  display: block;
+  width: 100%;
+  min-height: 300px;
+  max-height: 78vh;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.network-map:active {
+  cursor: grabbing;
+}
+
+.network-map-controls {
+  position: absolute;
+  bottom: var(--space-2);
+  left: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.network-map-controls button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.net-link {
+  fill: none;
+  stroke: var(--series-blue);
+  stroke-width: 1.2;
+  opacity: 0.7;
+}
+
+.net-link.wifi {
+  stroke: var(--good);
+  stroke-dasharray: 3 3;
+}
+
+.net-link.lit {
+  stroke-width: 2.4;
+  opacity: 1;
+}
+
+.net-link.faded {
+  opacity: 0.2;
+}
+
+.net-junction {
+  fill: var(--series-blue);
+}
+
+.net-talk {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.net-talk.blocked {
+  stroke: var(--danger);
+  stroke-dasharray: 4 3;
+}
+
+.net-talk.first {
+  stroke: var(--warning);
+}
+
+.net-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.net-node.faded {
+  opacity: 0.35;
+}
+
+.net-node.off {
+  opacity: 0.5;
+}
+
+.net-node-back {
+  fill: var(--surface-muted);
+  stroke: var(--border);
+}
+
+.net-node.router .net-node-back,
+.net-node.switch .net-node-back,
+.net-node.access_point .net-node-back,
+.net-node.internet .net-node-back {
+  fill: var(--nav-active);
+  stroke: var(--accent);
+}
+
+.net-node.lit .net-node-back,
+.net-node:focus-visible .net-node-back {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.net-node-icon {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.net-node-name {
+  fill: var(--text);
+  font-size: 10.5px;
+  text-anchor: middle;
+}
+
+.net-node-facts {
+  fill: var(--text-muted);
+  font-size: 9.5px;
+  text-anchor: middle;
+}
+
+.net-node-facts.good {
+  fill: var(--good);
+}
+
+.net-node-facts.weak {
+  fill: var(--warning);
+}
+
+.router-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius);
+}
+
+.backup-dialog dl {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+
+.backup-dialog dt {
+  color: var(--text-muted);
+}
+
+.backup-dialog dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.backup-dialog dd code {
+  display: inline-block;
+  margin-inline-end: var(--space-2);
+}
+
+.backup-dialog label.backup-left-out {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
+.backup-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.backup-dialog input[type="radio"],
+.backup-dialog input[type="checkbox"] {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.backup-dialog label.backup-row {
+  display: grid;
+  grid-template-columns: 1rem 11rem 4.5rem minmax(0, 1fr) auto auto;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
+.backup-dialog label.backup-row.chosen {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.backup-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (width < 640px) {
+  .backup-dialog label.backup-row {
+    grid-template-columns: 1rem minmax(0, 1fr);
+  }
+
+  .backup-dialog label.backup-row > :nth-child(n + 3) {
+    grid-column: 2;
+  }
+}

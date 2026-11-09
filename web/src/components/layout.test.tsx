@@ -146,6 +146,43 @@ it("shows refused and timed-out attempts as degraded, then a server-accepted suc
   expect(accepted.title).toContain("does not confirm device receipt");
 });
 
+it("forgets private data when the session ends without a sign-out, as an idle timeout or a restore ends it", async () => {
+  show();
+  client.setQueryData(["private-detail", "one"], { secret: "synthetic-private-data" });
+  await screen.findByRole("list", { name: "Connections" });
+
+  // What the session's re-check after a 401 answers: nobody is signed in any more.
+  act(() => {
+    client.setQueryData(SESSION_QUERY_KEY, null);
+  });
+
+  expect(await screen.findByText("Sign in")).toBeTruthy();
+  expect(
+    client
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.queryKey),
+  ).toEqual([SESSION_QUERY_KEY]);
+});
+
+it("forgets the last person's data before showing anything to another signed in from another tab", async () => {
+  const fetch = show();
+  const viewer: SessionView = { ...session, user: { ...session.user, id: "v", username: "viewer", role: "viewer" } };
+  fetch.mockImplementation(async (url: string) =>
+    url === API_ROUTES.session
+      ? new Response(JSON.stringify(viewer), { status: 200, headers: { "content-type": "application/json" } })
+      : new Promise<Response>(() => undefined),
+  );
+  client.setQueryData(["private-detail", "one"], { secret: "synthetic-private-data" });
+  await screen.findByRole("list", { name: "Connections" });
+
+  await act(() => client.invalidateQueries({ queryKey: SESSION_QUERY_KEY }));
+
+  expect(client.getQueryData(SESSION_QUERY_KEY)).toEqual(viewer);
+  expect(client.getQueryData(["private-detail", "one"])).toBeUndefined();
+  expect(router.state.location.pathname).toBe(PATHS.home);
+});
+
 it("keeps the signed-in page, session and private queries after network failure, then clears them on retry success", async () => {
   const fetch = show();
   fetch

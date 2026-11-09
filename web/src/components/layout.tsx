@@ -1,7 +1,7 @@
 import { GlobalSearch } from "./global-search.js";
 import { notificationHealth } from "./notification-health.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useRef } from "react";
+import { Suspense, useLayoutEffect } from "react";
 import { Link, Outlet, matchPath, useLocation, useNavigate } from "react-router";
 import { API_ERRORS, API_ROUTES, type OverviewView, type SessionView } from "../../../src/shared/api.js";
 import { BRAND_ASSETS, HTTP_STATUS, INTEGRATION_KIND, NOTIFICATION_KINDS } from "../../../src/shared/constants.js";
@@ -21,8 +21,8 @@ import { NewVersionNotice } from "./new-version-notice.js";
 import { ScrollToTop } from "./scroll-to-top.js";
 import { Icon, type IconName } from "./icons.js";
 import { useLiveUpdates } from "../live.js";
-import { isAdmin } from "../session.js";
-import { ErrorNotice } from "./common.js";
+import { forgetPrivateData, isAdmin } from "../session.js";
+import { ErrorNotice, Loading } from "./common.js";
 
 interface Section {
   path: string;
@@ -152,14 +152,12 @@ export function Layout({ session }: { session: SessionView }) {
   const routerSet = router.data?.configured === true;
   // The menu counts what should not wait: what needs you on the board.
   const waiting = board.data?.needsYou.length ?? 0;
-  // Once sign-out is confirmed, private data goes with this page, in the commit that removes it. Removed while the
-  // page is still mounted, an update already queued for it renders it again and asks for that data anew.
-  const signedOut = useRef(false);
+  // Once the session has ended, by a confirmed sign-out, a timeout or a restore, private data goes with this page, in
+  // the commit that removes it. Removed while the page is still mounted, an update already queued for it renders it
+  // again and asks for that data anew.
   useLayoutEffect(
     () => () => {
-      if (signedOut.current) {
-        queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_QUERY_KEY[0] });
-      }
+      if (queryClient.getQueryData(SESSION_QUERY_KEY) == null) forgetPrivateData(queryClient);
     },
     [queryClient],
   );
@@ -180,7 +178,6 @@ export function Layout({ session }: { session: SessionView }) {
     onSuccess: async () => {
       await queryClient.cancelQueries();
       rememberCsrfToken(null);
-      signedOut.current = true;
       queryClient.setQueryData(SESSION_QUERY_KEY, null);
       void navigate(PATHS.login);
     },
@@ -221,7 +218,10 @@ export function Layout({ session }: { session: SessionView }) {
       </aside>
       <main className="main">
         <NewVersionNotice />
-        <Outlet />
+        {/* A page not opened before loads here, while the menu stays. */}
+        <Suspense fallback={<Loading />}>
+          <Outlet />
+        </Suspense>
       </main>
       <ScrollToTop />
     </div>

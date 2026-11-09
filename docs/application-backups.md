@@ -28,7 +28,7 @@ A run that its host's runner has not collected within 15 minutes is not run, and
 
 ## Where backups are kept
 
-The dashboard keeps each backup in its `/data` folder, under `application-backups/`: `<id>.age.tar` is the encrypted backup, and `<id>.key.age` its key, encrypted with the backup passphrase. With `OFFBOX_BACKUP_DIRECTORY` set, both are copied there too. A plan keeps its newest three backups. An older one is deleted, its copies in the off-box folder too.
+The dashboard keeps each backup in its `/data` folder, under `application-backups/`: `<id>.age.tar` is the encrypted backup, and `<id>.key.age` its key, encrypted with the backup passphrase. With `OFFBOX_BACKUP_DIRECTORY` set, both are copied there too. A plan made in the dashboard keeps its newest three backups, and one made through the API from one to eight, as each plan shows. An older one is deleted, its copies in the off-box folder too.
 
 To restore, the dashboard needs the backup, its key and the backup passphrase. Keep all three.
 

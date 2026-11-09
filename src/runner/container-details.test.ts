@@ -90,6 +90,49 @@ describe("what a container's panel reads", () => {
   });
 });
 
+describe("the ports a container has", () => {
+  it("lists each it has in the container, lowest first, with where the host publishes it as it runs", () => {
+    const { ports } = detailsOf(
+      inspected({
+        Config: { Labels: {}, ExposedPorts: { "3000/tcp": {}, "9229/tcp": {}, "53/udp": {}, "port/tcp": {} } },
+        NetworkSettings: {
+          Networks: {},
+          Ports: {
+            "3000/tcp": null,
+            "80/tcp": [
+              { HostIp: "0.0.0.0", HostPort: "8080" },
+              { HostIp: "::", HostPort: "8080" },
+            ],
+            "53/udp": [{ HostIp: "127.0.0.1", HostPort: "5353" }],
+            "70000/tcp": null,
+            "25/smtp": null,
+          },
+        },
+      }),
+      null,
+      [],
+    );
+    expect(ports).toEqual([
+      { port: 53, protocol: "udp", published: [{ address: "127.0.0.1", port: 5353 }] },
+      { port: 80, protocol: "tcp", published: [{ address: "", port: 8080 }] },
+      { port: 3000, protocol: "tcp", published: [] },
+      { port: 9229, protocol: "tcp", published: [] },
+    ]);
+  });
+
+  it("says where it is set to be published while it is stopped, and lists none it has not", () => {
+    const stopped = inspected({
+      Config: { Labels: {} },
+      HostConfig: { PortBindings: { "80/tcp": [{ HostIp: "", HostPort: "8080" }] } },
+      NetworkSettings: { Networks: {}, Ports: {} },
+    });
+    expect(detailsOf(stopped, null, []).ports).toEqual([
+      { port: 80, protocol: "tcp", published: [{ address: "", port: 8080 }] },
+    ]);
+    expect(detailsOf(inspected({ Config: { Labels: {} } }), null, []).ports).toEqual([]);
+  });
+});
+
 describe("what Autoheal installed", () => {
   it("says where, only for what carries its label", () => {
     const ours = inspected({

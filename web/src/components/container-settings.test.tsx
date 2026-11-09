@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobView, ResourceAdviceView } from "../../../src/shared/api.js";
 import { BYTES_PER_MEBIBYTE } from "../../../src/shared/constants.js";
 import type { ContainerSettings, SettingsAnswer } from "../../../src/shared/protocol.js";
-import { JOB_REFRESH_MILLISECONDS } from "../constants.js";
+import { JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
 import { ContainerSettingsEditor } from "./container-settings.js";
 
 const SETTINGS_PATH = "/api/inventory/hosts/h1/containers/paperless/settings";
@@ -78,8 +78,6 @@ function show() {
 }
 
 describe("a container's settings, in the dashboard", () => {
-  beforeEach(() => vi.spyOn(window, "confirm").mockReturnValue(true));
-
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -105,9 +103,11 @@ describe("a container's settings, in the dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove com.docker.compose.project" }));
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
-    expect(window.confirm).toHaveBeenCalledWith(
-      "Recreate paperless with these settings? It stops for a moment. In a Compose app, its file changes too.",
-    );
+    const asked = screen.getByRole("group", {
+      name: "Recreate paperless with these settings? It stops for a moment. In a Compose app, its file changes too.",
+    });
+    expect(sent).toEqual([]);
+    fireEvent.click(within(asked).getByRole("button", { name: TEXT.yes }));
     await waitFor(() =>
       expect(sent).toEqual([
         {

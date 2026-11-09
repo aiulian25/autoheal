@@ -28,6 +28,7 @@ import {
   HOST_PACKAGE_ACTIONS,
   HOST_PACKAGE_ANSWER_MILLISECONDS,
   HOST_STATUS_ACTIVE,
+  IMAGE_TAG_PATTERN,
   isHostPackageAction,
   isPowerAction,
   POWER,
@@ -72,7 +73,7 @@ import { jobViews, packagesOf, type JobRow } from "./job-views.js";
 const OPEN_JOBS = [JOB_STATUS.pending, JOB_STATUS.delivered];
 const AUTOHEAL: TaskAuthor = { kind: "agent", agent: AGENT_AUTOHEAL };
 // Actions whose success means the task's update is done.
-const UPDATE_ACTIONS: ReadonlySet<JobAction> = new Set([JOB_ACTION.update]);
+const UPDATE_ACTIONS: ReadonlySet<JobAction> = new Set([JOB_ACTION.update, JOB_ACTION.changeTag]);
 const storedImages = z.array(z.string().regex(DIGEST_PATTERN)).max(REPORT_LIMITS.unusedImages);
 const jsonOfNetwork = (value: NewNetwork | NetworkRemoval | undefined) =>
   value === undefined ? null : JSON.stringify(value);
@@ -93,6 +94,8 @@ interface JobDetails {
   stack?: StackJobDetails;
   backup?: BackupJobDetails;
   undoIfUnhealthy?: boolean;
+  // The tag a change-tag job moves its container to.
+  tag?: string;
 }
 
 export const bootIdOf = (host: HostRow): string | null =>
@@ -157,6 +160,11 @@ export class JobsService {
         : { ...details.removal, names: [...new Set(details.removal.names)].toSorted() };
     const networkJson = jsonOfNetwork(details.network ?? removal);
     this.requireActionable(hostId, containerName, action, images);
+    // Without what it covers, its runner would have nothing to back up or put back: such a job never goes out.
+    const backsUpOrRestores = action === JOB_ACTION.backupContainer || action === JOB_ACTION.restoreContainer;
+    if (backsUpOrRestores && details.backup === undefined) throw new DomainError(API_ERRORS.invalidRequest);
+    const targetTag =
+      action === JOB_ACTION.changeTag ? this.requireTagChange(hostId, containerName, details.tag) : null;
     this.requireNetworkChange(hostId, action, details.network, removal);
     const volumeRemoval =
       details.volumeRemoval === undefined
@@ -188,6 +196,7 @@ export class JobsService {
           networkJson === null ? isNull(jobs.networkJson) : eq(jobs.networkJson, networkJson),
           volumeJson === null ? isNull(jobs.volumeJson) : eq(jobs.volumeJson, volumeJson),
           stackJson === null ? isNull(jobs.stackJson) : eq(jobs.stackJson, stackJson),
+          targetTag === null ? isNull(jobs.targetTag) : eq(jobs.targetTag, targetTag),
           inArray(jobs.status, OPEN_JOBS),
         ),
       )
@@ -230,6 +239,7 @@ export class JobsService {
         stackJson,
         backupJson: details.backup === undefined ? null : JSON.stringify(details.backup),
         undoIfUnhealthy: details.undoIfUnhealthy ?? false,
+        targetTag,
         expectedResourcesFingerprint: details.expectedResourcesFingerprint ?? null,
         rolloutJson: details.rollout ? JSON.stringify(rolloutJobSchema.parse(details.rollout)) : null,
       })
@@ -359,6 +369,9 @@ export class JobsService {
           action: job.action as StackAction,
           stack: stackJobSchema.parse(JSON.parse(job.stackJson)),
         };
+      }
+      if (job.action === JOB_ACTION.changeTag && job.targetTag !== null) {
+        return { ...delivered, action: job.action, tag: job.targetTag };
       }
       if (job.action === JOB_ACTION.createVolume) {
         return {
@@ -709,6 +722,19 @@ export class JobsService {
     }
   }
 
+  /**
+   * A tag change goes only to a runner that can make one, for a container started by Compose, to a tag of the image it
+   * runs: what is moved to is the tag as asked.
+   */
+  private requireTagChange(hostId: string, containerName: string, tag: string | undefined): string {
+    const host = this.database.select({ tagChanges: hosts.tagChanges }).from(hosts).where(eq(hosts.id, hostId)).get();
+    if (host?.tagChanges !== true) throw new DomainError(API_ERRORS.runnerCannotChangeTags);
+    const container = this.inventory.containers({ hostId }).find((candidate) => candidate.name === containerName);
+    if (container?.composeProject == null) throw new DomainError(API_ERRORS.notFromCompose);
+    if (tag === undefined || !IMAGE_TAG_PATTERN.test(tag)) throw new DomainError(API_ERRORS.jobUnavailable);
+    return tag;
+  }
+
   // Only what the host's runner reported: one from before networks were reported is never sent these.
   private requireNetworkChange(hostId: string, action: JobAction, network?: NewNetwork, removal?: NetworkRemoval) {
     if (action !== JOB_ACTION.createNetwork && action !== JOB_ACTION.removeNetworks) return;
@@ -757,7 +783,11 @@ export class JobsService {
     }
   }
 
-  private expireStale() {
+  /**
+   * Ends what nobody collected in time and what its runner never answered, handing their tasks back. Each poll and each
+   * list does it first, and the detectors' tick too, so the jobs of a host that has gone quiet end all the same.
+   */
+  expireStale() {
     const now = this.clock();
     const expired = this.database
       .update(jobs)

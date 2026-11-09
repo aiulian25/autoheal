@@ -45,6 +45,7 @@ const container = (overrides: Partial<ContainerView>): ContainerView => ({
   composeService: "webserver",
   link: null,
   version: null,
+  source: null,
   ports: null,
   hostNetwork: false,
   update: { status: null, checkedAt: null, policy: "ask", remote: null, reason: null },

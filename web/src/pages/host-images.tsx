@@ -4,6 +4,7 @@ import { API_ROUTES, apiPath, type HostImagesView, type HostView, type JobView }
 import { BYTES_PER_KILOBYTE, JOB_ACTION } from "../../../src/shared/constants.js";
 import type { UnusedImage } from "../../../src/shared/protocol.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice, Loading, TimeAgo } from "../components/common.js";
 import { LatestJob, isWaiting } from "../components/container-actions.js";
 import { INVENTORY_REFRESH_MILLISECONDS, JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
@@ -59,6 +60,7 @@ const refreshOf = (view: HostImagesView | undefined) =>
  */
 export function HostImages({ host, admin }: { host: HostView; admin: boolean }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const query = hostImagesQuery(host.id);
   const view = useQuery({ ...query, refetchInterval: (current) => refreshOf(current.state.data) });
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -94,9 +96,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
       picked.length === 1
         ? TEXT.hostImages.confirmOne(nameOf(picked[0]!), host.label, kept > 0)
         : TEXT.hostImages.confirmMany(picked.length, sizeText(totalOf(picked)), host.label, kept);
-    if (window.confirm(question)) {
-      remove.mutate(picked);
-    }
+    asking.confirm(question, () => remove.mutate(picked));
   };
   return (
     <section className="section" aria-labelledby="host-images-title">
@@ -144,7 +144,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
                 )}
                 <th>{TEXT.hostImages.image}</th>
                 <th>{TEXT.hostImages.size}</th>
-                <th>{TEXT.hostImages.built}</th>
+                <th>{TEXT.hostImages.unusedSince}</th>
                 {canRemove && <th />}
               </tr>
             </thead>
@@ -170,7 +170,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
                     </td>
                     <td>{sizeText(image.sizeBytes)}</td>
                     <td>
-                      <TimeAgo timestamp={image.createdAt} />
+                      <TimeAgo timestamp={image.unusedSince} />
                     </td>
                     {canRemove && (
                       <td>
@@ -192,6 +192,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
         </div>
       )}
       {data.lastRemoval !== null && <LatestJob job={data.lastRemoval} />}
+      {asking.question}
       <ErrorNotice error={remove.error} />
     </section>
   );

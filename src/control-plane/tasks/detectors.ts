@@ -2,6 +2,7 @@ import {
   hasNewerVersion,
   hasUpdate,
   updateVersions,
+  updatesWithoutAsking,
   type AssigneeChoice,
   type ContainerView,
   type DiskUsageView,
@@ -18,6 +19,7 @@ import {
   DETECTOR_GRACE_MILLISECONDS,
   DETECTOR_KEY_SEPARATOR,
   DETECTOR_KEYS,
+  NOTIFICATIONS_LOST_WINDOW_MILLISECONDS,
   DETECTOR_THRESHOLDS,
   HOME_ASSISTANT_UPDATES_RESOURCE,
   HOST_STATE,
@@ -36,7 +38,6 @@ import {
   TASK_SOURCE,
   TASK_TEXT,
   TRIGGER_OOM,
-  UPDATE_POLICY,
   WATCHED_PROBLEMS,
   ZIGBEE_PROBLEMS,
   sizeText,
@@ -67,6 +68,9 @@ export interface DetectorInputs {
   ollamaExtras: { id: string; name: string; status: OllamaStatusView; hostIds: string[] }[];
   // Optional, as a test of something else has no router.
   network?: { findings: () => NetworkFinding[]; judging: boolean };
+  // When the notification outbox last could not take an alert; null when it never could not. Absent in a test of
+  // something else.
+  notificationOverflowAt?: number | null;
   probes?: { findings: () => ProbeFinding[]; judges: (key: string) => boolean };
   rebootPlans?: { findings: () => RebootPlanFinding[] };
   // Who gets a task Autoheal can't do itself.
@@ -95,6 +99,33 @@ const AUTOHEAL_ASSIGNEE: AssigneeChoice = { kind: "agent", id: AGENT_AUTOHEAL };
 /** The key of the task a container's new image opens: the one an update closes. */
 export const updateTaskKey = (hostId: string, containerName: string) =>
   keyOf(DETECTOR_KEYS.update, hostId, containerName);
+/** The key of the task a newer version opens; its last part is that version's tag. */
+export const newerVersionTaskKey = (hostId: string, containerName: string, tag: string) =>
+  keyOf(DETECTOR_KEYS.newerVersion, hostId, containerName, tag);
+export const isNewerVersionTaskKey = (key: string | null) =>
+  key?.startsWith(`${DETECTOR_KEYS.newerVersion}${DETECTOR_KEY_SEPARATOR}`) === true;
+/** The tag a newer version's task is about: containers and tags hold no separator, so it is the key's last part. */
+export const tagOfNewerVersionKey = (key: string) => key.split(DETECTOR_KEY_SEPARATOR).at(-1) ?? "";
+
+/** The task a newer version opens: for its detector, and for a person handing it to the agent before that ran. */
+export function newerVersionFinding(container: ContainerView, owner: AssigneeChoice | null): DetectedProblem {
+  const tag = container.update.newerTag!;
+  return {
+    labels: [],
+    graceMilliseconds: 0,
+    assignee: owner,
+    source: TASK_SOURCE.detector,
+    key: newerVersionTaskKey(container.hostId, container.name, tag),
+    title: TASK_TEXT.newerVersion(container.name, container.hostLabel, tag),
+    description: TASK_TEXT.newerVersionDetails(
+      container.image,
+      `${imageRepository(container.image)}${IMAGE_REFERENCE.tagSeparator}${tag}`,
+    ),
+    priority: TASK_PRIORITY.low,
+    hostId: container.hostId,
+    resource: { kind: TASK_RESOURCE.container, id: container.name, label: container.name },
+  };
+}
 const startsWithAny = (key: string, prefixes: readonly string[]) =>
   prefixes.some((prefix) => key.startsWith(`${prefix}${DETECTOR_KEY_SEPARATOR}`));
 const SEVERE_CONTAINER_PROBLEMS: ReadonlySet<string> = new Set([
@@ -114,7 +145,12 @@ function finding(
 const onlineHosts = (inputs: DetectorInputs) => inputs.hosts.filter((host) => host.state === HOST_STATE.online);
 
 function containers(inputs: DetectorInputs): Detection {
-  const online = new Set(onlineHosts(inputs).map((host) => host.id));
+  // A host whose Docker could not list its containers says nothing new of them: their tasks stay as they are.
+  const online = new Set(
+    onlineHosts(inputs)
+      .filter((host) => (host.containersStaleSince ?? null) === null)
+      .map((host) => host.id),
+  );
   const problems = inputs.containers
     .filter((container) => online.has(container.hostId) && container.problem !== null)
     .map((container) =>
@@ -145,9 +181,7 @@ function updateTitle(container: ContainerView): string {
 }
 
 // Its update is Autoheal's to apply: if Ollama calls it safe, or each time.
-const AUTOHEAL_POLICIES: ReadonlySet<string> = new Set([UPDATE_POLICY.auto, UPDATE_POLICY.always]);
-const autohealUpdates = (container: ContainerView) =>
-  AUTOHEAL_POLICIES.has(container.update.policy) && container.handsOff === null;
+const autohealUpdates = (container: ContainerView) => updatesWithoutAsking(container) && container.handsOff === null;
 
 function updates(inputs: DetectorInputs): Detection {
   const online = new Set(onlineHosts(inputs).map((host) => host.id));
@@ -188,20 +222,7 @@ function updates(inputs: DetectorInputs): Detection {
 function newerVersions(inputs: DetectorInputs): Detection {
   const online = new Set(onlineHosts(inputs).map((host) => host.id));
   const reported = inputs.containers.filter((container) => online.has(container.hostId));
-  const problems = reported.filter(hasNewerVersion).map((container) => {
-    const tag = container.update.newerTag!;
-    return finding(inputs, {
-      key: keyOf(DETECTOR_KEYS.newerVersion, container.hostId, container.name, tag),
-      title: TASK_TEXT.newerVersion(container.name, container.hostLabel, tag),
-      description: TASK_TEXT.newerVersionDetails(
-        container.image,
-        `${imageRepository(container.image)}${IMAGE_REFERENCE.tagSeparator}${tag}`,
-      ),
-      priority: TASK_PRIORITY.low,
-      hostId: container.hostId,
-      resource: { kind: TASK_RESOURCE.container, id: container.name, label: container.name },
-    });
-  });
+  const problems = reported.filter(hasNewerVersion).map((container) => newerVersionFinding(container, inputs.owner));
   // Only a host whose check has run says a version is no longer newer.
   const checked = reported.filter((container) => container.update.status !== null).map(({ hostId }) => hostId);
   const prefixes = [...new Set(checked)].map((hostId) => keyOf(DETECTOR_KEYS.newerVersion, hostId));
@@ -256,6 +277,23 @@ function hosts(inputs: DetectorInputs): Detection {
           description: TASK_TEXT.healingPausedDetails,
           priority: TASK_PRIORITY.high,
           graceMilliseconds: DETECTOR_GRACE_MILLISECONDS.healingPaused,
+          hostId: online.id,
+          resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
+        }),
+      );
+    }
+    const clockKey = keyOf(DETECTOR_KEYS.clockOff, online.id);
+    judged.add(clockKey);
+    // Its runner takes no maintenance policy across clocks this far apart, and so heals nothing on its own.
+    const clockOffSeconds = online.clockSkewSeconds ?? null;
+    if (clockOffSeconds !== null) {
+      problems.push(
+        finding(inputs, {
+          key: clockKey,
+          title: TASK_TEXT.clockOff(online.label, clockOffSeconds),
+          description: TASK_TEXT.clockOffDetails,
+          priority: TASK_PRIORITY.high,
+          graceMilliseconds: DETECTOR_GRACE_MILLISECONDS.clockOff,
           hostId: online.id,
           resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
         }),
@@ -708,33 +746,13 @@ function homeAssistantUpdates(inputs: DetectorInputs, view: HomeAssistantView): 
   return { problems, judges: (candidate) => candidate === key };
 }
 
-// A revoked host's problems are nobody's any more: its tasks are judged, so they close.
+// A revoked host's problems are nobody's any more: every task keyed by it is judged, whatever its kind, so they close.
+// A kind not keyed by host makes keys no task has.
 function revokedHosts(inputs: DetectorInputs): Detection {
   const revoked = inputs.hosts.filter((host) => host.state === HOST_STATE.revoked).map((host) => host.id);
-  const prefixes = revoked.flatMap((hostId) =>
-    [
-      DETECTOR_KEYS.container,
-      DETECTOR_KEYS.update,
-      DETECTOR_KEYS.disk,
-      DETECTOR_KEYS.drive,
-      DETECTOR_KEYS.driveHeat,
-      DETECTOR_KEYS.gpuTemperature,
-    ].map((kind) => keyOf(kind, hostId)),
-  );
-  const exact = new Set(
-    revoked.flatMap((hostId) =>
-      [
-        DETECTOR_KEYS.healingPaused,
-        DETECTOR_KEYS.memory,
-        DETECTOR_KEYS.cpu,
-        DETECTOR_KEYS.temperature,
-        DETECTOR_KEYS.reboot,
-        DETECTOR_KEYS.osUpdates,
-        DETECTOR_KEYS.lifecycle,
-      ].map((kind) => keyOf(kind, hostId)),
-    ),
-  );
-  return { problems: [], judges: (key) => exact.has(key) || startsWithAny(key, prefixes) };
+  const keys = revoked.flatMap((hostId) => Object.values(DETECTOR_KEYS).map((kind) => keyOf(kind, hostId)));
+  const exact = new Set(keys);
+  return { problems: [], judges: (key) => exact.has(key) || startsWithAny(key, keys) };
 }
 
 function ollama(inputs: DetectorInputs): Detection {
@@ -849,6 +867,25 @@ function rebootPlans(inputs: DetectorInputs): Detection {
 }
 
 /** Every problem the rules see now, and which open tasks they can judge. */
+// Alerts dropped as the outbox was full reached no channel: Attention is where the person still hears of it.
+function notificationsLost(inputs: DetectorInputs): Detection {
+  const lastAt = inputs.notificationOverflowAt ?? null;
+  const lately = lastAt !== null && inputs.now - lastAt < NOTIFICATIONS_LOST_WINDOW_MILLISECONDS;
+  const problems = lately
+    ? [
+        finding(inputs, {
+          key: DETECTOR_KEYS.notificationsLost,
+          title: TASK_TEXT.notificationsLost,
+          description: TASK_TEXT.notificationsLostDetails,
+          priority: TASK_PRIORITY.high,
+          hostId: null,
+          resource: null,
+        }),
+      ]
+    : [];
+  return { problems, judges: (key) => key === DETECTOR_KEYS.notificationsLost };
+}
+
 export function detect(inputs: DetectorInputs): Detection {
   const view = inputs.homeAssistant;
   const connected = view !== null && view.status.connected;
@@ -863,6 +900,7 @@ export function detect(inputs: DetectorInputs): Detection {
     network(inputs),
     probes(inputs),
     rebootPlans(inputs),
+    notificationsLost(inputs),
   ];
   if (connected) {
     detections.push(

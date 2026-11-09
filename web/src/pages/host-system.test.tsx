@@ -6,6 +6,7 @@ import type { DriveHealth } from "../../../src/shared/protocol.js";
 import { hostHealth, hostMetrics } from "../../../test/support/inventory.js";
 import { RUNNER_GPU_COMMAND } from "../../../src/shared/constants.js";
 import { TEXT } from "../constants.js";
+import { dateTimeIn } from "../format.js";
 import { HostDials } from "./host-stats.js";
 import { HostSystem } from "./host-system.js";
 
@@ -209,6 +210,49 @@ describe("a host's system information", () => {
     expect(items[3]?.textContent).toMatch(
       /^nvme2n1 No signs of wear or failure; smartd warned 22 times that it ran too hot, the last on .* · read by smartd/,
     );
+  });
+
+  it("says how far the host's clock is from the control plane's and whether NTP keeps it, amber past a minute", () => {
+    servePackages(Date.now(), []);
+    const clockOf = (view: Partial<HostView>, ntpActive?: boolean | null) => {
+      cleanup();
+      show(alder(view), ntpActive === undefined ? health : { ...health, ntpActive });
+      const fact = screen.getByText("Clock").closest("div")!;
+      expect(fact.closest("dl")).toBe(screen.getByText("Uptime").closest("dl"));
+      const line = fact.querySelector("dd")!;
+      return { text: line.textContent, warns: line.querySelector(".text-warning") !== null };
+    };
+
+    expect(clockOf({ clockOffsetSeconds: 1 }, true)).toEqual({ text: "In sync · NTP active", warns: false });
+    expect(clockOf({ clockOffsetSeconds: 30 }, null)).toEqual({
+      text: "30 seconds ahead of the control plane's",
+      warns: false,
+    });
+    expect(clockOf({ clockOffsetSeconds: -95 }, false)).toEqual({
+      text: "1 minute behind the control plane's · NTP inactive",
+      warns: true,
+    });
+    // Its runner's own clock off by as much pauses its automatic recovery, which the line says while it lasts.
+    expect(clockOf({ clockOffsetSeconds: -754, clockSkewSeconds: -754 }, false)).toEqual({
+      text: "12 minutes behind the control plane's · NTP inactive · automatic recovery is paused",
+      warns: true,
+    });
+    expect(clockOf({ clockOffsetSeconds: null }, true)).toEqual({ text: "NTP active", warns: false });
+    // A runner from before it says neither.
+    expect(clockOf({})).toEqual({ text: "—", warns: false });
+  });
+
+  it("shows the time on the host as its own clock has it, however far off", () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 10, 9, 12, 0, 30) });
+    try {
+      servePackages(Date.now(), []);
+      const threeDaysAhead = 3 * 24 * 60 * 60;
+      show(alder({ clockOffsetSeconds: threeDaysAhead }), health);
+      expect(factOf("Time on system")).toBe(dateTimeIn(Date.now() + threeDaysAhead * 1000, "Europe/Lisbon"));
+      expect(factOf("Time on system")).not.toBe(dateTimeIn(Date.now(), "Europe/Lisbon"));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says when every installed package is up to date", async () => {

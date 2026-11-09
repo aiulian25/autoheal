@@ -4,11 +4,18 @@ import { resolve } from "node:path";
 import { chromium } from "playwright";
 import { expect, it } from "vitest";
 import { API_ROUTES, type EnrolledHostView } from "../../src/shared/api.js";
-import { HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../src/shared/constants.js";
+import { HTTP_HEADERS } from "../../src/shared/constants.js";
 import { RUNNER_ROUTES, type ContainerSnapshot, type HostHealth } from "../../src/shared/protocol.js";
 import { FakeOllama } from "../fakes/fake-ollama.js";
 import { runnerTokenOf, startTestControlPlane } from "../support/control-plane.js";
-import { containerSnapshot, containerUsage, heartbeatWith, hostHealth, hostMetrics } from "../support/inventory.js";
+import {
+  EVERY_RUNNER_CAPABILITY,
+  containerSnapshot,
+  containerUsage,
+  heartbeatWith,
+  hostHealth,
+  hostMetrics,
+} from "../support/inventory.js";
 import { fullySignedInAdmin } from "../support/second-factor.js";
 
 // The README's pictures, of the real dashboard on made-up hosts, so no real machine's details can reach them.
@@ -83,7 +90,7 @@ it.runIf(process.env.README_SCREENSHOTS === "1")(
       hostIds[label] = added.host.id;
       enrolled.set(label, {
         authorization: `Bearer ${runnerTokenOf(added)}`,
-        [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES,
+        [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY,
       });
     }
     const report = async (minute: number) => {

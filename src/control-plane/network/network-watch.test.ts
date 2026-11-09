@@ -1,6 +1,12 @@
 import { createSocket } from "node:dgram";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CHECK_RESULT, NETWORK_EVENT, NETWORK_LIMITS } from "../../shared/network.js";
+import {
+  CHECK_RESULT,
+  INTERNET_PROBE_EVERY_MILLISECONDS,
+  INTERNET_STATE,
+  NETWORK_EVENT,
+  NETWORK_LIMITS,
+} from "../../shared/network.js";
 import { DatabaseHandle } from "../database/connection.js";
 import { migrate } from "../database/migrations/index.js";
 import { NetworkReview } from "./network-review.js";
@@ -12,6 +18,7 @@ const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const START = Date.UTC(2026, 9, 1);
 const ROUTER = "192.0.2.1";
+const HOUR_MILLISECONDS = 60 * 60 * 1000;
 const NAS = "00:00:5e:00:53:01";
 const PHONE = "00:00:5e:00:53:02";
 const PRIVATE_PHONE = "02:00:00:00:00:03";
@@ -41,10 +48,11 @@ describe("the network watch", () => {
   let contract: { downMbps: number; upMbps: number } | null;
   let reachable: boolean;
   let startSpeedTest: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+  let outside: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
   let watch: NetworkWatch;
 
   const adapter: RouterAdapter = {
-    capabilities: async () => [],
+    capabilities: async () => ({ name: null, version: null, capabilities: [] }),
     clients: async () => {
       if (!reachable) throw new Error("no route to the router");
       return clients;
@@ -71,6 +79,7 @@ describe("the network watch", () => {
     contract = null;
     reachable = true;
     startSpeedTest = vi.fn(async () => true);
+    outside = vi.fn(async () => true);
     watch = new NetworkWatch({
       store,
       settings: {
@@ -87,7 +96,7 @@ describe("the network watch", () => {
         }),
       },
       clock: () => now,
-      ownCheck: async () => true,
+      ownCheck: () => outside(),
       logPort: 5514,
     });
   });
@@ -185,6 +194,37 @@ describe("the network watch", () => {
     }
     expect(down.findings().find(({ key }) => key === "internet")?.urgent).toBe(true);
     expect(down.overview().internet.outages).toBe(1);
+  });
+
+  it("looks past the router at most every few minutes while all is well, and each minute while it is not", async () => {
+    const latestState = () =>
+      (handle.sqlite.prepare("SELECT state FROM internet_samples ORDER BY at DESC LIMIT 1").get() as { state: string })
+        .state;
+    const quietMinutes = INTERNET_PROBE_EVERY_MILLISECONDS / MINUTE;
+    for (let minute = 0; minute < 2 * quietMinutes; minute += 1) await tick();
+    expect(outside).toHaveBeenCalledTimes(2);
+
+    internet = { ...internet, lines: [{ wan: "WAN", up: false, latency: null }] };
+    await tick();
+    await tick();
+    expect(outside).toHaveBeenCalledTimes(4);
+
+    internet = { ...internet, lines: [{ wan: "WAN", up: true, latency: 5 }] };
+    reachable = false;
+    outside.mockResolvedValue(false);
+    await tick();
+    expect(outside).toHaveBeenCalledTimes(5);
+    reachable = true;
+    await tick();
+    await tick();
+    expect(outside).toHaveBeenCalledTimes(7);
+    expect(latestState()).toBe(INTERNET_STATE.nothingGetsOut);
+
+    outside.mockResolvedValue(true);
+    await tick();
+    await tick();
+    expect(outside).toHaveBeenCalledTimes(8);
+    expect(latestState()).toBe(INTERNET_STATE.up);
   });
 
   it("asks for speed tests only on a quiet line, stops when refused, and marks busy ones unfair", async () => {
@@ -339,6 +379,19 @@ describe("the network watch", () => {
       expect(read(ROUTER)).toBe(false);
     });
 
+    it("counts what other addresses send without reading it, and lets it go an hour after the last", async () => {
+      await named.tick();
+      expect(read(ROUTER)).toBe(true);
+      expect(read(OTHER)).toBe(false);
+      expect(read("192.0.2.78")).toBe(false);
+      expect(named.firewall()).toMatchObject({
+        logRefusedSender: null,
+        logIgnored: { sender: "192.0.2.78", at: now, lines: 2 },
+      });
+      now += HOUR_MILLISECONDS;
+      expect(named.firewall().logIgnored).toBeNull();
+    });
+
     it("says who was refused, while nothing is arriving from the router", async () => {
       await named.tick();
       expect(read(OTHER)).toBe(false);
@@ -377,6 +430,7 @@ describe("the network watch", () => {
       try {
         await send("127.0.0.2");
         await vi.waitFor(() => expect(real.firewall().logRefusedSender).toBe("127.0.0.2"));
+        expect(real.firewall().logIgnored).toMatchObject({ sender: "127.0.0.2", lines: 1 });
         expect(store.blockedSince(0)).toBe(0);
         await send("127.0.0.1");
         await vi.waitFor(() => expect(store.blockedSince(0)).toBe(1));

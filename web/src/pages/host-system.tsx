@@ -1,11 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { HostHealthView, HostMetricsView, HostView } from "../../../src/shared/api.js";
-import { HOST_KIND, HOST_SECTIONS, SSH_STATE } from "../../../src/shared/constants.js";
+import {
+  HOST_KIND,
+  HOST_SECTIONS,
+  MILLISECONDS_PER_SECOND,
+  SSH_STATE,
+  clockDifference,
+} from "../../../src/shared/constants.js";
 import { driveProblems, type DriveProblems } from "../../../src/shared/drive-health.js";
 import type { DriveHealth } from "../../../src/shared/protocol.js";
 import { TimeAgo } from "../components/common.js";
-import { TEXT } from "../constants.js";
+import { CLOCK_IN_SYNC_SECONDS, CLOCK_WARNING_SECONDS, TEXT } from "../constants.js";
 import { bytes, celsius, dateTimeIn, duration, loadAverage, timeAgo } from "../format.js";
 import { hostPackagesQuery } from "../queries.js";
 
@@ -102,12 +108,43 @@ function DriveHealthList({ drives }: { drives: readonly DriveHealth[] }) {
   );
 }
 
-// The host's own clock, which its time zone sets; unknown without one.
-function hostClockOf(timeZone: string | null | undefined): string {
+// The host's own clock, which its time zone sets, as far off as its last report found it; unknown without a zone.
+function hostClockOf(timeZone: string | null | undefined, offsetSeconds: number): string {
   if (timeZone === null || timeZone === undefined) {
     return TEXT.none;
   }
-  return dateTimeIn(Date.now(), timeZone) ?? TEXT.none;
+  return dateTimeIn(Date.now() + offsetSeconds * MILLISECONDS_PER_SECOND, timeZone) ?? TEXT.none;
+}
+
+function offsetText(seconds: number): string {
+  if (Math.abs(seconds) <= CLOCK_IN_SYNC_SECONDS) {
+    return TEXT.hostSystem.clockInSync;
+  }
+  return TEXT.hostSystem.clockOff(clockDifference(seconds));
+}
+
+function ntpText(active: boolean | null): string | null {
+  if (active === null) {
+    return null;
+  }
+  return active ? TEXT.hostSystem.ntpActive : TEXT.hostSystem.ntpInactive;
+}
+
+// How far the host's clock is from the control plane's, and whether a time service keeps it: amber past the minute
+// that pauses a runner's automatic recovery, and that pause said while it lasts.
+function ClockState({ host, health }: { host: HostView; health: HostHealthView }) {
+  const offset = host.clockOffsetSeconds ?? null;
+  const paused = (host.clockSkewSeconds ?? null) !== null;
+  const parts = [
+    offset === null ? null : offsetText(offset),
+    ntpText(health.ntpActive ?? null),
+    paused ? TEXT.hostSystem.clockPaused : null,
+  ].filter((part) => part !== null);
+  if (parts.length === 0) {
+    return <>{TEXT.none}</>;
+  }
+  const farOff = paused || (offset !== null && Math.abs(offset) > CLOCK_WARNING_SECONDS);
+  return <span className={farOff ? "text-warning" : undefined}>{parts.join(TEXT.separator)}</span>;
 }
 
 function HostnameAt({ name, address }: { name: string; address: string | null }) {
@@ -185,7 +222,7 @@ function factsOf(host: HostView, health: HostHealthView): [Fact[], Fact[]] {
       value: <HostnameAt name={health.hostname ?? host.label} address={health.address ?? null} />,
     },
     connectionFact(host),
-    { label: TEXT.hostSystem.time, value: hostClockOf(health.packages?.timeZone) },
+    { label: TEXT.hostSystem.time, value: hostClockOf(health.packages?.timeZone, host.clockOffsetSeconds ?? 0) },
     { label: TEXT.hostSystem.processor, value: TEXT.hostSystem.processorOf(health.cpuModel ?? null, health.cpuCount) },
     { label: TEXT.hostSystem.processes, value: health.processes ?? TEXT.none },
     { label: TEXT.hostSystem.cpuTemperatures, value: <Temperatures readings={health.cpuTemperatures ?? []} /> },
@@ -205,6 +242,7 @@ function factsOf(host: HostView, health: HostHealthView): [Fact[], Fact[]] {
       value: <span className="mono">{TEXT.hostSystem.kernelOn(health.kernel, health.architecture)}</span>,
     },
     { label: TEXT.hostSystem.uptime, value: duration(health.uptimeSeconds) },
+    { label: TEXT.hostSystem.clock, value: <ClockState host={host} health={health} /> },
     { label: TEXT.hostSystem.load, value: <LoadAverages averages={health.loadAverage} /> },
     { label: TEXT.hostSystem.swap, value: swapOf(memory) },
     {

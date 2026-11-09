@@ -12,6 +12,7 @@ import {
   HOST_LABEL_MAXIMUM_LENGTH,
   HOST_STATUS_ACTIVE,
   HOST_STATUS_REVOKED,
+  JOIN_CODE_LIFETIME_MILLISECONDS,
   JOIN_FILE_NAME,
   JOIN_MESSAGES,
   LABEL_COPY_SEPARATOR,
@@ -19,17 +20,21 @@ import {
   PENDING_HOST_LABEL_BYTES,
   PENDING_HOST_LABEL_PREFIX,
   RUNNER_PORT,
-  RUNNER_TOKEN_BYTES,
-  RUNNER_TOKEN_PREFIX,
   SECRET_FILE_MODE,
   SETTING_KEYS,
   SYSTEM_ACTOR_LABEL,
   TARGET_HOST,
   TOKEN_HINT_LENGTH,
 } from "../../shared/constants.js";
-import { decodeJoinCode, encodeJoinCode, type JoinDetails } from "../../shared/join-code.js";
+import { decodeJoinCode, encodeJoinCode, newEnrolment, newToken, type JoinDetails } from "../../shared/join-code.js";
 import { log } from "../../shared/log.js";
-import { imageCanBePulled, imageCopyCommand, installCommand, nasInstallCommand } from "../../shared/runner-install.js";
+import {
+  imageCanBePulled,
+  imageCopyCommand,
+  installCommand,
+  nasInstallCommand,
+  rejoinCommand,
+} from "../../shared/runner-install.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import { sha256Hex } from "../../shared/hash.js";
 import type { DatabaseHandle } from "../database/connection.js";
@@ -40,7 +45,7 @@ import type { SettingsStore } from "../settings/settings-store.js";
 
 export type HostRow = typeof hosts.$inferSelect;
 
-/** What join codes and install commands carry, besides each host's own token. */
+/** What join codes and install commands carry, besides what is each host's own: a code's enrolment, or a token. */
 export interface JoinSettings {
   // The control plane's public key: runners accept its certificate by it.
   pin: string;
@@ -55,7 +60,21 @@ export interface JoinSettings {
 // before this, is from an unknown dashboard address and counts as none.
 const rememberedAddressSchema = z.object({ address: z.string(), publicBaseUrl: z.string() });
 
-export const newToken = () => `${RUNNER_TOKEN_PREFIX}${randomBytes(RUNNER_TOKEN_BYTES).toString("base64url")}`;
+// What a host is known by: its token's hash and end, and its join code's while one waits to be traded.
+type HostCredential = Pick<HostRow, "tokenHash" | "tokenHint"> &
+  Partial<Pick<HostRow, "joinCodeHash" | "joinCodeExpiresAt">>;
+const credentialOf = (token: string): HostCredential => ({
+  tokenHash: sha256Hex(token),
+  tokenHint: token.slice(-TOKEN_HINT_LENGTH),
+});
+
+// A join code shown once and kept nowhere: the host keeps its hash until its runner trades it.
+interface IssuedJoinCode {
+  enrolment: string;
+  hash: string;
+  expiresAt: number;
+}
+
 export const pendingLabel = () =>
   `${PENDING_HOST_LABEL_PREFIX}${randomBytes(PENDING_HOST_LABEL_BYTES).toString("hex")}`;
 
@@ -93,30 +112,102 @@ export class HostsService {
   }
 
   /**
-   * A new host and the one paste that installs its runner. Without a label it takes the name its
-   * runner reports first. `address` is where that runner reaches this control plane.
+   * A new host and the one paste that installs its runner, whose join code works once, within the hour. Without a
+   * label it takes the name its runner reports first. `address` is where that runner reaches this control plane.
    */
   enroll(actor: Actor, label: string | null, address: string, nasFolder: string | null = null): EnrolledHostView {
-    const token = newToken();
-    const host = this.insert(token, label, actor.userId);
+    const issued = this.issueJoinCode();
+    // The hash of a token nobody keeps, and no end to show: until its runner trades the join code, nothing
+    // authenticates as the host.
+    const credential = {
+      tokenHash: sha256Hex(newToken()),
+      tokenHint: "",
+      joinCodeHash: issued.hash,
+      joinCodeExpiresAt: issued.expiresAt,
+    };
+    const host = this.insert(credential, label, actor.userId);
     this.auditLog.recordUserAction(
       actor,
       AUDIT_ACTIONS.hostEnrolled,
       { kind: TARGET_HOST, id: host.id },
       { label: host.label },
     );
-    this.settingsStore.write(SETTING_KEYS.runnerAddress, { address, publicBaseUrl: this.join.publicBaseUrl });
-    const joinCode = encodeJoinCode({ url: address, token, pin: this.join.pin });
-    return {
-      host: toHostView(host, this.clock()),
-      joinCode,
-      imageCopyCommand:
-        nasFolder === null || imageCanBePulled(this.join.image) ? null : imageCopyCommand(this.join.image),
-      installCommand:
-        nasFolder === null
-          ? installCommand(this.join.image, joinCode)
-          : nasInstallCommand(this.join.image, joinCode, nasFolder),
-    };
+    this.rememberAddress(address);
+    return this.enrolledView(host, address, nasFolder, issued);
+  }
+
+  /**
+   * A new join code for a runner host, in place of any it has not traded: its runner joins again with it, as the same
+   * host, and the token it has works until then. Not for a host reached over SSH, nor this machine, nor its runner
+   * container, which joins through the volume.
+   */
+  newJoinCode(
+    actor: Actor,
+    hostId: string,
+    address: string,
+    nasFolder: string | null,
+    joinDirectory: string,
+  ): EnrolledHostView {
+    const current = this.databaseHandle.database.select().from(hosts).where(eq(hosts.id, hostId)).get();
+    if (current === undefined) {
+      throw new DomainError(API_ERRORS.hostNotFound);
+    }
+    if (current.status === HOST_STATUS_REVOKED) {
+      throw new DomainError(API_ERRORS.hostRevoked);
+    }
+    const joinsThroughVolume = this.localRunner(joinDirectory)?.host.id === hostId;
+    if (current.kind !== HOST_KIND.runner || joinsThroughVolume) {
+      throw new DomainError(API_ERRORS.notRunnerHost);
+    }
+    const issued = this.issueJoinCode();
+    const host = this.databaseHandle.database
+      .update(hosts)
+      .set({ joinCodeHash: issued.hash, joinCodeExpiresAt: issued.expiresAt })
+      .where(eq(hosts.id, hostId))
+      .returning()
+      .get()!;
+    this.auditLog.recordUserAction(
+      actor,
+      AUDIT_ACTIONS.hostJoinCodeMade,
+      { kind: TARGET_HOST, id: host.id },
+      { label: host.label },
+    );
+    this.rememberAddress(address);
+    return this.enrolledView(host, address, nasFolder, issued);
+  }
+
+  /**
+   * A join code traded for the token its runner made: once, within its hour, for a runner host still enrolled. True
+   * too for a token that already opens a host, its runner asking again after the answer was lost; false for a code
+   * that opens nothing, used already, expired or never given, or one left from before its host moved to SSH.
+   */
+  redeemJoinCode(enrolment: string, token: string): boolean {
+    if (this.authenticate(token) !== null) {
+      return true;
+    }
+    return this.databaseHandle.database.transaction((transaction) => {
+      const host = transaction
+        .select()
+        .from(hosts)
+        .where(
+          and(
+            eq(hosts.joinCodeHash, sha256Hex(enrolment)),
+            eq(hosts.status, HOST_STATUS_ACTIVE),
+            eq(hosts.kind, HOST_KIND.runner),
+          ),
+        )
+        .get();
+      const expired = (host?.joinCodeExpiresAt ?? 0) <= this.clock();
+      if (host === undefined || expired) {
+        return false;
+      }
+      transaction
+        .update(hosts)
+        .set({ ...credentialOf(token), joinCodeHash: null, joinCodeExpiresAt: null })
+        .where(eq(hosts.id, host.id))
+        .run();
+      return true;
+    });
   }
 
   /**
@@ -139,7 +230,7 @@ export class HostsService {
     }
     const path = join(joinDirectory, JOIN_FILE_NAME);
     const token = newToken();
-    const added = this.insert(token, null, null);
+    const added = this.insert(credentialOf(token), null, null);
     this.auditLog.record({
       actorKind: ACTOR_SYSTEM,
       actorLabel: SYSTEM_ACTOR_LABEL,
@@ -177,8 +268,7 @@ export class HostsService {
     const host = this.databaseHandle.database
       .update(hosts)
       .set({
-        tokenHash: sha256Hex(token),
-        tokenHint: token.slice(-TOKEN_HINT_LENGTH),
+        ...credentialOf(token),
         status: HOST_STATUS_ACTIVE,
         revokedAt: null,
         label: this.labelWhenBack(local.host),
@@ -312,7 +402,7 @@ export class HostsService {
     return host ?? null;
   }
 
-  private insert(token: string, label: string | null, enrolledBy: string | null): HostRow {
+  private insert(credential: HostCredential, label: string | null, enrolledBy: string | null): HostRow {
     return this.databaseHandle.database.transaction((transaction) => {
       if (label !== null && transaction.select({ id: hosts.id }).from(hosts).where(eq(hosts.label, label)).get()) {
         throw new DomainError(API_ERRORS.hostLabelTaken);
@@ -323,14 +413,45 @@ export class HostsService {
           id: randomUUID(),
           label: label ?? pendingLabel(),
           namedByRunner: label === null,
-          tokenHash: sha256Hex(token),
-          tokenHint: token.slice(-TOKEN_HINT_LENGTH),
+          ...credential,
           enrolledBy,
           enrolledAt: this.clock(),
         })
         .returning()
         .get();
     });
+  }
+
+  private issueJoinCode(): IssuedJoinCode {
+    const enrolment = newEnrolment();
+    return { enrolment, hash: sha256Hex(enrolment), expiresAt: this.clock() + JOIN_CODE_LIFETIME_MILLISECONDS };
+  }
+
+  // Where a runner reached this control plane is offered to the next host too.
+  private rememberAddress(address: string) {
+    this.settingsStore.write(SETTING_KEYS.runnerAddress, { address, publicBaseUrl: this.join.publicBaseUrl });
+  }
+
+  // The paste for a new host, and the line for one already installed.
+  private enrolledView(
+    host: HostRow,
+    address: string,
+    nasFolder: string | null,
+    issued: IssuedJoinCode,
+  ): EnrolledHostView {
+    const joinCode = encodeJoinCode({ url: address, enrolment: issued.enrolment, pin: this.join.pin });
+    return {
+      host: toHostView(host, this.clock()),
+      joinCode,
+      joinCodeExpiresAt: issued.expiresAt,
+      imageCopyCommand:
+        nasFolder === null || imageCanBePulled(this.join.image) ? null : imageCopyCommand(this.join.image),
+      installCommand:
+        nasFolder === null
+          ? installCommand(this.join.image, joinCode)
+          : nasInstallCommand(this.join.image, joinCode, nasFolder),
+      rejoinCommand: rejoinCommand(joinCode),
+    };
   }
 
   // The join code in the shared volume, and the host its token belongs to; null without either.

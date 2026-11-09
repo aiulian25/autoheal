@@ -1,6 +1,6 @@
 import { hosts } from "../database/schema.js";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -16,10 +16,22 @@ import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { heartbeatWith, containerSnapshot } from "../../../test/support/inventory.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { HTTP_STATUS, ROLE_VIEWER, TAR, USER_STATUS_DEACTIVATED } from "../../shared/constants.js";
+import {
+  APPLICATION_BACKUP_FILES,
+  HTTP_STATUS,
+  ROLE_VIEWER,
+  TAR,
+  USER_STATUS_DEACTIVATED,
+} from "../../shared/constants.js";
 import { singleEntryArchive } from "../../runner/tar.js";
 import type { HostRow } from "../hosts/hosts-service.js";
-import { applicationBackupTaskSchema } from "../../shared/application-backups.js";
+import {
+  APPLICATION_BACKUP_ARTIFACT_STATUS,
+  APPLICATION_BACKUP_OPERATION,
+  APPLICATION_BACKUP_RUN_STATUS,
+  applicationBackupTaskSchema,
+} from "../../shared/application-backups.js";
+import { ROLLOUT_STATUS } from "../../shared/rollouts.js";
 import {
   APPLICATION_BACKUP_FAILURE,
   APPLICATION_BACKUPS,
@@ -36,6 +48,21 @@ const definition = {
   intervalHours: 1,
   retain: 2,
 };
+describe("how the backup stores read and write their rows", () => {
+  it("names every status and operation, so renaming one cannot leave a query of these files behind", () => {
+    const names = [
+      ...Object.values(APPLICATION_BACKUP_RUN_STATUS),
+      ...Object.values(APPLICATION_BACKUP_ARTIFACT_STATUS),
+      ...Object.values(APPLICATION_BACKUP_OPERATION),
+      ...Object.values(ROLLOUT_STATUS),
+    ];
+    const quoted = new RegExp(`["'](${[...new Set(names)].join("|")})["']`);
+    for (const file of ["./application-plans-service.ts", "./settle-dispatched-work.ts"]) {
+      expect(readFileSync(new URL(file, import.meta.url), "utf8")).not.toMatch(quoted);
+    }
+  });
+});
+
 describe("durable application backup plans", () => {
   let plane: TestControlPlane, admin: TestClient, hostId: string;
   const service = () => plane.services.applicationBackups;
@@ -86,13 +113,15 @@ describe("durable application backup plans", () => {
     return service().view().plans[0]!.id;
   }
   async function captured() {
-    const id = await plan(),
-      run = await service().run(person(), id, { operation: "capture", requestKey: randomUUID() }),
-      tasks = await service().take(host());
+    return capturedBy(service(), await plan());
+  }
+  async function capturedBy(backups: ApplicationPlansService, id: string) {
+    const run = await backups.run(person(), id, { operation: "capture", requestKey: randomUUID() }),
+      tasks = await backups.take(host());
     const task = tasks[0]!;
     const cipher = Buffer.from("age-encryption.org/v1\nsynthetic-encrypted-placeholder"),
       archive = singleEntryArchive({ name: "payload.age", type: TAR.types.file, mode: 0o600, uid: 0, gid: 0 }, cipher);
-    await service().upload(host(), run.id, task.artifactId, Readable.from([archive]));
+    await backups.upload(host(), run.id, task.artifactId, Readable.from([archive]));
     const result: ApplicationBackupResult = {
       id: run.id,
       artifactId: task.artifactId,
@@ -105,7 +134,7 @@ describe("durable application backup plans", () => {
       integrity: "metadata-verified",
       fingerprint: "a".repeat(64),
     };
-    await service().complete(host(), result);
+    await backups.complete(host(), result);
     return { id, run, task, result };
   }
   it("claims once, acknowledges duplicate results and binds artifacts to the reporting host", async () => {
@@ -465,6 +494,38 @@ describe("durable application backup plans", () => {
     // The next scheduling pass lets its pending artifact and key go.
     await service().schedule();
     expect(artifactOf(run.id)).toEqual({ status: "failed", key: "" });
+  });
+  it("lets a backup the plan no longer keeps go from both folders, its key too", async () => {
+    const folder = () => mkdtempSync(join(tmpdir(), "autoheal-data-"));
+    const settings = {
+      dataDirectory: folder(),
+      offboxBackupDirectory: folder(),
+      backupPassphrase: TEST_BACKUP_PASSPHRASE,
+    };
+    const backups = new ApplicationPlansService(
+      plane.services.databaseHandle,
+      settings,
+      { wake: () => {} },
+      plane.services.auditLog,
+      () => plane.clock.now,
+    );
+    const id = await plan();
+    const made: string[] = [];
+    for (let count = 0; count <= definition.retain; count += 1) {
+      made.push((await capturedBy(backups, id)).task.artifactId);
+      plane.clock.now += 1000;
+    }
+    const filesIn = (root: string) => readdirSync(join(root, APPLICATION_BACKUP_FILES.directory)).toSorted();
+    const kept = made
+      .slice(1)
+      .flatMap((artifact) =>
+        [APPLICATION_BACKUP_FILES.payloadSuffix, APPLICATION_BACKUP_FILES.keySuffix].map(
+          (suffix) => `${artifact}${suffix}`,
+        ),
+      )
+      .toSorted();
+    expect(filesIn(settings.dataDirectory)).toEqual(kept);
+    expect(filesIn(settings.offboxBackupDirectory)).toEqual(kept);
   });
   it("says why a run never started when the dashboard could not save its encryption key", async () => {
     const id = await plan();

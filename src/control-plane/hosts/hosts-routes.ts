@@ -14,13 +14,14 @@ import type { HostsService } from "./hosts-service.js";
 import type { LocalHostService } from "../local-host/local-host-service.js";
 
 const adminOnly = { config: { access: ACCESS_ADMIN } } as const;
-// Without a label the host takes the name its runner reports; without an address, the one used last.
-const enrollBody = z.object({
-  label: z.string().regex(HOST_LABEL_PATTERN).optional(),
+// Without an address, the one used last. A Synology, or any host whose own files the runner should not read: its
+// containers only, in the folder named.
+const joinCodeBody = z.object({
   address: z.url({ protocol: HTTPS_PROTOCOL_PATTERN }).optional(),
-  // A Synology, or any host whose own files the runner should not read: its containers only.
   nasFolder: z.string().regex(RUNNER_NAS_FOLDER_PATTERN).optional(),
 });
+// Without a label the host takes the name its runner reports.
+const enrollBody = joinCodeBody.extend({ label: z.string().regex(HOST_LABEL_PATTERN).optional() });
 const hostParameters = z.object({ hostId: z.uuid() });
 // The same rules as a name given when the host was added.
 const renameBody = z.object({ label: z.string().regex(HOST_LABEL_PATTERN) });
@@ -47,6 +48,17 @@ export function registerHostsRoutes(
       parseBody(renameBody, request.body).label,
     ),
   );
+
+  app.post(API_ROUTES.hostJoinCode, adminOnly, async (request) => {
+    const { address, nasFolder } = parseBody(joinCodeBody, request.body ?? {});
+    return hostsService.newJoinCode(
+      actorOf(request),
+      parseBody(hostParameters, request.params).hostId,
+      address ?? hostsService.runnerAddress(),
+      nasFolder ?? null,
+      JOIN_DIRECTORY,
+    );
+  });
 
   app.post(API_ROUTES.hostRevoke, adminOnly, async (request) =>
     hostsService.revoke(actorOf(request), parseBody(hostParameters, request.params).hostId),

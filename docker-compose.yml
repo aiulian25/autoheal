@@ -38,7 +38,8 @@ services:
       - /:/host/root:ro
       # Any folder of the host can be mounted here the same way. This one lets Ollama read Home Assistant's
       # configuration, to explain errors and suggest automations and clean-ups: set HOME_ASSISTANT_CONFIG_PATH in
-      # .env. Read-only: Autoheal only suggests. "rslave" follows a network share that mounts after this starts.
+      # .env. Unset, /dev/null stands in: nothing is read, and the Home page says so. Read-only: Autoheal only
+      # suggests. "rslave" follows a network share that mounts after this starts.
       - ${HOME_ASSISTANT_CONFIG_PATH:-/dev/null}:/ha-config:ro,rslave
     tmpfs: [/tmp:size=64m]
     # The dashboard's, and this machine's runner's, which runs inside it.

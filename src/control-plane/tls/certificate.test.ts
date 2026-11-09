@@ -1,33 +1,48 @@
 import { X509Certificate } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { createServer } from "node:https";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createServer, type Server } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:tls";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MILLISECONDS_PER_DAY, SECRET_FILE_MODE } from "../../shared/constants.js";
 import { publicKeyPin } from "../../shared/hash.js";
-import { ownCertificate, providedCertificate, type ServerCertificate } from "./certificate.js";
+import {
+  ownCertificate,
+  providedCertificate,
+  serveRenewed,
+  tlsOptionsOf,
+  type ServerCertificate,
+} from "./certificate.js";
 
 const NOW = Date.UTC(2026, 9, 22, 12, 0, 0);
 const NAMES = ["192.168.10.83", "localhost"];
 const FILE_MODE_BITS = 0o777;
 
+const FIXTURES = join(import.meta.dirname, "../../../test/fixtures/tls");
+
+// The pin a client sees in a real handshake with whatever listens there.
+const pinServedBy = (server: Server) =>
+  new Promise<string>((resolve, reject) => {
+    const { port } = server.address() as { port: number };
+    const socket = connect({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => {
+      resolve(publicKeyPin(socket.getPeerX509Certificate()!.publicKey));
+      socket.end();
+    });
+    socket.on("error", reject);
+  });
+
+async function listening(material: ServerCertificate): Promise<Server> {
+  const server = createServer(tlsOptionsOf(material), (_request, response) => response.end());
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return server;
+}
+
 // The pin a client sees in a real handshake with this material.
 async function pinSeenByClient(material: ServerCertificate): Promise<string> {
-  const server = createServer({ key: material.key, cert: material.certificate }, (_request, response) =>
-    response.end(),
-  );
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as { port: number };
+  const server = await listening(material);
   try {
-    return await new Promise<string>((resolve, reject) => {
-      const socket = connect({ host: "127.0.0.1", port, rejectUnauthorized: false }, () => {
-        resolve(publicKeyPin(socket.getPeerX509Certificate()!.publicKey));
-        socket.end();
-      });
-      socket.on("error", reject);
-    });
+    return await pinServedBy(server);
   } finally {
     server.close();
   }
@@ -185,11 +200,62 @@ describe("the certificate Autoheal makes for itself", () => {
   it("is what a client sees in a real handshake, and so is an operator's own certificate", async () => {
     const own = ownCertificate(directory, NAMES, NOW).material;
     expect(await pinSeenByClient(own)).toBe(own.pin);
-    const fixtures = join(import.meta.dirname, "../../../test/fixtures/tls");
     const provided = providedCertificate({
-      certificateFile: join(fixtures, "server.pem"),
-      keyFile: join(fixtures, "server-key.pem"),
+      certificateFile: join(FIXTURES, "server.pem"),
+      keyFile: join(FIXTURES, "server-key.pem"),
     });
     expect(await pinSeenByClient(provided)).toBe(provided.pin);
+  });
+});
+
+describe("an operator's own certificate, renewed while the control plane runs", () => {
+  let directory: string;
+  let files: { certificateFile: string; keyFile: string };
+  // The dashboard and the runner API, as the control plane listens.
+  let listeners: Server[];
+
+  const replace = (file: string, fixture: string) => copyFileSync(join(FIXTURES, fixture), file);
+  const pinsServed = () => Promise.all(listeners.map(pinServedBy));
+
+  beforeEach(async () => {
+    directory = mkdtempSync(join(tmpdir(), "autoheal-tls-renewal-"));
+    files = {
+      certificateFile: join(directory, "control-plane.pem"),
+      keyFile: join(directory, "control-plane-key.pem"),
+    };
+    replace(files.certificateFile, "server.pem");
+    replace(files.keyFile, "server-key.pem");
+    const first = providedCertificate(files);
+    listeners = [await listening(first), await listening(first)];
+  });
+
+  afterEach(() => {
+    listeners.forEach((listener) => listener.close());
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("is served by both listeners from the next connection once its files are replaced, with no restart", async () => {
+    const served = providedCertificate(files);
+    expect(serveRenewed(listeners, served, providedCertificate(files))).toBe(false);
+
+    replace(files.certificateFile, "untrusted-server.pem");
+    replace(files.keyFile, "untrusted-server-key.pem");
+    const renewed = providedCertificate(files);
+    expect(renewed.pin).not.toBe(served.pin);
+    expect(serveRenewed(listeners, served, renewed)).toBe(true);
+    expect(await pinsServed()).toEqual([renewed.pin, renewed.pin]);
+  });
+
+  it("keeps the one served while its files hold a certificate and a key that do not belong together", async () => {
+    const served = providedCertificate(files);
+    // Caught half-way through a renewal: the new certificate is there, its key not yet.
+    replace(files.certificateFile, "untrusted-server.pem");
+    expect(() => serveRenewed(listeners, served, providedCertificate(files))).toThrow();
+    expect(await pinsServed()).toEqual([served.pin, served.pin]);
+
+    replace(files.keyFile, "untrusted-server-key.pem");
+    const renewed = providedCertificate(files);
+    expect(serveRenewed(listeners, served, renewed)).toBe(true);
+    expect(await pinsServed()).toEqual([renewed.pin, renewed.pin]);
   });
 });

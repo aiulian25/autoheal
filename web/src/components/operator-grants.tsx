@@ -1,28 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
-import type {
-  ResourceAction,
-  ResourceGrant,
-  ResourcePermissionsView,
+import { REPORT_LIMITS } from "../../../src/shared/constants.js";
+import {
+  RESOURCE_GRANTS_LIMIT,
+  type ResourceAction,
+  type ResourceGrant,
+  type ResourcePermissionsView,
 } from "../../../src/shared/resource-permissions.js";
 import { api } from "../api-client.js";
+import { TEXT } from "../constants.js";
 import { enrolledHostsQuery, hostContainersQuery } from "../queries.js";
 import { ErrorNotice, Loading } from "./common.js";
 
+const text = TEXT.operatorGrants;
 const ACTIONS: { action: ResourceAction; label: string }[] = [
-  { action: "lifecycle", label: "Start, stop, restart and recreate" },
-  { action: "update", label: "Update and roll back" },
-  { action: "logs", label: "Read container logs" },
-  { action: "terminal", label: "Open a container terminal" },
-  { action: "files", label: "Browse and edit container files" },
-  { action: "settings", label: "Edit container settings" },
+  { action: "lifecycle", label: text.actions.lifecycle },
+  { action: "update", label: text.actions.update },
+  { action: "logs", label: text.actions.logs },
+  { action: "terminal", label: text.actions.terminal },
+  { action: "files", label: text.actions.files },
+  { action: "settings", label: text.actions.settings },
 ];
-const scopeWords = {
-  host: "All containers on the host",
-  container: "One container",
-  stack: "One Compose stack",
-} as const;
+const scopeWords = text.scopes;
 
 /** Additional capabilities for a viewer; account roles and existing viewing access are preserved. */
 export function OperatorGrants({ userId, username }: { userId: string; username: string }) {
@@ -69,33 +69,31 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
       : (containers.data ?? []).map((container) => container.name);
   return (
     <details className="operator-grants" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Scoped operator access</summary>
-      <p className="small muted">
-        Give {username} specific container actions. Viewing access stays unchanged. Global settings, users, backups and
-        host package actions remain administrator-only.
-      </p>
+      <summary>{text.title}</summary>
+      <p className="small muted">{text.explanation(username)}</p>
       {permissions.isPending && open && <Loading />}
       {current && (
         <>
           {current.grants.length === 0 ? (
-            <p className="small muted">No delegated actions.</p>
+            <p className="small muted">{text.none}</p>
           ) : (
             <ul className="stack">
               {current.grants.map((grant, index) => (
                 <li key={`${grant.hostId}-${grant.scope}-${grant.resource}-${index}`}>
                   <strong>{hosts.data?.find((host) => host.id === grant.hostId)?.label ?? grant.hostId}</strong>
-                  {" · "}
-                  {grant.scope === "host" ? scopeWords.host : `${scopeWords[grant.scope]}: ${grant.resource}`}
+                  {TEXT.separator}
+                  {grant.scope === "host"
+                    ? scopeWords.host
+                    : text.scoped(scopeWords[grant.scope], grant.resource ?? "")}
                   <span className="small">
-                    {" "}
-                    ·{" "}
+                    {TEXT.separator}
                     {grant.actions
                       .map(
                         (action) =>
                           ACTIONS.find((choice) => choice.action === action)?.label ??
-                          (action === "read" ? "View inventory (already available to viewers)" : action),
+                          (action === "read" ? text.actions.read : action),
                       )
-                      .join(", ")}
+                      .join(TEXT.listComma)}
                   </span>{" "}
                   <button
                     type="button"
@@ -103,7 +101,7 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
                     disabled={save.isPending}
                     onClick={() => change(current.grants.filter((_, at) => at !== index))}
                   >
-                    Remove grant
+                    {text.remove}
                   </button>
                 </li>
               ))}
@@ -136,8 +134,8 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
             }}
           >
             <fieldset disabled={save.isPending}>
-              <legend>Add delegated actions</legend>
-              <label htmlFor={`${id}-host`}>Host</label>
+              <legend>{text.add}</legend>
+              <label htmlFor={`${id}-host`}>{text.host}</label>
               <select
                 id={`${id}-host`}
                 required
@@ -147,14 +145,14 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
                   setResource("");
                 }}
               >
-                <option value="">Choose a host</option>
+                <option value="">{text.chooseHost}</option>
                 {hosts.data?.map((host) => (
                   <option key={host.id} value={host.id}>
                     {host.label}
                   </option>
                 ))}
               </select>
-              <label htmlFor={`${id}-scope`}>Scope</label>
+              <label htmlFor={`${id}-scope`}>{text.scope}</label>
               <select
                 id={`${id}-scope`}
                 value={scope}
@@ -171,14 +169,12 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
               </select>
               {scope !== "host" && (
                 <>
-                  <label htmlFor={`${id}-resource`}>
-                    {scope === "stack" ? "Exact Compose project name" : "Exact container name"}
-                  </label>
+                  <label htmlFor={`${id}-resource`}>{scope === "stack" ? text.stackName : text.containerName}</label>
                   <input
                     id={`${id}-resource`}
                     list={`${id}-names`}
                     required
-                    maxLength={256}
+                    maxLength={REPORT_LIMITS.nameCharacters}
                     value={resource}
                     onChange={(event) => setResource(event.target.value)}
                   />
@@ -209,17 +205,14 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
                   actions.length === 0 ||
                   !hostId ||
                   (scope !== "host" && !resource.trim()) ||
-                  current.grants.length >= 64
+                  current.grants.length >= RESOURCE_GRANTS_LIMIT
                 }
               >
-                Add to review
+                {text.addToReview}
               </button>
             </fieldset>
           </form>
-          <p className="notice warning small">
-            Saving ends this person’s current sessions and closes their container connections. They must sign in again.
-            An action affecting dependent containers requires access to every affected member.
-          </p>
+          <p className="notice warning small">{text.savingEnds}</p>
           <div className="row">
             <button
               type="button"
@@ -227,7 +220,7 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
               disabled={editing === null || save.isPending}
               onClick={() => editing && save.mutate(editing)}
             >
-              Save access changes
+              {text.save}
             </button>
             {editing && (
               <button
@@ -238,7 +231,7 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
                   save.reset();
                 }}
               >
-                Discard changes
+                {text.discard}
               </button>
             )}
           </div>
@@ -253,12 +246,12 @@ export function OperatorGrants({ userId, username }: { userId: string; username:
             void permissions.refetch();
           }}
         >
-          Discard changes and reload
+          {text.discardAndReload}
         </button>
       )}
       {save.isSuccess && (
         <p className="small" role="status">
-          Access saved. The person must sign in again.
+          {text.saved}
         </p>
       )}
       <ErrorNotice error={permissions.error ?? hosts.error ?? containers.error ?? save.error} />

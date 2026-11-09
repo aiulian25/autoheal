@@ -3,6 +3,7 @@ import type { HostControlService } from "../host-control/host-control-service.js
 import type { HostPackagesService } from "../host-packages/host-packages-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import type { MetricsStore } from "../inventory/metrics-store.js";
+import type { DeliveryService } from "../notifications/delivery-service.js";
 import { logAlertNotQueued, type Notifier } from "../notifications/notifier.js";
 import type { NetworkWatch } from "../network/network-watch.js";
 import type { ProbeService } from "../probes/probe-service.js";
@@ -32,6 +33,8 @@ export interface DetectorDependencies {
   anomalies?: Pick<AnomalyDetector, "detect">;
   // Containers that keep running out of memory.
   resources?: Pick<ResourceAdvisor, "detect">;
+  // The notification outbox, which says when it last could not take an alert.
+  deliveries?: Pick<DeliveryService, "rules">;
 }
 
 /**
@@ -80,6 +83,7 @@ export class DetectorService {
       packagePlan: (host) => packages.plan(host),
       unusedImages: (hostId) => inventory.unusedImages(hostId),
       imageCleanup: (hostId) => hostControl.imageCleanupOf(hostId),
+      notificationOverflowAt: this.dependencies.deliveries?.rules().lastOverflowAt ?? null,
     });
     const more = [this.dependencies.anomalies, this.dependencies.resources].flatMap((detector) =>
       detector === undefined ? [] : [detector.detect()],

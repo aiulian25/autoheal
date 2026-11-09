@@ -1,0 +1,235 @@
+/* --- A stack's rows: its name, its header and its controls. */
+
+/* A stack's name sits low in its row, close to its first container. */
+.host-containers tr.group-row > th {
+  height: var(--compact-group-height);
+  padding-top: 0;
+  padding-bottom: 3px;
+  vertical-align: bottom;
+  border-bottom-color: var(--divider);
+  font-size: var(--text-small);
+  letter-spacing: normal;
+  color: var(--text-faint);
+}
+
+/* A stack's name sits right on its first container, with no line between a stack and the one before. */
+.host-containers tr:has(+ tr.group-row) > td {
+  border-bottom-color: transparent;
+}
+
+/* A stack's header: its name, how many of its containers are up, and its restart. */
+.stack-head {
+  position: sticky;
+  left: 0;
+  max-width: 100cqi;
+}
+
+.stack-head-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+}
+
+/* A stack with a panel open keeps its controls in view while the panel scrolls under them. */
+.stack-head:has(.stack-panel) .stack-head-bar {
+  position: sticky;
+  top: var(--compact-head-height);
+  z-index: 1;
+  background: var(--surface);
+}
+
+/* The row names its stack in capitals; what it says of the stack reads as a sentence. */
+.stack-score,
+.stack-restart-line,
+button.stack-restart {
+  font-weight: normal;
+  text-transform: none;
+}
+
+.stack-score,
+.stack-restart-line {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stack-score .bar {
+  width: 3rem;
+}
+
+button.stack-restart {
+  min-height: 0;
+  padding: 0 var(--space-1);
+  font-size: var(--text-small);
+}
+
+button.container-name {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+}
+
+/* A long name keeps to its column, cut short: the whole of it shows on hover, and opens under the row. */
+.icon-button.update-ready {
+  flex: none;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.icon-button.update-ready[aria-expanded="true"] {
+  box-shadow: 0 0 0 3px var(--action-bar-border);
+}
+
+.update-confirm {
+  position: fixed;
+  z-index: 50;
+  width: 19rem;
+  padding: 12px 13px;
+  border: var(--border-width) solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 45%);
+  font-size: var(--text-body);
+}
+
+.update-confirm h3 {
+  margin: 0 0 3px;
+  font-size: var(--text-large);
+  overflow-wrap: anywhere;
+}
+
+.update-confirm p {
+  margin: 0 0 6px;
+}
+
+.update-confirm .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.host-containers .name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* A button centres what overflows it, cutting both ends: its name is in a span of its own, cut at the end. */
+.host-containers .name-cell > button {
+  display: flex;
+  min-width: 0;
+}
+
+.host-containers .name-text,
+.host-containers .check-reason {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-containers select {
+  min-height: var(--compact-choice-height);
+  padding: 0 22px 0 8px;
+  font-size: var(--text-small);
+  background-position: right 8px center;
+  background-color: var(--control);
+}
+
+/* Above the table: what the ticked containers can be asked, in one slim line. */
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-height: var(--compact-head-height);
+  font-size: var(--text-small);
+}
+
+.bulk-bar button,
+.update-actions button {
+  min-height: var(--compact-choice-height);
+  padding: 0 10px;
+  font-size: var(--text-small);
+}
+
+/* The buttons for the part of the page being read, in view under the tabs until that part ends. Its sides reach past
+   the page's own edge, its height stays the bar's, so nothing under it moves when it takes its colour. */
+.action-bar {
+  position: sticky;
+  top: var(--host-tabs-height);
+  z-index: 2;
+  margin-inline: calc(-1 * var(--action-bar-inset));
+  padding-inline: var(--action-bar-inset);
+  background: var(--action-bar-surface);
+  box-shadow: 0 var(--border-width) 0 var(--action-bar-border);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: var(--compact-head-height);
+  font-size: var(--text-small);
+}
+
+.update-actions:not(:has(.action-group)) {
+  display: none;
+}
+
+.update-actions > span {
+  display: contents;
+}
+
+.action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+@media (min-width: 48rem) {
+  .update-actions > :first-child:has(.action-group) + :has(.action-group) > .action-group {
+    padding-left: 12px;
+    border-left: var(--border-width) solid var(--action-bar-border);
+  }
+}
+
+.bulk-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  flex-basis: 100%;
+}
+
+.host-containers .locked {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.host-containers .locked .icon {
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+
+/* Under a container's state, only after Autoheal restarted it: small, so the row stays slim. */
+.host-containers .restarts-used,
+.host-containers .check-reason,
+.host-containers .state-note {
+  font-size: var(--text-badge);
+  line-height: 1.2;
+}
+
+button.restarts-reset {
+  min-height: 0;
+  margin-left: var(--space-1);
+  padding: 0 var(--space-1);
+  font-size: inherit;
+}

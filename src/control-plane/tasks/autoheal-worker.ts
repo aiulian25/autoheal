@@ -1,6 +1,7 @@
 import { hasUpdate, type ContainerView, type HostView } from "../../shared/api.js";
 import {
   AGENT_AUTOHEAL,
+  AUTOHEAL_ASSESSMENT,
   AUTOHEAL_TEXT,
   DETECTOR_THRESHOLDS,
   JOB_ACTION,
@@ -15,8 +16,9 @@ import { log } from "../../shared/log.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import type { JobsService } from "../jobs/jobs-service.js";
 import type { Notifier } from "../notifications/notifier.js";
-import { imageDiskOf, percentFullOf } from "./detectors.js";
-import type { UpdateAssessor } from "./update-assessor.js";
+import { DomainError } from "../domain-error.js";
+import { imageDiskOf, isNewerVersionTaskKey, percentFullOf, tagOfNewerVersionKey } from "./detectors.js";
+import type { Assessment, UpdateAssessor } from "./update-assessor.js";
 import type { TaskAuthor, TaskRow, TasksService } from "./tasks-service.js";
 
 export interface AutohealWorkerDependencies {
@@ -25,6 +27,18 @@ export interface AutohealWorkerDependencies {
   inventory: Pick<InventoryService, "containers" | "hosts">;
   assessor: Pick<UpdateAssessor, "assess">;
   notifier: Pick<Notifier, "taskResolved">;
+  clock?: () => number;
+}
+
+// What becomes of an update now: applied, given to a person, or left waiting for Ollama's word.
+const UPDATE_STEP = { apply: "apply", giveBack: "give_back", wait: "wait" } as const;
+type UpdateStep = (typeof UPDATE_STEP)[keyof typeof UPDATE_STEP];
+
+// An update waiting for Ollama's word: since when, when Ollama was last asked, and what it said once it answered.
+interface AwaitingAssessment {
+  since: number;
+  askedAt: number;
+  answer: Assessment | null;
 }
 
 const AUTOHEAL: TaskAuthor = { kind: "agent", agent: AGENT_AUTOHEAL };
@@ -42,6 +56,7 @@ const HAND_OVER_TURN = [...TURN_STARTS, TASK_ACTIVITY.dispatched] as const;
 export class AutohealWorker {
   private running = false;
   private advising = false;
+  private readonly awaiting = new Map<string, AwaitingAssessment>();
 
   constructor(private readonly dependencies: AutohealWorkerDependencies) {}
 
@@ -51,7 +66,13 @@ export class AutohealWorker {
     }
     this.running = true;
     try {
-      for (const task of this.dependencies.tasks.autohealQueue()) {
+      const queue = this.dependencies.tasks.autohealQueue();
+      // One no longer Autoheal's waits for nothing.
+      const queued = new Set(queue.map((task) => task.id));
+      for (const taskId of [...this.awaiting.keys()].filter((taskId) => !queued.has(taskId))) {
+        this.awaiting.delete(taskId);
+      }
+      for (const task of queue) {
         await this.work(task).catch((error: unknown) => log(describeError(error)));
       }
     } finally {
@@ -64,10 +85,17 @@ export class AutohealWorker {
       await this.freeDisk(task);
       return;
     }
+    if (isNewerVersionTaskKey(task.detectorKey)) {
+      this.changeTag(task);
+      return;
+    }
     const { tasks, jobs } = this.dependencies;
     const container = this.containerOf(task);
-    // Nothing to do (yet): the update is gone, or the host has not reported the container.
-    if (container === null || !hasUpdate(container) || !tasks.checkout(task.id, AGENT_AUTOHEAL)) {
+    // Nothing to do (yet): the update is gone, the host has not reported the container, or Ollama has not answered.
+    if (container === null || !hasUpdate(container) || !(await this.readyToDecide(task, container))) {
+      return;
+    }
+    if (!tasks.checkout(task.id, AGENT_AUTOHEAL)) {
       return;
     }
     // Given to Autoheal by hand, or the host's rules changed since: its runner would refuse.
@@ -77,8 +105,12 @@ export class AutohealWorker {
       return;
     }
     try {
-      const proceed = await this.decide(task, container);
-      if (!proceed) {
+      const step = await this.decide(task, container);
+      if (step === UPDATE_STEP.wait) {
+        tasks.release(task.id);
+        return;
+      }
+      if (step === UPDATE_STEP.giveBack) {
         this.giveBack(task);
         return;
       }
@@ -89,6 +121,40 @@ export class AutohealWorker {
     } catch (error) {
       tasks.release(task.id);
       throw error;
+    }
+  }
+
+  /**
+   * A newer version a person handed to the agent: its runner changes the tag where the files write it. Nothing else
+   * ever moves a container to a new version: one only assigned here goes back.
+   */
+  private changeTag(task: TaskRow) {
+    const { tasks, jobs } = this.dependencies;
+    const container = this.containerOf(task);
+    const tag = tagOfNewerVersionKey(task.detectorKey!);
+    // The version moved on, or is reached already: its detector says so of the task.
+    if (container === null || container.update.newerTag !== tag || !tasks.checkout(task.id, AGENT_AUTOHEAL)) {
+      return;
+    }
+    if (!this.handedOver(task)) {
+      this.giveBack(task);
+      return;
+    }
+    if (container.handsOff !== null) {
+      tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.handsOff(container.handsOff, container.name, container.hostLabel));
+      this.giveBack(task);
+      return;
+    }
+    try {
+      // Its result releases the task: done when it went well, back to a person with Ollama's report when not.
+      jobs.request(AUTOHEAL, container.hostId, container.name, JOB_ACTION.changeTag, task.id, { tag });
+    } catch (error) {
+      if (!(error instanceof DomainError)) {
+        tasks.release(task.id);
+        throw error;
+      }
+      tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.notAsked(error.code));
+      this.giveBack(task);
     }
   }
 
@@ -200,36 +266,81 @@ export class AutohealWorker {
     return this.dependencies.tasks.latestActivity(task.id, HAND_OVER_TURN)?.kind === TASK_ACTIVITY.dispatched;
   }
 
+  private now() {
+    return (this.dependencies.clock ?? Date.now)();
+  }
+
+  /**
+   * Whether to take the task and decide now. One that waits for Ollama's word is asked about again, holding nothing,
+   * so its page shows the wait once and not each try: only once Ollama answers, or once the wait is over.
+   */
+  private async readyToDecide(task: TaskRow, container: ContainerView): Promise<boolean> {
+    const waiting = this.awaiting.get(task.id);
+    const now = this.now();
+    if (waiting === undefined || now - waiting.since >= AUTOHEAL_ASSESSMENT.handOverMilliseconds) {
+      return true;
+    }
+    if (now - waiting.askedAt < AUTOHEAL_ASSESSMENT.askAgainMilliseconds) {
+      return false;
+    }
+    waiting.askedAt = now;
+    const answer = await this.dependencies.assessor.assess(container, this.neighboursOf(container));
+    waiting.answer = answer.decision === null ? null : answer;
+    return waiting.answer !== null;
+  }
+
   /** Whether to update now; says why in the task either way. */
-  private async decide(task: TaskRow, container: ContainerView): Promise<boolean> {
+  private async decide(task: TaskRow, container: ContainerView): Promise<UpdateStep> {
     const { tasks, assessor } = this.dependencies;
     // Its hand-over already said so in the task.
     if (this.handedOver(task)) {
-      return true;
+      return this.settled(task, UPDATE_STEP.apply);
     }
     // Given back by a person after Autoheal held it: they decided.
     if (tasks.hasActivity(task.id, TASK_ACTIVITY.assessed)) {
       tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.overridden);
-      return true;
+      return this.settled(task, UPDATE_STEP.apply);
     }
     // Its owner chose each new image: its runner undoes one that does not come back healthy.
     if (container.update.policy === UPDATE_POLICY.always) {
       tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.alwaysApplied);
-      return true;
+      return this.settled(task, UPDATE_STEP.apply);
     }
-    const neighbours = this.neighboursOf(container);
-    const assessment = await assessor.assess(container, neighbours);
+    const assessment =
+      this.awaiting.get(task.id)?.answer ?? (await assessor.assess(container, this.neighboursOf(container)));
+    if (assessment.decision === null) {
+      return this.withoutAssessment(task, assessment.reason);
+    }
     tasks.addActivity(task.id, TASK_ACTIVITY.assessed, AUTOHEAL, { ...assessment });
     if (assessment.decision === UPDATE_ASSESSMENT.hold) {
       tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.assessedHold(assessment.reason));
-      return false;
+      return this.settled(task, UPDATE_STEP.giveBack);
     }
-    const said =
-      assessment.decision === null
-        ? AUTOHEAL_TEXT.noAssessment(assessment.reason)
-        : AUTOHEAL_TEXT.assessedUpdate(assessment.reason);
-    tasks.comment(AUTOHEAL, task.id, said);
-    return true;
+    tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.assessedUpdate(assessment.reason));
+    return this.settled(task, UPDATE_STEP.apply);
+  }
+
+  // Decided: nothing waits for Ollama's word any more.
+  private settled(task: TaskRow, step: UpdateStep): UpdateStep {
+    this.awaiting.delete(task.id);
+    return step;
+  }
+
+  /**
+   * Ollama could not be asked: the update never goes ahead without its word. It waits, saying so once, and once the
+   * wait is over it goes to a person, as an assessment that held it would: their giving it back is their go-ahead.
+   */
+  private withoutAssessment(task: TaskRow, reason: string): UpdateStep {
+    const { tasks } = this.dependencies;
+    if (!this.awaiting.has(task.id)) {
+      const now = this.now();
+      this.awaiting.set(task.id, { since: now, askedAt: now, answer: null });
+      tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.awaitingAssessment(reason));
+      return UPDATE_STEP.wait;
+    }
+    tasks.addActivity(task.id, TASK_ACTIVITY.assessed, AUTOHEAL, { decision: null, reason });
+    tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.noAssessment(reason));
+    return this.settled(task, UPDATE_STEP.giveBack);
   }
 
   private containerOf(task: TaskRow): ContainerView | null {

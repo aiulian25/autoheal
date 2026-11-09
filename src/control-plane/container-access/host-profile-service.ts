@@ -14,7 +14,8 @@ export class HostProfileService {
     private readonly access: Pick<ContainerAccessService, "requireHostAdmin">,
     runners: Pick<WaitingRunners, "wake">,
   ) {
-    this.relay = new RunnerRelay(runners);
+    // Looking at how the host is set up changes nothing, so it may go to the runner twice.
+    this.relay = new RunnerRelay(runners, () => true);
   }
 
   read(actor: Actor, hostId: string): Promise<HostProfileAnswer> {
@@ -32,5 +33,9 @@ export class HostProfileService {
 
   reset() {
     this.relay.reset();
+  }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
   }
 }

@@ -7,7 +7,8 @@ import type { HostShellOpener } from "./terminal-sessions.js";
 /**
  * A login shell on the runner's own host, root's or the named user's, through a helper container of its own image: privileged, in the
  * host's process namespace, holding still while nsenter enters the host's first process's namespaces. The helper
- * goes once the shell's end is read; one a runner left behind goes by itself when its hold runs out.
+ * goes once the shell's end is read; one a runner left behind goes when the next one starts, or by itself when its
+ * hold runs out.
  */
 export function hostShellThroughDocker(
   docker: Pick<DockerClient, "inspect" | "create" | "start" | "remove" | "openShell">,
@@ -44,6 +45,17 @@ export function hostShellThroughDocker(
       throw error;
     }
   };
+}
+
+/**
+ * The helpers a runner that stopped mid-shell or mid-script left on its host, running or not: a runner starting has
+ * opened none of its own yet, so each is removed instead of staying privileged until its hold runs out.
+ */
+export async function removeLeftHelpers(docker: Pick<DockerClient, "containerSummaries" | "remove">) {
+  const left = (await docker.containerSummaries()).filter(
+    ({ Labels }) => Labels?.[HOST_TERMINAL_HELPER.label] === HOST_TERMINAL_HELPER.labelValue,
+  );
+  await Promise.all(left.map(({ Id }) => docker.remove(Id)));
 }
 
 const HELPER_POLL_MILLISECONDS = 500;

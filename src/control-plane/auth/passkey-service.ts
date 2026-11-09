@@ -20,6 +20,7 @@ import {
   AUDIT_LABEL_MAXIMUM_LENGTH,
   IPV6_BRACKETS,
   LOGIN_FAILURE_REASONS,
+  PASSKEY_CEREMONIES_PER_ADDRESS,
   PASSKEY_CEREMONY_LIMIT,
   PASSKEY_CEREMONY_MILLISECONDS,
   PASSKEY_DEFAULT_NAME,
@@ -35,7 +36,7 @@ import type { DatabaseHandle } from "../database/connection.js";
 import { passkeys, users } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import { userView, type RequestContext } from "./auth-service.js";
-import type { ResolvedSession, SessionStore } from "./sessions.js";
+import type { ClientContext, ResolvedSession, SessionStore } from "./sessions.js";
 
 const CEREMONY = { signIn: "sign_in", enrol: "enrol" } as const;
 type CeremonyPurpose = (typeof CEREMONY)[keyof typeof CEREMONY];
@@ -44,6 +45,8 @@ interface Ceremony {
   purpose: CeremonyPurpose;
   // Who an enrolment is for; null for a sign-in, which doesn't know yet.
   userId: string | null;
+  // Where it was asked from.
+  address: string;
   expiresAt: number;
 }
 
@@ -115,14 +118,14 @@ export class PasskeyService {
   }
 
   /** The challenge for signing in; any passkey made here may answer it, so no name is asked first. */
-  async signInOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
+  async signInOptions(client: Pick<ClientContext, "ip">): Promise<PublicKeyCredentialRequestOptionsJSON> {
     const relyingParty = this.requireRelyingParty();
     const options = await generateAuthenticationOptions({
       rpID: relyingParty.id,
       userVerification: "required",
       timeout: PASSKEY_CEREMONY_MILLISECONDS,
     });
-    this.remember(options.challenge, CEREMONY.signIn, null);
+    this.remember(options.challenge, CEREMONY.signIn, null, client.ip);
     return options;
   }
 
@@ -166,7 +169,10 @@ export class PasskeyService {
   }
 
   /** The challenge for adding one; the route has already checked a current code. */
-  async enrolmentOptions(session: ResolvedSession): Promise<PublicKeyCredentialCreationOptionsJSON> {
+  async enrolmentOptions(
+    session: ResolvedSession,
+    client: Pick<ClientContext, "ip">,
+  ): Promise<PublicKeyCredentialCreationOptionsJSON> {
     const relyingParty = this.requireRelyingParty();
     const own = this.rowsOf(session.user.id);
     if (own.length >= PASSKEYS_PER_USER) {
@@ -186,7 +192,7 @@ export class PasskeyService {
       authenticatorSelection: { residentKey: "required", userVerification: "required" },
       timeout: PASSKEY_CEREMONY_MILLISECONDS,
     });
-    this.remember(options.challenge, CEREMONY.enrol, session.user.id);
+    this.remember(options.challenge, CEREMONY.enrol, session.user.id, client.ip);
     return options;
   }
 
@@ -283,19 +289,24 @@ export class PasskeyService {
     return this.relyingParty;
   }
 
-  private remember(challenge: string, purpose: CeremonyPurpose, userId: string | null) {
+  private remember(challenge: string, purpose: CeremonyPurpose, userId: string | null, address: string) {
     const now = this.clock();
     for (const [waiting, ceremony] of this.ceremonies) {
       if (ceremony.expiresAt <= now) {
         this.ceremonies.delete(waiting);
       }
     }
-    // The oldest goes first when too many wait: a flood can't grow memory, only end its own ceremonies.
+    // Too many from one address: its own oldest goes, so a flood from there ends only its own ceremonies.
+    const fromHere = [...this.ceremonies.keys()].filter((waiting) => this.ceremonies.get(waiting)?.address === address);
+    if (fromHere.length >= PASSKEY_CEREMONIES_PER_ADDRESS) {
+      this.ceremonies.delete(fromHere[0]!);
+    }
+    // Too many from many addresses: the oldest of all goes, so memory stays bounded.
     const oldest = this.ceremonies.keys().next();
     if (this.ceremonies.size >= PASSKEY_CEREMONY_LIMIT && oldest.done !== true) {
       this.ceremonies.delete(oldest.value);
     }
-    this.ceremonies.set(challenge, { purpose, userId, expiresAt: now + PASSKEY_CEREMONY_MILLISECONDS });
+    this.ceremonies.set(challenge, { purpose, userId, address, expiresAt: now + PASSKEY_CEREMONY_MILLISECONDS });
   }
 
   // An answer ends the ceremony it names before anything else about it is checked, so a refused answer ends it too.

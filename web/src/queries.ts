@@ -35,12 +35,18 @@ import {
 import { HOST_STATE, POWER_SETTLED } from "../../src/shared/constants.js";
 import type { NetworkOverviewView, RouterSettingsView } from "../../src/shared/network.js";
 import { api } from "./api-client.js";
-import { INVENTORY_REFRESH_MILLISECONDS, POWER_REFRESH_MILLISECONDS, REFRESH_MILLISECONDS } from "./constants.js";
+import {
+  BOARD_SAFETY_REFRESH_MILLISECONDS,
+  INVENTORY_REFRESH_MILLISECONDS,
+  POWER_REFRESH_MILLISECONDS,
+  REFRESH_MILLISECONDS,
+} from "./constants.js";
 
+// The live stream says when it changes; reading it now and then only covers a stream that missed it.
 export const boardQuery = {
   queryKey: ["board"],
   queryFn: () => api<BoardView>("GET", API_ROUTES.board),
-  refetchInterval: REFRESH_MILLISECONDS,
+  refetchInterval: BOARD_SAFETY_REFRESH_MILLISECONDS,
 } as const;
 
 // Whether passkeys work at this address, and whether the sign-in page offers one.
@@ -207,7 +213,7 @@ export const hostTasksQuery = (hostId: string) => {
   return {
     queryKey: ["tasks", "host", hostId],
     queryFn: () => api<TaskSummaryView[]>("GET", `${API_ROUTES.tasks}?${query}`),
-    refetchInterval: REFRESH_MILLISECONDS,
+    refetchInterval: BOARD_SAFETY_REFRESH_MILLISECONDS,
   };
 };
 

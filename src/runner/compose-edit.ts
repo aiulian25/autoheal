@@ -1,5 +1,12 @@
 import { dotenvLine } from "../shared/compose-lint.js";
-import { COMPOSE_EDIT_PROBLEMS, MOUNT_KIND, RESTART_POLICY_ON_FAILURE } from "../shared/constants.js";
+import {
+  COMPOSE_EDIT_PROBLEMS,
+  DIGEST_SEPARATOR,
+  IMAGE_REFERENCE,
+  MOUNT_KIND,
+  RESTART_POLICY_ON_FAILURE,
+} from "../shared/constants.js";
+import { splitTag } from "../shared/image-reference.js";
 import { SECRET_NAME } from "../shared/install.js";
 import type { ContainerSettings } from "../shared/protocol.js";
 import { envFilesNamedIn } from "../shared/stacks.js";
@@ -540,6 +547,76 @@ export function editedCompose(input: ComposeEditInput): ComposeEditResult {
 
 export const definesService = (text: string, service: string) => serviceBlock(text.split("\n"), service) !== null;
 
+export interface ImageTagEditInput {
+  text: string;
+  service: string;
+  // The file ${VARIABLES} come from: the project's .env, which Compose reads to fill the file in.
+  environmentPath: string;
+  envTexts: ReadonlyMap<string, string | null>;
+  tag: string;
+}
+
+// Where the tag was written: the image line itself, or the one variable in the .env that holds it.
+export type TagPlace = { variable: string; path: string } | { variable: null };
+
+export type ImageTagEditResult =
+  { problem: string } | { problem: null; text: string; envTexts: Map<string, string>; place: TagPlace };
+
+// A .env's value of a name, as Compose reads it: the last line naming it, its quotes or its comment taken off.
+function envValueIn(text: string | null, name: string): string | null {
+  const pattern = envLinePattern(name);
+  const line = (text ?? "").split("\n").findLast((each) => pattern.test(each));
+  if (line === undefined) return null;
+  return unquoted(line.slice(line.indexOf("=") + 1));
+}
+
+/**
+ * The files with only the image's tag changed: in the image line when it is written there, or in the .env when one
+ * variable holds it, the tag alone or the whole image. Anything else (a digest, a tag built of several variables, an
+ * image built here) is left alone and says why: Compose's own reading of the result is checked after.
+ */
+export function editedImageTag(input: ImageTagEditInput): ImageTagEditResult {
+  const { service, environmentPath, envTexts, tag } = input;
+  const lines = input.text.split("\n");
+  const block = serviceBlock(lines, service);
+  if (block === null) return { problem: COMPOSE_EDIT_PROBLEMS.serviceNotFound(service) };
+  const entry = entryOf(lines, block, "image");
+  if (entry === null || entry.inline === "") return { problem: COMPOSE_EDIT_PROBLEMS.imageMissing(service) };
+  const written = unquoted(entry.inline);
+  if (written.includes(DIGEST_SEPARATOR)) return { problem: COMPOSE_EDIT_PROBLEMS.tagByDigest(service) };
+  const inEnv = (variable: string, value: string): ImageTagEditResult => {
+    const envText = envTexts.get(environmentPath) ?? null;
+    return {
+      problem: null,
+      text: input.text,
+      envTexts: new Map([[environmentPath, withEnvValue(envText, variable, value)]]),
+      place: { variable, path: environmentPath },
+    };
+  };
+  const whole = WHOLE_VARIABLE.exec(written);
+  if (whole !== null) {
+    const variable = whole[1] ?? whole[2]!;
+    const image = envValueIn(envTexts.get(environmentPath) ?? null, variable);
+    if (image === null) return { problem: COMPOSE_EDIT_PROBLEMS.variableUnset(variable) };
+    if (image.includes(DIGEST_SEPARATOR)) return { problem: COMPOSE_EDIT_PROBLEMS.tagByDigest(service) };
+    return inEnv(variable, `${splitTag(image).name}${IMAGE_REFERENCE.tagSeparator}${tag}`);
+  }
+  const { name, tag: current } = splitTag(written);
+  const tagVariable = WHOLE_VARIABLE.exec(current);
+  if (tagVariable !== null) return inEnv(tagVariable[1] ?? tagVariable[2]!, tag);
+  const old = `${name}${IMAGE_REFERENCE.tagSeparator}${current}`;
+  const line = lines[entry.line]!;
+  const literal = !current.includes("$") && written === old && line.split(old).length === 2;
+  if (!literal) return { problem: COMPOSE_EDIT_PROBLEMS.tagNotEditable(service) };
+  const changed = line.replace(old, `${name}${IMAGE_REFERENCE.tagSeparator}${tag}`);
+  return {
+    problem: null,
+    text: [...lines.slice(0, entry.line), changed, ...lines.slice(entry.line + 1)].join("\n"),
+    envTexts: new Map(),
+    place: { variable: null },
+  };
+}
+
 export interface ResolvedService {
   environment?: Record<string, string | null>;
   labels?: Record<string, string>;
@@ -595,3 +672,44 @@ export const isEmptyChange = (change: SettingsChange) =>
     change.mounts.added.length +
     change.mounts.removed.length ===
     0 && change.restart === null;
+
+interface ConfigService {
+  image?: string;
+  environment?: Record<string, string | null>;
+}
+
+// A service as Compose resolved it, without its image, and without the variable a tag change sets where an env_file
+// hands that variable to the container too.
+function besidesImage(service: ConfigService, variable: string | null): string {
+  const { image: _image, environment, ...others } = service;
+  const kept = Object.entries(environment ?? {}).filter(([name]) => name !== variable);
+  return JSON.stringify({ ...others, environment: Object.fromEntries(kept) });
+}
+
+/**
+ * The services a tag change moves, as Compose resolves the files before and after it: each only to the same image at
+ * the new tag, and nothing else about any service changed. Null when anything else did, or the services differ.
+ */
+export function servicesMovedByTag(
+  before: Readonly<Record<string, ConfigService>>,
+  after: Readonly<Record<string, ConfigService>>,
+  tag: string,
+  variable: string | null,
+): string[] | null {
+  const names = Object.keys(after);
+  const sameServices = names.length === Object.keys(before).length && names.every((name) => name in before);
+  if (!sameServices || names.length === 0) return null;
+  const moved: string[] = [];
+  for (const name of names) {
+    const was = before[name]!;
+    const now = after[name]!;
+    if (besidesImage(was, variable) !== besidesImage(now, variable)) return null;
+    if (was.image === now.image) continue;
+    if (was.image === undefined || now.image === undefined) return null;
+    const from = splitTag(was.image);
+    const to = splitTag(now.image);
+    if (from.name !== to.name || to.tag !== tag) return null;
+    moved.push(name);
+  }
+  return moved;
+}

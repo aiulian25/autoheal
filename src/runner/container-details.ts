@@ -1,8 +1,15 @@
-import { CONTAINER_DETAILS, HOST_PROFILE, NETWORK_CHANGE } from "../shared/constants.js";
+import {
+  CONTAINER_DETAILS,
+  HOST_PROFILE,
+  NETWORK_CHANGE,
+  PORTS_PER_CONTAINER,
+  PORT_PROTOCOLS,
+} from "../shared/constants.js";
 import { INSTALL_LABEL } from "../shared/install.js";
 import type { ContainerDetailsView } from "../shared/protocol.js";
+import { isPort } from "./container-inventory.js";
 import type { ContainerHistoryEntry, ContainerProcesses, DockerNetwork } from "./docker-client.js";
-import type { ContainerDetails } from "./incident-report.js";
+import type { ContainerDetails, PortBinding } from "./incident-report.js";
 
 // What Docker's inspect says beyond what the rest of the runner reads of it.
 type Inspected = ContainerDetails & {
@@ -21,7 +28,9 @@ type Inspected = ContainerDetails & {
     OOMKilled?: boolean;
     Health?: { Status?: string; FailingStreak?: number };
   };
+  NetworkSettings?: ContainerDetails["NetworkSettings"] & { Ports?: Record<string, PortBinding[] | null> | null };
 };
+type DetailPorts = NonNullable<ContainerDetailsView["ports"]>;
 
 type HealthCheck = { End?: string; ExitCode?: number; Output?: string };
 
@@ -97,6 +106,45 @@ export function joinableNetworks(container: ContainerDetails, networks: readonly
     .map((name) => text(name));
 }
 
+// How Docker writes "every address": no address at all, or IPv4's and IPv6's own.
+const EVERY_ADDRESS: ReadonlySet<string> = new Set(["", "0.0.0.0", "::"]);
+
+// Where the host publishes one port: once each, as Docker lists a binding once per address family.
+function publishedOf(bindings: readonly PortBinding[] | null | undefined): DetailPorts[number]["published"] {
+  const published = new Map<string, DetailPorts[number]["published"][number]>();
+  for (const binding of bindings ?? []) {
+    const port = Number(binding.HostPort);
+    if (!isPort(port)) continue;
+    const address = EVERY_ADDRESS.has(binding.HostIp ?? "") ? "" : text(binding.HostIp);
+    published.set(`${address} ${port}`, { address, port });
+  }
+  return [...published.values()];
+}
+
+/**
+ * Each port it has in the container, as its image exposes or its settings publish it, lowest first, with where the
+ * host publishes it: as it runs, or as it is set to while it is stopped. Docker writes each as "port/protocol".
+ */
+function portsOf(container: Inspected): DetailPorts {
+  const configured = container.HostConfig?.PortBindings ?? {};
+  const running = container.NetworkSettings?.Ports ?? {};
+  const named = [
+    ...Object.keys(container.Config.ExposedPorts ?? {}),
+    ...Object.keys(configured),
+    ...Object.keys(running),
+  ];
+  return [...new Set(named)]
+    .flatMap((name) => {
+      const [number, written] = name.split("/");
+      const port = Number(number);
+      const protocol = PORT_PROTOCOLS.find((known) => known === written);
+      if (protocol === undefined || !isPort(port)) return [];
+      return [{ port, protocol, published: publishedOf(running[name] ?? configured[name]) }];
+    })
+    .toSorted((first, second) => first.port - second.port || first.protocol.localeCompare(second.protocol))
+    .slice(0, PORTS_PER_CONTAINER);
+}
+
 /** Docker's view of a container, for its panel: its environment is left out, as only its settings carry that. */
 export function detailsOf(
   inspected: ContainerDetails,
@@ -128,6 +176,7 @@ export function detailsOf(
     availableNetworks: joinableNetworks(container, networks),
     ...(installedIn === undefined ? {} : { installedIn: text(installedIn) }),
     networkMode: text(host.NetworkMode),
+    ports: portsOf(container),
     mounts: (container.Mounts ?? []).slice(0, entries).map((mount) => ({
       kind: text(mount.Type),
       source: text(mount.Name ?? mount.Source),

@@ -4,8 +4,12 @@ import type { DiagnosticBundle, DiagnosticPreview } from "../../shared/diagnosti
 import { DIAGNOSTIC_TTL_MILLISECONDS } from "../../shared/diagnostics.js";
 import { INCIDENT_STATUS } from "../../shared/constants.js";
 import { sha256Hex } from "../../shared/hash.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
-import { startTestControlPlane, type TestControlPlane, type TestClient } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestControlPlane,
+  type TestClient,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 
 const SECRET = "opaque-synthetic-support-secret";
@@ -19,7 +23,7 @@ describe("authenticated incident diagnostic exports", () => {
     plane = await startTestControlPlane();
     admin = (await fullySignedInAdmin(plane)).client;
     const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Lab" })).json<EnrolledHostView>();
-    const host = plane.services.hostsService.authenticate(decodeJoinCode(enrolled.joinCode)!.token)!;
+    const host = plane.services.hostsService.authenticate(runnerTokenOf(enrolled))!;
     incidentId = plane.services.incidentsService.create(
       host,
       {

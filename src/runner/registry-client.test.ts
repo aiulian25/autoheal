@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NODE_TO_OCI_ARCHITECTURE } from "../shared/constants.js";
+import { NODE_TO_OCI_ARCHITECTURE, REGISTRY_MESSAGES } from "../shared/constants.js";
 import { RegistryClient, RegistryError, imageLabelsOf, parseImageReference } from "./registry-client.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -400,6 +400,102 @@ describe("RegistryClient with a stored credential", () => {
       .catch((error: Error) => error.message);
 
     expect(await refused).toContain("not public");
+  });
+});
+
+describe("a stored credential, when its registry sends the request on", () => {
+  const TOKEN = "scoped-token";
+  const ELSEWHERE_TOKEN = "elsewhere-token";
+  const basic = `Basic ${Buffer.from("owner:a-token").toString("base64")}`;
+  let registry: Server;
+  let elsewhere: Server;
+  let registryHost: string;
+  let elsewhereHost: string;
+  // What reaches the other address, and what it asks for when nothing is sent.
+  let seenElsewhere: (string | undefined)[];
+  let challengeElsewhere: string;
+
+  const listen = async (handler: (request: IncomingMessage, response: import("node:http").ServerResponse) => void) => {
+    const server = createServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { server, host: `127.0.0.1:${(server.address() as AddressInfo).port}` };
+  };
+  const found = (response: import("node:http").ServerResponse) => {
+    response.writeHead(200, { "docker-content-digest": DIGEST });
+    response.end();
+  };
+  const tokenAnswer = (response: import("node:http").ServerResponse, token: string) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ token }));
+  };
+
+  beforeEach(async () => {
+    seenElsewhere = [];
+    ({ server: elsewhere, host: elsewhereHost } = await listen((request, response) => {
+      if (request.url!.startsWith("/token")) return tokenAnswer(response, ELSEWHERE_TOKEN);
+      seenElsewhere.push(request.headers.authorization);
+      if (request.headers.authorization !== undefined) return found(response);
+      response.writeHead(401, { "www-authenticate": challengeElsewhere });
+      response.end();
+    }));
+    ({ server: registry, host: registryHost } = await listen((request, response) => {
+      if (request.url!.startsWith("/token")) return tokenAnswer(response, TOKEN);
+      if (request.url === "/v2/team/renamed/manifests/latest") {
+        response.writeHead(307, { location: "/v2/team/app/manifests/latest" });
+        return response.end();
+      }
+      if (request.url === "/v2/team/app/manifests/latest") {
+        if (request.headers.authorization === basic) return found(response);
+        response.writeHead(401, { "www-authenticate": 'Basic realm="registry"' });
+        return response.end();
+      }
+      response.writeHead(307, { location: `http://${elsewhereHost}${request.url}` });
+      response.end();
+    }));
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => registry.close(() => resolve()));
+    await new Promise<void>((resolve) => elsewhere.close(() => resolve()));
+  });
+
+  const team = () => ({ registry: registryHost, repository: "team", username: "owner", password: "a-token" });
+  const moved = () => ({ registry: registryHost, repository: "team/moved", tag: "latest" });
+
+  const answerTo = (reference: ReturnType<typeof moved>) =>
+    new RegistryClient(fetch, () => [team()]).digest(reference).then(
+      (digest) => digest,
+      (error: Error) => error.message,
+    );
+
+  it("never sends it on where a registry asking for basic authentication sent the request", async () => {
+    challengeElsewhere = 'Basic realm="elsewhere"';
+
+    const answer = await answerTo(moved());
+
+    expect(seenElsewhere).toEqual([undefined]);
+    expect(answer).toBe(REGISTRY_MESSAGES.refusedCredentialRedirect(`http://${elsewhereHost}`));
+  });
+
+  it("never sends a token got with it on to another address either", async () => {
+    challengeElsewhere = `Bearer realm="http://${registryHost}/token",service="registry"`;
+
+    const answer = await answerTo(moved());
+
+    expect(seenElsewhere).toEqual([undefined]);
+    expect(answer).toBe(REGISTRY_MESSAGES.refusedCredentialRedirect(`http://${elsewhereHost}`));
+  });
+
+  it("follows a registry that moves the request within itself, credential and all", async () => {
+    const renamed = { registry: registryHost, repository: "team/renamed", tag: "latest" };
+    expect(await new RegistryClient(fetch, () => [team()]).digest(renamed)).toBe(DIGEST);
+  });
+
+  it("still asks wherever a registry sends the request when there is no credential to keep, as lscr.io does", async () => {
+    challengeElsewhere = `Bearer realm="http://${elsewhereHost}/token",service="elsewhere"`;
+
+    expect(await new RegistryClient(fetch, () => []).digest(moved())).toBe(DIGEST);
+    expect(seenElsewhere).toEqual([undefined, `Bearer ${ELSEWHERE_TOKEN}`]);
   });
 });
 

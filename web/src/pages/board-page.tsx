@@ -9,8 +9,8 @@ import { PATHS, SEARCH_PARAMETERS, TEXT } from "../constants.js";
 import { boardQuery, containersQuery, enrolledHostsQuery, viewPreferencesQuery } from "../queries.js";
 import { arrangedColumns } from "../../../src/shared/view-preferences.js";
 import { BoardArrangementPanel } from "../components/board-arrangement.js";
-import { StatusStrip } from "./attention-page.js";
-import { TaskPanel } from "./tasks-page.js";
+import { StatusStrip } from "./attention/status-strip.js";
+import { TaskPanel } from "./task-panel.js";
 
 // Left to right, the way a problem moves; on a phone, what needs you comes first. A person may arrange their own.
 const COLUMNS = [

@@ -300,6 +300,15 @@ export class TerminalService {
     this.finish(this.ofHost(host, terminalId), end);
   }
 
+  /** A revoked host's shells end at once: what was typed and not yet taken never reaches its runner. */
+  endForHost(hostId: string) {
+    for (const terminal of [...this.terminals.values()].filter((each) => each.hostId === hostId)) {
+      terminal.typed = [];
+      terminal.size = null;
+      this.finish(terminal, { exitCode: null, reason: TERMINAL_ENDINGS.hostRevoked });
+    }
+  }
+
   /**
    * Ends what nobody will: a shell its runner never started or stopped asking about (the runner is gone),
    * closes one nobody typed into for long, and forgets ended ones once a late browser had time to hear it.

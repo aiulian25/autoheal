@@ -20,13 +20,24 @@ import type { DatabaseHandle } from "../database/connection.js";
 import { hosts } from "../database/schema.js";
 import type { SecretBox } from "../database/secret-box.js";
 import { DomainError } from "../domain-error.js";
-import { newToken, pendingLabel, type HostRow, type HostsService } from "../hosts/hosts-service.js";
+import { pendingLabel, type HostRow, type HostsService } from "../hosts/hosts-service.js";
+import { newToken } from "../../shared/join-code.js";
 import { toHostView } from "../inventory/host-views.js";
 
 export interface LocalRunnerDetails {
   hostId: string;
   // What its runner gives the runner API on loopback, as a runner container gives its own.
   token: string;
+}
+
+/** This machine's host could not be readied for its runner: which host, for its page to say why. */
+export class LocalHostUnready extends Error {
+  constructor(
+    readonly hostId: string,
+    reason: string,
+  ) {
+    super(reason);
+  }
 }
 
 /**
@@ -130,7 +141,7 @@ export class LocalHostService {
   private tokenOf(host: HostRow): string {
     const token = host.sshRunnerToken === null ? null : this.secretBox.open(host.sshRunnerToken);
     if (token === null) {
-      throw new Error(LOCAL_HOST.failed(LOCAL_HOST.tokenUnreadable));
+      throw new LocalHostUnready(host.id, LOCAL_HOST.tokenUnreadable);
     }
     return token;
   }

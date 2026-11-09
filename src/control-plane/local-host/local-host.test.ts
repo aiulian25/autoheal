@@ -13,19 +13,24 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { runningContainer, until } from "../../../test/support/embedded-ssh-host.js";
+import {
+  RENEWED_PIN,
+  renewRunnerCertificate,
+  runningContainer,
+  startedAndReported,
+  until,
+} from "../../../test/support/embedded-ssh-host.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { localRunnerPorts } from "../../runner/application.js";
 import { API_ROUTES, apiPath, type HostView } from "../../shared/api.js";
 import { HOST_KIND, JOIN_FILE_NAME, LOCAL_HOST } from "../../shared/constants.js";
 import { publicKeyPin, sha256Hex } from "../../shared/hash.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
+import { decodeJoinCode, newToken } from "../../shared/join-code.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
 import { SecretBox } from "../database/secret-box.js";
 import { buildRunnerServer } from "../runner-api/runner-server.js";
 import { hosts as hostsTable } from "../database/schema.js";
-import { newToken } from "../hosts/hosts-service.js";
 import { LocalHostRunner } from "./local-host-runner.js";
 import { LocalHostService } from "./local-host-service.js";
 
@@ -54,6 +59,8 @@ describe("the control plane's own machine, looked after in place", () => {
   let folders: string;
   let joinDirectory: string;
   let service: LocalHostService;
+  // Where its runner reaches the runner API, and the key it shows, as the control plane hands them to it.
+  let runnerApi: { url: string; pin: string };
   let runner: LocalHostRunner;
 
   beforeEach(async () => {
@@ -83,9 +90,10 @@ describe("the control plane's own machine, looked after in place", () => {
       () => controlPlane.clock.now,
       joinDirectory,
     );
+    runnerApi = { url: `https://127.0.0.1:${port}`, pin: PIN };
     runner = new LocalHostRunner({
       hosts: service,
-      controlPlane: { url: `https://127.0.0.1:${port}`, pin: PIN },
+      controlPlane: runnerApi,
       // What the machine's .env says, as its runner container read it.
       environment: {
         DOCKER_SOCKET_PATH: engine.socketPath,
@@ -163,6 +171,18 @@ describe("the control plane's own machine, looked after in place", () => {
     expect(runner.inPlaceOf(before.id)).toEqual({ problem: null });
   });
 
+  it("carries on with the runner API's new key, which a renewed certificate brings, and starts nothing again", async () => {
+    runner.begin();
+    await until(local, (view) => view?.containerCount === 2);
+    const before = runner.inPlaceOf((await local())!.id);
+
+    renewRunnerCertificate(runnerServer);
+    // As the control plane's `keyChanged` puts it for the runners in its process.
+    runnerApi.pin = RENEWED_PIN;
+    await startedAndReported(engine, "notes", local, (view) => view?.containerCount === 3);
+    expect(runner.inPlaceOf((await local())!.id)).toEqual(before);
+  });
+
   it("stops once its host is revoked, and starts again when it is added again", async () => {
     runner.begin();
     const host = (await until(local, (view) => view?.containerCount === 2))!;
@@ -180,6 +200,42 @@ describe("the control plane's own machine, looked after in place", () => {
       () => runner.inPlaceOf(host.id),
       (inPlace) => inPlace?.problem === null,
     );
+  });
+
+  it("does not look after the machine when it cannot find its own container, rather than guess its name", async () => {
+    await runner.stop();
+    // As a hostname: set in its Compose file leaves it: no container answers to that name.
+    runner = new LocalHostRunner({
+      hosts: service,
+      controlPlane: runnerApi,
+      environment: { DOCKER_SOCKET_PATH: engine.socketPath, HOST_ROOT: join(folders, "root"), DRY_RUN: "0" },
+      ownContainer: "autoheal-box",
+      portsOf: (config) => ({ ...localRunnerPorts(config), hostCommand: async () => "" }),
+    });
+    runner.begin();
+    const { hostId } = service.ensure()!;
+    expect(
+      await until(
+        () => runner.inPlaceOf(hostId),
+        (inPlace) => inPlace?.problem !== null,
+      ),
+    ).toEqual({
+      problem: LOCAL_HOST.ownContainerUnknown("autoheal-box"),
+    });
+    expect((await local())?.lastHeartbeatAt ?? null).toBeNull();
+  });
+
+  it("says why it does not start when its token was sealed with another passphrase, throwing nothing at its tick", async () => {
+    const { hostId } = service.ensure()!;
+    controlPlane.services.databaseHandle.database
+      .update(hostsTable)
+      .set({ sshRunnerToken: SecretBox.fromPassphrase("another passphrase entirely").seal(newToken()) })
+      .where(eq(hostsTable.id, hostId))
+      .run();
+
+    expect(() => runner.begin()).not.toThrow();
+    expect(() => runner.tick()).not.toThrow();
+    expect(runner.inPlaceOf(hostId)).toEqual({ problem: LOCAL_HOST.tokenUnreadable });
   });
 
   it("takes up the token a restore brought back, and starts only once its old runner has stopped", async () => {

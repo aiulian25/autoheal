@@ -7,6 +7,7 @@ import { HTTP_STATUS } from "../../src/shared/constants.js";
 import { ApiError, queryRetryDelay, shouldRetryQuery } from "./api-client.js";
 import { SESSION_QUERY_KEY } from "./constants.js";
 import { router } from "./router.js";
+import { reloadIntoNewBuild } from "./stale-build.js";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./styles/app.css";
@@ -18,6 +19,12 @@ const recheckSessionOn401 = (error: unknown) => {
     void queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY });
   }
 };
+
+reloadIntoNewBuild(
+  window,
+  () => window.sessionStorage,
+  () => window.location.reload(),
+);
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({ onError: recheckSessionOn401 }),

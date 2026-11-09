@@ -39,6 +39,8 @@ describe("containers given to Ollama", () => {
   let answers: string[];
   let prompts: string[];
   let told: IncidentNotice[];
+  // What happens elsewhere while Ollama decides, as a person on the board does.
+  let asking: (() => Promise<void>) | null;
   let worker: RepairWorker;
   let dependencies: RepairWorkerDependencies;
   const failing = containerSnapshot({ name: "tika", image: "apache/tika:3.2", state: "exited", exitCode: 1 });
@@ -52,6 +54,7 @@ describe("containers given to Ollama", () => {
     answers = [];
     prompts = [];
     told = [];
+    asking = null;
     const services = controlPlane.services;
     dependencies = {
       incidents: services.incidentsService,
@@ -61,6 +64,7 @@ describe("containers given to Ollama", () => {
         {
           chat: async (_systemPrompt: string, userPrompt: string) => {
             prompts.push(userPrompt);
+            await asking?.();
             return { content: answers.shift() ?? "", thinking: "Its log says the pid file exists." };
           },
           contextTokens: 16_384,
@@ -141,6 +145,52 @@ describe("containers given to Ollama", () => {
     });
     expect(response.statusCode).toBe(204);
   }
+
+  it("leaves an incident a person dismissed while Ollama looked into another as they left it", async () => {
+    await report([
+      failing,
+      containerSnapshot({ name: "paperless", image: "paperless:2", state: "exited", exitCode: 1 }),
+    ]);
+    await giveToOllama("paperless");
+    escalate("tika");
+    escalate("paperless");
+    // Whichever Ollama looks into first, a person dismisses the other on the board meanwhile.
+    const dismissed: string[] = [];
+    asking = async () => {
+      asking = null;
+      for (const waiting of controlPlane.services.incidentsService.list({ status: INCIDENT_STATUS.awaitingApproval })) {
+        const response = await admin.post(apiPath(API_ROUTES.incidentApproval, { incidentId: waiting.id }), {
+          choice: "dismiss",
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        dismissed.push(waiting.id);
+      }
+    };
+    answers.push(plan("report"), plan("recreate"));
+    await worker.run();
+
+    expect(dismissed).toHaveLength(1);
+    expect((await detail(dismissed[0]!)).status).toBe(INCIDENT_STATUS.dismissed);
+    expect(await eventsOf(dismissed[0]!, TRACE.repairStarted)).toEqual([]);
+    expect(prompts).toHaveLength(1);
+    expect(await takeWork()).toEqual([]);
+  });
+
+  it("sets Ollama's answer aside when the incident ended while it decided, and starts nothing", async () => {
+    const incident = escalate();
+    // As a restore of the database does.
+    asking = async () => {
+      controlPlane.services.incidentsService.update(incident.id, { status: INCIDENT_STATUS.cancelled });
+    };
+    answers.push(plan("recreate"));
+    await worker.run();
+
+    expect((await detail(incident.id)).status).toBe(INCIDENT_STATUS.cancelled);
+    expect(await takeWork()).toEqual([]);
+    expect(await eventsOf(incident.id, TRACE.repairSkipped)).toHaveLength(1);
+    expect(await eventsOf(incident.id, TRACE.repairPlanned)).toEqual([]);
+    expect(told).toEqual([]);
+  });
 
   it("recreates it once a restart did not hold, and settles the incident when that holds", async () => {
     const incident = escalate();
@@ -240,11 +290,16 @@ describe("containers given to Ollama", () => {
     expect(told).toEqual([expect.objectContaining({ verdict: VERDICT_ESCALATED, outcome })]);
   });
 
-  it("offers a roll back while an update keeps the old container aside, and an update when one is out", async () => {
+  it("offers a roll back while an update keeps the old container aside, and an update Autoheal may apply alone", async () => {
     await report([
       { ...failing, update, updatePolicy: "auto" },
       containerSnapshot({ name: "tika-autoheal-old", image: "apache/tika:3.1", state: "exited" }),
     ]);
+    const applied = await admin.put(apiPath(API_ROUTES.containerControls, { hostId }), {
+      names: ["tika"],
+      update: "apply",
+    });
+    expect(applied.statusCode, applied.body).toBe(204);
     const incident = escalate();
     answers.push(plan("roll_back"));
     await worker.run();
@@ -252,6 +307,20 @@ describe("containers given to Ollama", () => {
     expect(prompts[0]).toContain("Repairs on offer: recreate, roll_back, update, report.");
     expect(await takeWork()).toEqual([expect.objectContaining({ containerName: "tika", action: "roll_back" })]);
     expect((await detail(incident.id)).status).toBe("approved");
+  });
+
+  it("offers a container whose new images wait for a person an update only once a person hands the incident over", async () => {
+    // As most containers are: its new images are asked about.
+    await report([{ ...failing, update }]);
+    const incident = escalate();
+    answers.push(plan("report"), plan("report"));
+    await worker.run();
+    expect(prompts[0]).toContain("Repairs on offer: recreate, report.");
+
+    // Their hand-over is their word on its update too.
+    controlPlane.services.incidentsService.addEvent(incident.id, TRACE.dispatched, { by: "admin" });
+    await worker.run();
+    expect(prompts[1]).toContain("Repairs on offer: recreate, update, report.");
   });
 
   it("reports when Ollama picks a repair that is not on offer", async () => {

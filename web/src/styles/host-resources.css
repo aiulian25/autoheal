@@ -1,0 +1,189 @@
+/* --- A host's Docker networks, and what a volume holds. */
+
+/* A host's Docker networks, under its old images. */
+.host-networks {
+  scroll-margin-top: calc(var(--host-tabs-height) + var(--space-4));
+}
+
+.host-networks .table-wrap td,
+.host-networks .table-wrap th {
+  height: var(--compact-row-height);
+  padding: 0 10px 0 0;
+  border-bottom: var(--border-width) solid var(--divider);
+  font-size: var(--text-small);
+  white-space: nowrap;
+}
+
+.host-networks .table-wrap th {
+  height: var(--compact-head-height);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-normal);
+}
+
+.host-networks th:first-child,
+.host-networks td:first-child {
+  padding-left: 10px;
+}
+
+.host-networks tr.selected > td {
+  background: var(--action-bar-surface);
+}
+
+.network-members {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.network-member {
+  padding: 0 6px;
+  border-radius: var(--radius-small);
+  background: var(--control);
+  font-size: var(--text-badge);
+}
+
+.network-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.icon-danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.host-networks .locked {
+  display: inline-grid;
+  place-items: center;
+  width: var(--icon-button-size);
+  color: var(--text-faint);
+}
+
+.host-networks .locked .icon {
+  width: var(--button-icon-size);
+  height: var(--button-icon-size);
+}
+
+.host-networks .table-wrap td[colspan] {
+  height: auto;
+  padding: 0;
+  white-space: normal;
+  background: var(--surface-muted);
+}
+
+.network-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px 14px;
+}
+
+.network-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) 30px;
+  margin: 0;
+}
+
+.network-facts dt {
+  color: var(--text-faint);
+  font-size: var(--text-badge);
+}
+
+.network-facts dd {
+  margin: 0;
+}
+
+.network-panel-row {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) 8rem minmax(0, 2fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 34px;
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.network-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.network-hint {
+  margin: 0;
+}
+
+button.warning-button {
+  border-color: var(--warning-ring);
+  color: var(--warning);
+}
+
+.chip-divider {
+  align-self: center;
+  width: 1px;
+  height: var(--space-4);
+  margin-inline: var(--space-1);
+  background: var(--border);
+}
+
+.chip-divider:last-child {
+  display: none;
+}
+
+.panel-filters {
+  padding-block: var(--space-2);
+  border-top: 1px solid var(--divider);
+}
+
+button.network-chip {
+  border-color: var(--warning-ring);
+  background: var(--warning-wash);
+}
+
+button.network-chip .tab-count {
+  color: var(--warning);
+}
+
+.left-behind-offer {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+/* What a volume holds, one folder at a time. */
+.volume-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.volume-files-head {
+  padding-bottom: var(--space-2);
+  font-size: var(--text-small);
+}
+
+.volume-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7rem 12rem;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 28px;
+  border-top: var(--border-width) solid var(--divider);
+  font-size: var(--text-small);
+}
+
+.volume-file-row button.link {
+  justify-self: start;
+}
+
+.volume-files .network-hint {
+  padding-top: var(--space-2);
+}
+
+/* Its tick shows first, though its name is what the row is called. */
+.stack-head > input[type="checkbox"] {
+  order: -1;
+}

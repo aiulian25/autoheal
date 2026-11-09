@@ -9,6 +9,7 @@ import {
 import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import {
+  API_ERRORS,
   API_ROUTES,
   apiPath,
   type ContainerView,
@@ -24,7 +25,9 @@ import {
   type PackageFacts,
   type WorkResponse,
 } from "../../shared/protocol.js";
-import { auditEvents } from "../database/schema.js";
+import { IGNORE_EVERY_VERSION, RESTART_CHOICE, UPDATE_CHOICE } from "../../shared/constants.js";
+import type { Actor } from "../audit/audit-log.js";
+import { auditEvents, ignoredVersions, users } from "../database/schema.js";
 
 const update = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"c".repeat(64)}` };
 // Sunday 25 October 2026, 03:30 in London: inside the default window, the clocks just gone back.
@@ -376,6 +379,122 @@ describe("what each host's page lets Autoheal do on its own", () => {
     expect(controlPlane.services.hostControl.view(hostId).lastCleanup).toMatchObject({
       status: "succeeded",
       outcome: "Removed 3 images (24 MB).",
+    });
+  });
+
+  it("ignores a newer version, or every one, so it asks nothing, until a person stops ignoring it", async () => {
+    const pinned = (name: string, newerTag: string) =>
+      containerSnapshot({
+        name,
+        image: `example/${name}:1.0`,
+        update: { status: "current", checkedAt: 1, remoteDigest: null, newerTag },
+      });
+    await report(false, [pinned("wiki", "1.1"), pinned("cache", "2.0")]);
+    await controlPlane.services.detectorService.run();
+    const open = async () =>
+      (await admin.get(API_ROUTES.tasks))
+        .json<{ title: string; status: string }[]>()
+        .filter((task) => task.status !== "done" && task.title.includes(" is out for "))
+        .map((task) => task.title)
+        .toSorted();
+    expect(await open()).toEqual(["1.1 is out for wiki on Alder", "2.0 is out for cache on Alder"]);
+    const route = apiPath(API_ROUTES.hostIgnoredVersions, { hostId });
+
+    const ignored = await admin.put(route, {
+      changes: [
+        { container: "wiki", version: "1.1" },
+        { container: "cache", version: "*" },
+      ],
+    });
+    expect(ignored.statusCode, ignored.body).toBe(204);
+    const containers = async () =>
+      (await admin.get(`${API_ROUTES.containers}?hostId=${hostId}`)).json<ContainerView[]>();
+    const byName = (list: ContainerView[], name: string) => list.find((container) => container.name === name)!;
+    expect(byName(await containers(), "wiki").update).toMatchObject({ newerTag: "1.1", ignored: "1.1" });
+    expect(byName(await containers(), "cache").update).toMatchObject({ newerTag: "2.0", ignored: "*" });
+    await controlPlane.services.detectorService.run();
+    expect(await open()).toEqual([]);
+
+    // A version after the ignored one shows again; a container ignored for every version stays quiet.
+    await report(false, [pinned("wiki", "1.2"), pinned("cache", "2.1")]);
+    await controlPlane.services.detectorService.run();
+    expect(await open()).toEqual(["1.2 is out for wiki on Alder"]);
+
+    await admin.put(route, { changes: [{ container: "cache", version: null }] });
+    await controlPlane.services.detectorService.run();
+    expect(await open()).toEqual(["1.2 is out for wiki on Alder", "2.1 is out for cache on Alder"]);
+  });
+
+  it("lets only an admin ignore versions, of containers the host has", async () => {
+    await report();
+    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+    const route = apiPath(API_ROUTES.hostIgnoredVersions, { hostId });
+    expect((await viewer.put(route, { changes: [{ container: "paperless", version: "*" }] })).statusCode).toBe(403);
+    expect((await admin.put(route, { changes: [{ container: "gone", version: "*" }] })).json()).toEqual({
+      error: "container_not_found",
+    });
+  });
+
+  describe("asked directly", () => {
+    let actor: Actor;
+
+    beforeEach(async () => {
+      await report();
+      const { id } = controlPlane.services.databaseHandle.database.select({ id: users.id }).from(users).get()!;
+      actor = { userId: id, username: "admin", ip: "127.0.0.1", requestId: "test" };
+    });
+
+    const service = () => controlPlane.services.hostControl;
+    const stored = () =>
+      controlPlane.services.databaseHandle.database
+        .select({ container: ignoredVersions.containerName, version: ignoredVersions.version })
+        .from(ignoredVersions)
+        .all()
+        .toSorted((left, right) => left.container.localeCompare(right.container));
+
+    it.each([
+      { restart: RESTART_CHOICE.restart, update: UPDATE_CHOICE.ask, told: RESTART_CHOICE.restart, undone: false },
+      { restart: RESTART_CHOICE.repair, update: UPDATE_CHOICE.ask, told: RESTART_CHOICE.restart, undone: true },
+      { restart: RESTART_CHOICE.ask, update: UPDATE_CHOICE.ask, told: RESTART_CHOICE.ask, undone: false },
+      { restart: RESTART_CHOICE.tell, update: UPDATE_CHOICE.ask, told: RESTART_CHOICE.tell, undone: false },
+      { restart: RESTART_CHOICE.ignore, update: UPDATE_CHOICE.ask, told: RESTART_CHOICE.ignore, undone: false },
+      { restart: RESTART_CHOICE.ask, update: UPDATE_CHOICE.always, told: RESTART_CHOICE.ask, undone: true },
+    ])(
+      "tells the runner what a container answered $restart and $update for comes to",
+      ({ restart, update, told, undone }) => {
+        service().setContainers(actor, hostId, { names: ["paperless"], restart, update });
+        const control = service().forRunner(hostId);
+        expect(control.whenFailing?.paperless).toBe(told);
+        expect(control.restart.paperless).toBe(told === RESTART_CHOICE.restart);
+        expect(control.undoFailedUpdates?.includes("paperless")).toBe(undone);
+        expect(control.whenFailing?.["paperless-db"]).toBe(RESTART_CHOICE.ask);
+      },
+    );
+
+    it("ignores versions all at once or not at all", () => {
+      const refused = expect.objectContaining({ code: API_ERRORS.containerNotFound });
+      const valid = { container: "paperless", version: "2.14" };
+      expect(() => service().ignoreVersions(actor, hostId, [valid, { container: "gone", version: "1.0" }])).toThrow(
+        refused,
+      );
+      expect(() =>
+        service().ignoreVersions(actor, hostId, [valid, { container: "paperless-db", version: "not a tag" }]),
+      ).toThrow(refused);
+      expect(stored()).toEqual([]);
+    });
+
+    it("keeps one ignored version per container, replaced by the latest, and forgets it on none", () => {
+      service().ignoreVersions(actor, hostId, [
+        { container: "paperless", version: "2.14" },
+        { container: "paperless-db", version: "17" },
+      ]);
+      service().ignoreVersions(actor, hostId, [{ container: "paperless", version: IGNORE_EVERY_VERSION }]);
+      expect(stored()).toEqual([
+        { container: "paperless", version: IGNORE_EVERY_VERSION },
+        { container: "paperless-db", version: "17" },
+      ]);
+      service().ignoreVersions(actor, hostId, [{ container: "paperless-db", version: null }]);
+      expect(stored()).toEqual([{ container: "paperless", version: IGNORE_EVERY_VERSION }]);
     });
   });
 });

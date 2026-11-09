@@ -14,6 +14,7 @@ import {
   UNKNOWN_HOME_ASSISTANT_SYSTEM,
   apiPath,
   type EnrolledHostView,
+  type HostView,
   type HomeAssistantView,
   type OllamaStatusView,
   type TaskDetailView,
@@ -23,6 +24,7 @@ import {
 import {
   BYTES_PER_GIBIBYTE,
   DETECTOR_GRACE_MILLISECONDS,
+  NOTIFICATIONS_LOST_WINDOW_MILLISECONDS,
   DETECTOR_KEY_SEPARATOR,
   DETECTOR_KEYS,
   HOST_SILENT_AFTER_MILLISECONDS,
@@ -38,6 +40,7 @@ import {
   type HostHealth,
 } from "../../shared/protocol.js";
 import { DetectorService, type DetectorDependencies } from "./detector-service.js";
+import { notificationRouting } from "../notifications/delivery-schema.js";
 import type { NotifiedTask } from "../notifications/notifier.js";
 
 const MINUTE = 60_000;
@@ -305,6 +308,94 @@ describe("detectors", () => {
     await detector.run();
     expect(await tasks()).toEqual([]);
     expect(resolved).toEqual(["Automatic recovery is held on Alder"]);
+  });
+
+  it("keeps a host's containers and their tasks as they were while its Docker cannot list them, and dates the list", async () => {
+    const containersOf = async () =>
+      (await admin.get(`${API_ROUTES.containers}?hostId=${hostId}`)).json<{ name: string; state: string }[]>();
+    const hostOf = async () =>
+      (await admin.get(API_ROUTES.hosts)).json<HostView[]>().find((view) => view.id === hostId)!;
+    await report([crashed]);
+    await detector.run();
+    later(2 * MINUTE);
+    await report([crashed]);
+    const listedAt = controlPlane.clock.now;
+    await detector.run();
+    expect(await tasks()).toMatchObject([{ title: "tika crashed on Alder" }]);
+    expect((await hostOf()).containersStaleSince).toBeNull();
+
+    // Its runner could not list them: what it sends again is no news, whatever it says.
+    later(MINUTE);
+    await report([running], { containersStale: true });
+    await detector.run();
+    expect(await tasks()).toMatchObject([{ title: "tika crashed on Alder" }]);
+    expect(await containersOf()).toMatchObject([{ name: "tika", state: "exited" }]);
+    expect((await hostOf()).containersStaleSince).toBe(listedAt);
+    later(MINUTE);
+    await report([running], { containersStale: true });
+    expect((await hostOf()).containersStaleSince).toBe(listedAt);
+
+    await report([running]);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+    expect((await hostOf()).containersStaleSince).toBeNull();
+  });
+
+  it("opens a high task while alerts could not be queued lately, and closes it once a while passes without", async () => {
+    const title = "Alerts are not being sent: the notification outbox is full";
+    const watching = new DetectorService({ ...dependencies, deliveries: controlPlane.services.notificationDeliveries });
+    await watching.run();
+    expect(await tasks()).toEqual([]);
+
+    // As the outbox does when an alert does not fit: no channel may hear of it, Attention still does.
+    controlPlane.services.databaseHandle.database
+      .update(notificationRouting)
+      .set({ overflowCount: 3, lastOverflowAt: controlPlane.clock.now })
+      .run();
+    await watching.run();
+    const [task] = await tasks();
+    expect(task).toMatchObject({ title, priority: "high", hostId: null });
+    expect((await detail(task!.id)).description).toContain("Settings");
+
+    later(NOTIFICATIONS_LOST_WINDOW_MILLISECONDS);
+    await watching.run();
+    expect(await tasks()).toEqual([]);
+    expect(resolved).toEqual([title]);
+  });
+
+  it("opens a high task when a reporting host's clock is too far off for its runner to heal, and closes it once it agrees", async () => {
+    const off = { clockSkewSeconds: -754 };
+    const title = "Alder's clock is 12 minutes behind the control plane's: automatic recovery is paused";
+    await report([running], off);
+    await detector.run();
+    later(DETECTOR_GRACE_MILLISECONDS.clockOff / 2);
+    await report([running], off);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+
+    later(DETECTOR_GRACE_MILLISECONDS.clockOff / 2);
+    await report([running], off);
+    await detector.run();
+    const [task] = await tasks();
+    expect(task).toMatchObject({
+      title,
+      priority: "high",
+      hostId,
+      resource: { kind: "host", id: hostId, label: "Alder" },
+    });
+    expect((await detail(task!.id)).description).toContain("NTP");
+
+    // A clock set ahead instead, by days: the title says what is true now.
+    await report([running], { clockSkewSeconds: 3 * 24 * 60 * 60 + 5 });
+    await detector.run();
+    expect((await tasks())[0]!.title).toBe(
+      "Alder's clock is 3 days ahead of the control plane's: automatic recovery is paused",
+    );
+
+    await report([running]);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+    expect(resolved).toEqual(["Alder's clock is 3 days ahead of the control plane's: automatic recovery is paused"]);
   });
 
   it("opens a high task when a reporting host's runner has lost Docker's events, and closes it when they are back", async () => {
@@ -913,6 +1004,26 @@ describe("detectors", () => {
     later(2 * MINUTE);
     await detector.run();
     expect(await tasks()).toHaveLength(2);
+    await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId }));
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+  });
+
+  it("closes a revoked host's tasks of every kind, a newer version's and a held recovery's too", async () => {
+    const newer = {
+      status: "current" as const,
+      checkedAt: 1,
+      remoteDigest: `sha256:${"b".repeat(64)}`,
+      newerTag: "2.14",
+    };
+    await report([containerSnapshot({ name: "paperless", update: newer })], {
+      recoveryHold: { reason: "save_failed", until: null },
+    });
+    await detector.run();
+    expect((await tasks()).map((task) => task.title).toSorted()).toEqual([
+      "2.14 is out for paperless on Alder",
+      "Automatic recovery is held on Alder",
+    ]);
     await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId }));
     await detector.run();
     expect(await tasks()).toEqual([]);

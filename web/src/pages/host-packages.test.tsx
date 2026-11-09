@@ -31,7 +31,13 @@ const facts = (overrides: Partial<PackageFacts> = {}): PackageFacts => ({
 const view = (overrides: Partial<HostPackagesView> = {}): HostPackagesView => ({
   hostId: "h1",
   rebootRequired: false,
-  lifecycle: { release: "Ubuntu 24.04", status: "supported", securityUntil: "2029-05-31", extendedUntil: "2034-04-25" },
+  lifecycle: {
+    release: "Ubuntu 24.04",
+    status: "supported",
+    securityUntil: "2029-05-31",
+    extendedUntil: "2034-04-25",
+    datesAsOf: "2026-10-22",
+  },
   facts: facts(),
   checkedAt: Date.now(),
   refreshed: true,
@@ -86,6 +92,7 @@ const job = (overrides: Partial<JobView> = {}): JobView => ({
   recoveryBackupId: null,
   packages: ["openssl"],
   progress: null,
+  stack: null,
   ...overrides,
 });
 
@@ -412,14 +419,14 @@ describe("a host's packages, as drawn, with the details a click away", () => {
   });
 
   it("offers to remove what nothing needs any more, naming it first", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
     const { fetch } = show(view({ removable: [{ name: "linux-image-6.8.0-85-generic", installed: "6.8.0-85.85" }] }));
 
     expect(await screen.findByText(/No longer needed \(1\)/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Remove unused (1)" }));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("linux-image-6.8.0-85-generic 6.8.0-85.85"));
+    expect(screen.getByRole("group", { name: /linux-image-6\.8\.0-85-generic 6\.8\.0-85\.85/ })).toBeTruthy();
+    expect(posted(fetch)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(posted(fetch)).toEqual([{ action: "autoremove_packages", packages: [] }]));
   });
 
@@ -428,15 +435,25 @@ describe("a host's packages, as drawn, with the details a click away", () => {
     fireEvent.click(await screen.findByRole("button", { name: "What changed this week" }));
     expect(screen.getByText(/upgraded curl 8.5.0-2ubuntu10.6/)).toBeTruthy();
     expect(screen.getByText("2 package updates are available.")).toBeTruthy();
-    expect(screen.getByText(/^Ubuntu 24\.04 gets security fixes until .*2029\.$/)).toBeTruthy();
+    expect(
+      screen.getByText(/^Ubuntu 24\.04 gets security fixes until .*2029\. Support dates as of .*2026\.$/),
+    ).toBeTruthy();
     cleanup();
 
     show(
       view({
-        lifecycle: { release: "Proxmox VE 8", status: "unsupported", securityUntil: "2026-08-31", extendedUntil: null },
+        lifecycle: {
+          release: "Proxmox VE 8",
+          status: "unsupported",
+          securityUntil: "2026-08-31",
+          extendedUntil: null,
+          datesAsOf: "2026-10-22",
+        },
       }),
     );
-    const warning = await screen.findByText("Proxmox VE 8 gets no security fixes any more: move to a newer release.");
+    const warning = await screen.findByText(
+      /^Proxmox VE 8 gets no security fixes any more: move to a newer release\. Support dates as of .*2026\.$/,
+    );
     expect(warning.className).toBe("notice error");
   });
 
@@ -490,15 +507,15 @@ describe("the reboot warning", () => {
   const warning = (admin: boolean) => <RebootWarning hostId="h1" hostLabel="Alder" admin={admin} />;
 
   it("says a reboot waits, and reboots once asked twice", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
     const { fetch } = show(view({ facts: facts({ rebootPackages: ["libc6"] }) }), true, warning(true));
 
     expect(await screen.findByText(/^Warning! Recent package updates/)).toBeTruthy();
     expect(screen.getByText("It waits for libc6. Kernel 6.8.0-90-generic starts at the next boot.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reboot now" }));
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Reboot Alder now?"));
+    expect(screen.getByRole("group", { name: /Reboot Alder now\?/ })).toBeTruthy();
+    expect(posted(fetch)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(posted(fetch)).toEqual([{ action: "reboot", packages: [] }]));
   });
 

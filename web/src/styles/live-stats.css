@@ -1,0 +1,273 @@
+/* --- live stats: dials and charts ----------------------------------------------------------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--stat-card-minimum-width), 1fr));
+  gap: 6px;
+}
+
+.stat-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  gap: 5px 9px;
+  padding: 8px 10px 9px;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.stat-card-header {
+  grid-column: 1 / -1;
+}
+
+.stat-card.alert {
+  border-color: var(--danger-border);
+}
+
+.stat-card-header,
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.stat-card h3,
+.chart-card h3,
+.label {
+  margin: 0;
+  font-size: var(--text-badge);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--gauge-tracking);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.stat-card .chip {
+  display: block;
+  max-width: 66%;
+  min-height: var(--stat-chip-height);
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  font-size: 0.625rem;
+  line-height: var(--stat-chip-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+}
+
+.stat-card .dial {
+  width: var(--stat-dial-width);
+  align-self: center;
+}
+
+/* Six cards on a smaller screen: the dial gives way, so the figures beside it stay whole. */
+@container (max-width: 11.5rem) {
+  .stat-card .dial {
+    width: 48px;
+  }
+
+  .stat-card .dial-value {
+    font-size: 21px;
+  }
+
+  .stat-card .dial-value.rate {
+    font-size: 15px;
+  }
+
+  .stat-card .dial-unit {
+    display: none;
+  }
+
+  .stat-facts {
+    grid-template-columns: minmax(14px, 1fr) auto;
+    column-gap: 4px;
+    font-size: 0.65625rem;
+  }
+}
+
+/* The drawing grows by itself; its words grow less, and sit a touch apart, as drawn. */
+.stat-card .dial-value {
+  font-size: var(--stat-dial-value-size);
+  translate: 0 1.2px;
+}
+
+.stat-card .dial-unit {
+  font-size: var(--stat-dial-unit-size);
+  translate: 0 -0.7px;
+}
+
+.stat-card .dial-value.rate {
+  font-size: var(--stat-dial-rate-size);
+}
+
+.stat-card .dial-value.rate + .dial-unit {
+  translate: 0 -1.3px;
+}
+
+.dial {
+  display: block;
+  width: 100%;
+  max-width: var(--dial-size);
+  height: auto;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.dial-track,
+.dial-arc {
+  fill: none;
+  stroke-width: var(--dial-stroke);
+  stroke-linecap: round;
+}
+
+.dial-track {
+  stroke: var(--track);
+}
+
+.dial-arc {
+  stroke: var(--tone);
+}
+
+.dial-value,
+.dial-unit {
+  text-anchor: middle;
+}
+
+.dial-value {
+  fill: var(--text);
+  font-size: var(--dial-value-size);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--title-tracking);
+}
+
+.dial-value.rate {
+  font-size: var(--dial-value-rate-size);
+}
+
+.dial-value.long {
+  font-size: var(--dial-value-long-size);
+}
+
+.dial-value.longer {
+  font-size: var(--dial-value-longer-size);
+}
+
+.dial.tone-warning .dial-value {
+  fill: var(--warning);
+}
+
+.dial.tone-danger .dial-value {
+  fill: var(--danger);
+}
+
+.dial-unit {
+  fill: var(--text-muted);
+  font-size: var(--dial-unit-size);
+}
+
+.stat-facts {
+  display: grid;
+  grid-template-columns: minmax(26px, 1fr) auto;
+  gap: 1px 6px;
+  align-self: center;
+  margin: 0;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
+.stat-facts dt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.stat-facts dd {
+  margin: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.stat-facts .tone-danger,
+.stat-facts .tone-warning {
+  color: var(--tone);
+}
+
+.stat-facts dd.tone-danger,
+.stat-facts dd.tone-warning {
+  font-weight: var(--weight-strong);
+}
+
+/* What the drives do, after how full they are: a line above, broken where the columns part. */
+.stat-facts .group-start {
+  padding-top: 0;
+}
+
+.stat-facts .mono {
+  font-size: 0.65rem;
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--chart-card-minimum-width), 1fr));
+  gap: var(--space-3);
+}
+
+.chart-card {
+  padding: 18px;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: var(--chart-height);
+}
+
+.chart-gridline {
+  stroke: var(--border);
+  stroke-dasharray: var(--chart-grid-dash);
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: var(--chart-line-stroke);
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-area {
+  fill: var(--tone);
+  fill-opacity: var(--chart-area-opacity);
+  stroke: none;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.legend strong {
+  color: var(--text);
+}
+
+.swatch {
+  display: inline-block;
+  width: var(--swatch-size);
+  height: var(--swatch-size);
+  margin-right: var(--space-1);
+  border-radius: 50%;
+  background: var(--tone);
+}

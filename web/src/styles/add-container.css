@@ -1,0 +1,545 @@
+/* --- adding a container: one box, then one screen ------------------------------------------------------ */
+
+button.add-container {
+  min-height: 26px;
+  padding: 0 10px;
+  margin-left: 4px;
+  font-size: var(--text-small);
+  font-weight: var(--weight-strong);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-pill);
+}
+
+button.add-container .icon {
+  width: 13px;
+  height: 13px;
+}
+
+dialog.add-container-dialog {
+  width: min(44rem, calc(100vw - 2rem));
+}
+
+/* A title stops short of the close button in the corner. */
+dialog.add-container-dialog > h2 {
+  padding-right: 52px;
+}
+
+.dialog-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+}
+
+.add-container-dialog .connect-host-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 20px;
+  border-top: var(--border-width) solid var(--border);
+}
+
+.install-body {
+  padding-bottom: 12px;
+}
+
+button.install-result-first {
+  border-color: var(--accent);
+}
+
+dialog.add-container-dialog:has(.own-grid) {
+  width: min(78rem, calc(100vw - 2rem));
+}
+
+.own-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) 20px;
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.own-fields label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+.own-fields input {
+  width: 11rem;
+}
+
+.own-fields input.own-folder {
+  width: min(22rem, 52vw);
+}
+
+.own-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 23rem;
+  min-height: 0;
+}
+
+.own-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: var(--border-width) solid var(--border);
+}
+
+.own-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-3);
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.own-tabs button {
+  height: 36px;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+
+.own-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+/* The lines behind and the text box in front share every metric, so a mark stays on its line. */
+.own-code {
+  --own-line: 1.3rem;
+  position: relative;
+  height: min(32rem, 58vh);
+  overflow: hidden;
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono-fact);
+  line-height: var(--own-line);
+}
+
+.own-behind {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: var(--space-2) 0;
+  pointer-events: none;
+  white-space: pre;
+}
+
+.own-line {
+  display: flex;
+  height: var(--own-line);
+}
+
+.own-number {
+  flex: none;
+  width: 3.25rem;
+  padding-right: var(--space-3);
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.own-shadow {
+  visibility: hidden;
+}
+
+.own-said {
+  margin-left: var(--space-5);
+  font-family: var(--font-body);
+}
+
+.own-line.error {
+  background: var(--danger-wash);
+}
+
+.own-line.error .own-number,
+.own-line.error .own-said {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.own-line.warning {
+  background: var(--warning-wash);
+}
+
+.own-line.warning .own-number,
+.own-line.warning .own-said {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+textarea.own-text {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: var(--space-2) 0 var(--space-2) 3.25rem;
+  overflow: auto;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+  resize: none;
+}
+
+pre.own-masked {
+  height: min(32rem, 58vh);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  background: var(--surface-sunken);
+  font-size: var(--text-mono-fact);
+}
+
+.own-env-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.own-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: calc(min(32rem, 58vh) + 36px);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.own-side h3 {
+  margin: 0;
+  font-size: var(--text-body);
+}
+
+.own-side h3.error {
+  color: var(--danger);
+}
+
+.own-side h3.warning {
+  color: var(--warning);
+}
+
+.own-side h3.clear {
+  color: var(--good);
+}
+
+.own-issue {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--danger-ring);
+  border-radius: var(--radius);
+}
+
+.own-issue.warning {
+  border-color: var(--warning-ring);
+}
+
+.own-issue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.own-issue p {
+  margin: var(--space-1) 0 0;
+}
+
+.own-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: var(--space-2);
+  border-top: var(--border-width) solid var(--divider);
+  font-size: var(--text-small);
+}
+
+.own-status.error {
+  color: var(--danger);
+}
+
+.own-status.warning {
+  color: var(--warning);
+}
+
+.own-status.clear {
+  color: var(--good);
+}
+
+.own-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 20px;
+  border-top: var(--border-width) solid var(--border);
+}
+
+.own-foot .own-status {
+  flex: 1;
+}
+
+.own-notes {
+  margin: 0;
+  padding: var(--space-2) 20px;
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.own-file {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width) solid var(--divider);
+}
+
+.own-yours {
+  padding: var(--space-3);
+  background: var(--surface-muted);
+  border-radius: var(--radius);
+}
+
+.own-yours ul {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+@media (max-width: 64rem) {
+  .own-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .own-pane {
+    border-right: 0;
+  }
+
+  .own-code,
+  pre.own-masked {
+    height: 22rem;
+  }
+
+  .own-side {
+    max-height: none;
+    border-top: var(--border-width) solid var(--border);
+  }
+}
+
+.install-search {
+  height: 36px;
+}
+
+button.install-result {
+  display: grid;
+  justify-items: start;
+  justify-content: start;
+  width: 100%;
+  min-height: 0;
+  gap: 1px;
+  padding: 6px 10px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.install-rows {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr) auto 3rem;
+  align-items: center;
+  font-size: var(--text-small);
+}
+
+.install-rows > * {
+  padding: 4px 0;
+  border-bottom: var(--border-width) solid var(--divider);
+}
+
+.install-label {
+  color: var(--text-muted);
+}
+
+.install-value {
+  overflow-wrap: anywhere;
+  padding-right: 10px;
+}
+
+.install-why {
+  padding-right: 8px;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.install-change {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 0.6875rem;
+}
+
+.install-editor {
+  grid-column: 2 / -1;
+}
+
+.install-edit {
+  display: flex;
+  gap: 4px;
+}
+
+.install-edit input,
+.install-edit select {
+  flex: 1;
+  min-width: 0;
+}
+
+.install-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.install-tick,
+.install-done {
+  color: var(--series-green);
+}
+
+.install-done,
+.install-failed {
+  margin: 0;
+  font-weight: var(--weight-strong);
+}
+
+.install-failed {
+  color: var(--danger);
+}
+
+.install-files {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 8px;
+  font-size: 0.6875rem;
+}
+
+.install-steps {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.install-step {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.install-step.done > :first-child {
+  color: var(--series-green);
+}
+
+.install-step.later {
+  color: var(--text-muted);
+}
+
+.install-step meter {
+  flex-basis: 100%;
+  width: 100%;
+  height: 8px;
+}
+
+.install-errors:not(:empty) {
+  padding: 0 20px 12px;
+}
+
+@media (max-width: 48rem) {
+  .install-rows {
+    grid-template-columns: 4.5rem minmax(0, 1fr) 3rem;
+  }
+
+  .install-why {
+    display: none;
+  }
+
+  .install-files {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Every option on the screen: a click selects it, and it shows at once which are selected. */
+.install-row-choices {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.install-choices {
+  display: contents;
+}
+
+button.install-choice {
+  min-height: 24px;
+  padding: 0 8px;
+  gap: 5px;
+  font-size: 0.71875rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  color: var(--text-soft);
+  background: none;
+  border-radius: var(--radius-pill);
+}
+
+button.install-choice[aria-pressed="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--accent);
+}
+
+.install-choice-note {
+  color: var(--text-muted);
+  font-size: 0.65625rem;
+}
+
+button.install-choice .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.install-label-note {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.65625rem;
+}
+
+.connect-host-body input.install-port {
+  width: 5.5rem;
+  min-height: 24px;
+  font-size: 0.71875rem;
+}
+
+textarea.install-search {
+  width: 100%;
+  min-height: 36px;
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+}

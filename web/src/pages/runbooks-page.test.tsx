@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES, apiPath, type RunbookSuggestionView, type SessionView } from "../../../src/shared/api.js";
 import { PATHS, REPLAY_REFRESH_MILLISECONDS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
-import { RunbooksPage } from "./management-pages.js";
+import { RunbookDetailPage, RunbooksPage } from "./runbooks-page.js";
 
 const KEY = "a".repeat(64);
 const DRAFT = apiPath(API_ROUTES.runbookSuggestionDraft, { key: KEY });
@@ -109,5 +109,53 @@ describe("suggested runbooks", () => {
     expect(await screen.findByText(TEXT.runbooks.empty)).toBeTruthy();
     expect(screen.queryByRole("region", { name: text.title })).toBeNull();
     expect(fetch).not.toHaveBeenCalledWith(API_ROUTES.runbookSuggestions, expect.anything());
+  });
+});
+
+describe("a runbook's versions", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const version = (number: number, body: string, published: boolean) => ({
+    id: `v${number}`,
+    version: number,
+    body,
+    contentHash: String(number).repeat(64),
+    createdBy: "admin",
+    createdAt: Date.UTC(2026, 9, number),
+    publishedAt: published ? Date.UTC(2026, 9, number) : null,
+  });
+
+  it("says a published version stays as written, and starts a new draft from any version", async () => {
+    serve("admin", {
+      [apiPath(API_ROUTES.runbook, { runbookId: "r1" })]: {
+        id: "r1",
+        scope: "global",
+        pattern: null,
+        title: "Be careful with tika",
+        archived: false,
+        createdAt: Date.UTC(2026, 9, 1),
+        publishedVersion: 1,
+        versions: [version(1, "Restart tika first.", true), version(2, "Restart tika, then wait.", false)],
+      },
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(SESSION_QUERY_KEY, sessionFor("admin"));
+    const router = createMemoryRouter([{ path: PATHS.runbook, element: <RunbookDetailPage /> }], {
+      initialEntries: [apiPath(PATHS.runbook, { runbookId: "r1" })],
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(TEXT.runbooks.keptAsWritten)).toBeTruthy();
+    const editor = screen.getByRole("textbox", { name: TEXT.runbooks.body }) as HTMLTextAreaElement;
+    expect(editor.value).toBe("Restart tika, then wait.");
+    fireEvent.click(screen.getByRole("button", { name: TEXT.runbooks.startFrom(1) }));
+    expect(editor.value).toBe("Restart tika first.");
   });
 });

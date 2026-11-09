@@ -8,16 +8,25 @@ import { pipeline } from "node:stream/promises";
 import { generateX25519Identity, identityToRecipient } from "age-encryption";
 import { z } from "zod";
 import {
+  APPLICATION_BACKUP_ARTIFACT_STATUS,
   APPLICATION_BACKUP_FAILURE,
+  APPLICATION_BACKUP_OPERATION,
+  APPLICATION_BACKUP_RUN_STATUS,
   APPLICATION_BACKUPS,
   APPLICATION_BOOT_READINESS,
+  ARTIFACT_OPENING_OPERATIONS,
+  OPEN_APPLICATION_BACKUP_RUN_STATUSES,
   applicationBackupResultSchema,
   applicationBackupTaskSchema,
   applicationPlanDefinitionSchema,
+  type ApplicationBackupArtifactStatus,
+  type ApplicationBackupOperation,
+  type ApplicationBackupRunStatus,
   type ApplicationBackupsView,
   type ApplicationBackupTask,
   type ApplicationBackupResult,
   type ApplicationBackupFailure,
+  type RequestedApplicationBackupOperation,
 } from "../../shared/application-backups.js";
 import { API_ERRORS } from "../../shared/api.js";
 import {
@@ -46,6 +55,19 @@ const saveSchema = z
     enabled: z.boolean(),
   })
   .strict();
+// The runs a host may still be acting on, bound as one list: `status IN (SELECT value FROM json_each(?))`.
+const OPEN_RUNS = JSON.stringify(OPEN_APPLICATION_BACKUP_RUN_STATUSES);
+
+// One that failed with containers it stopped, or that says so itself, waits for a person before anything else runs.
+function finishedStatusOf(result: {
+  ok: boolean;
+  recoveryRequired?: boolean | undefined;
+  stopped: readonly string[];
+}): ApplicationBackupRunStatus {
+  if (result.ok) return APPLICATION_BACKUP_RUN_STATUS.succeeded;
+  if (result.recoveryRequired || result.stopped.length > 0) return APPLICATION_BACKUP_RUN_STATUS.recoveryRequired;
+  return APPLICATION_BACKUP_RUN_STATUS.failed;
+}
 interface PlanRow {
   id: string;
   host_id: string;
@@ -60,8 +82,8 @@ interface RunRow {
   id: string;
   plan_id: string;
   host_id: string;
-  operation: "capture" | "drill" | "boot-drill" | "restore" | "preview";
-  status: string;
+  operation: ApplicationBackupOperation;
+  status: ApplicationBackupRunStatus;
   task_json: string;
   requested_by: string | null;
   request_key: string;
@@ -152,22 +174,24 @@ export class ApplicationPlansService {
   private expireClaims() {
     const now = this.clock();
     this.db
-      .prepare("UPDATE application_backup_runs SET status='recovery-required' WHERE status='running' AND claimed_at<=?")
-      .run(now - APPLICATION_BACKUPS.taskMilliseconds);
+      .prepare("UPDATE application_backup_runs SET status=? WHERE status=? AND claimed_at<=?")
+      .run(
+        APPLICATION_BACKUP_RUN_STATUS.recoveryRequired,
+        APPLICATION_BACKUP_RUN_STATUS.running,
+        now - APPLICATION_BACKUPS.taskMilliseconds,
+      );
     // A queued run its runner did not collect in time ends here too, whether or not that runner ever asks again. One
     // still being prepared has no task, so no window, yet: the comparison leaves it alone.
     const uncollected = this.db
-      .prepare(
-        "SELECT id FROM application_backup_runs WHERE status='queued' AND json_extract(task_json,'$.expiresAt')<=?",
-      )
-      .all(now) as { id: string }[];
+      .prepare("SELECT id FROM application_backup_runs WHERE status=? AND json_extract(task_json,'$.expiresAt')<=?")
+      .all(APPLICATION_BACKUP_RUN_STATUS.queued, now) as { id: string }[];
     for (const { id } of uncollected) this.fail(id, APPLICATION_BACKUP_FAILURE.expired);
   }
   /** Ends a run its runner never got, keeping why: no report from the runner will say. */
   private fail(runId: string, failure: ApplicationBackupFailure) {
     this.db
-      .prepare("UPDATE application_backup_runs SET status='failed',failure=?,finished_at=? WHERE id=?")
-      .run(failure, this.clock(), runId);
+      .prepare("UPDATE application_backup_runs SET status=?,failure=?,finished_at=? WHERE id=?")
+      .run(APPLICATION_BACKUP_RUN_STATUS.failed, failure, this.clock(), runId);
   }
   view(): ApplicationBackupsView {
     this.expireClaims();
@@ -203,7 +227,7 @@ export class ApplicationPlansService {
       id: a.id,
       planId: a.plan_id,
       hostId: a.host_id,
-      status: a.status as "ready" | "pending" | "failed",
+      status: a.status as ApplicationBackupArtifactStatus,
       createdAt: a.created_at,
       payloadBytes: a.payload_bytes,
       verifiedAt: a.verified_at,
@@ -247,7 +271,9 @@ export class ApplicationPlansService {
       const count = (this.db.prepare("SELECT COUNT(*) AS n FROM application_backup_plans").get() as { n: number }).n;
       if (count >= APPLICATION_BACKUPS.plans) throw new DomainError(API_ERRORS.applicationBackupBusy);
       this.db
-        .prepare("INSERT INTO application_backup_plans VALUES(?,?,?,?,?,?,?,?)")
+        .prepare(
+          "INSERT INTO application_backup_plans(id,host_id,revision,definition_json,enabled,next_due_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        )
         .run(
           id,
           value.hostId,
@@ -282,7 +308,7 @@ export class ApplicationPlansService {
       .prepare(
         "INSERT INTO application_backup_artifacts(id,plan_id,host_id,capture_run_id,key_ciphertext,recipient,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
       )
-      .run(id, plan.id, plan.host_id, runId, key, recipient, "pending", this.clock());
+      .run(id, plan.id, plan.host_id, runId, key, recipient, APPLICATION_BACKUP_ARTIFACT_STATUS.pending, this.clock());
     await mkdir(artifactsIn(this.settings.dataDirectory), { recursive: true, mode: 0o700 });
     await writeFile(keyFileIn(this.settings.dataDirectory, id), Buffer.from(key, "base64"), {
       flag: "wx",
@@ -297,7 +323,7 @@ export class ApplicationPlansService {
   async run(
     actor: Actor | null,
     planId: string,
-    input: { operation: "capture" | "drill" | "boot-drill"; artifactId?: string; requestKey: string },
+    input: { operation: RequestedApplicationBackupOperation; artifactId?: string; requestKey: string },
   ) {
     return this.enqueue(actor, planId, input);
   }
@@ -305,7 +331,7 @@ export class ApplicationPlansService {
     actor: Actor | null,
     planId: string,
     input: {
-      operation: "capture" | "drill" | "boot-drill" | "preview" | "restore";
+      operation: ApplicationBackupOperation;
       artifactId?: string;
       requestKey: string;
       expectedFingerprint?: string;
@@ -328,9 +354,9 @@ export class ApplicationPlansService {
     try {
       const active = this.db
         .prepare(
-          "SELECT id FROM application_backup_runs WHERE host_id=? AND status IN ('queued','running','recovery-required')",
+          "SELECT id FROM application_backup_runs WHERE host_id=? AND status IN (SELECT value FROM json_each(?))",
         )
-        .get(plan.host_id);
+        .get(plan.host_id, OPEN_RUNS);
       if (active) throw new DomainError(API_ERRORS.applicationBackupBusy);
       const stored = (
         this.db.prepare("SELECT COALESCE(SUM(payload_bytes),0) AS bytes FROM application_backup_artifacts").get() as {
@@ -339,13 +365,12 @@ export class ApplicationPlansService {
       ).bytes;
       const pending = (
         this.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM application_backup_artifacts WHERE status='pending' AND payload_bytes IS NULL",
-          )
-          .get() as { n: number }
+          .prepare("SELECT COUNT(*) AS n FROM application_backup_artifacts WHERE status=? AND payload_bytes IS NULL")
+          .get(APPLICATION_BACKUP_ARTIFACT_STATUS.pending) as { n: number }
       ).n;
       if (
-        (input.operation === "capture" || input.operation === "restore") &&
+        (input.operation === APPLICATION_BACKUP_OPERATION.capture ||
+          input.operation === APPLICATION_BACKUP_OPERATION.restore) &&
         stored + (pending + 1) * APPLICATION_BACKUPS.payloadBytes > APPLICATION_BACKUPS.storedBytes
       )
         throw new DomainError(API_ERRORS.applicationBackupBusy);
@@ -356,12 +381,15 @@ export class ApplicationPlansService {
       const artifact = input.artifactId ? this.artifact(input.artifactId) : null;
       if (
         artifact &&
-        (artifact.plan_id !== plan.id || artifact.host_id !== plan.host_id || artifact.status !== "ready")
+        (artifact.plan_id !== plan.id ||
+          artifact.host_id !== plan.host_id ||
+          artifact.status !== APPLICATION_BACKUP_ARTIFACT_STATUS.ready)
       )
         throw invalid();
-      if (input.operation !== "capture" && !artifact) throw invalid();
+      if (input.operation !== APPLICATION_BACKUP_OPERATION.capture && !artifact) throw invalid();
       // Only for a plan that asked for it, as starting an application is not safe for every application.
-      if (input.operation === "boot-drill" && (!definition.bootDrill || !artifact?.image_id)) throw invalid();
+      if (input.operation === APPLICATION_BACKUP_OPERATION.bootDrill && (!definition.bootDrill || !artifact?.image_id))
+        throw invalid();
       this.db
         .prepare(
           "INSERT INTO application_backup_runs(id,plan_id,host_id,operation,status,task_json,requested_by,request_key,artifact_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -371,7 +399,7 @@ export class ApplicationPlansService {
           plan.id,
           plan.host_id,
           input.operation,
-          "queued",
+          APPLICATION_BACKUP_RUN_STATUS.queued,
           UNWRITTEN_TASK,
           actor?.userId ?? null,
           input.requestKey,
@@ -380,7 +408,8 @@ export class ApplicationPlansService {
         );
       try {
         const primary = artifact ?? (await this.createArtifact(plan, id));
-        const safety = input.operation === "restore" ? await this.createArtifact(plan, id) : null;
+        const safety =
+          input.operation === APPLICATION_BACKUP_OPERATION.restore ? await this.createArtifact(plan, id) : null;
         const task: ApplicationBackupTask = {
           id,
           attempt: 0,
@@ -391,7 +420,9 @@ export class ApplicationPlansService {
           artifactId: primary.id,
           recipient: primary.recipient,
           definition,
-          ...(input.operation === "boot-drill" && artifact?.image_id ? { imageId: artifact.image_id } : {}),
+          ...(input.operation === APPLICATION_BACKUP_OPERATION.bootDrill && artifact?.image_id
+            ? { imageId: artifact.image_id }
+            : {}),
           expiresAt: now + APPLICATION_BACKUPS.taskMilliseconds,
           ...(input.expectedFingerprint ? { expectedFingerprint: input.expectedFingerprint } : {}),
           ...(safety ? { safetyArtifactId: safety.id, safetyRecipient: safety.recipient } : {}),
@@ -420,7 +451,7 @@ export class ApplicationPlansService {
   }
   prepareRestore(actor: Actor, session: string, planId: string, artifactId: string) {
     return this.enqueue(actor, planId, {
-      operation: "preview",
+      operation: APPLICATION_BACKUP_OPERATION.preview,
       artifactId,
       requestKey: randomUUID(),
       previewSession: session,
@@ -438,8 +469,8 @@ export class ApplicationPlansService {
     if (
       preview.plan_id !== planId ||
       preview.artifact_id !== input.artifactId ||
-      preview.operation !== "preview" ||
-      preview.status !== "succeeded" ||
+      preview.operation !== APPLICATION_BACKUP_OPERATION.preview ||
+      preview.status !== APPLICATION_BACKUP_RUN_STATUS.succeeded ||
       context.session !== session ||
       context.consumed ||
       !result?.fingerprint ||
@@ -460,7 +491,7 @@ export class ApplicationPlansService {
       .prepare("UPDATE application_backup_runs SET progress_json=? WHERE id=?")
       .run(JSON.stringify({ ...context, consumed: true }), preview.id);
     return this.enqueue(actor, planId, {
-      operation: "restore",
+      operation: APPLICATION_BACKUP_OPERATION.restore,
       artifactId: input.artifactId,
       requestKey: input.requestKey,
       expectedFingerprint: result.fingerprint,
@@ -468,14 +499,15 @@ export class ApplicationPlansService {
   }
   resume(actor: Actor, runId: string) {
     const run = this.runRow(runId);
-    if (run.status !== "recovery-required") throw invalid();
+    if (run.status !== APPLICATION_BACKUP_RUN_STATUS.recoveryRequired) throw invalid();
     const task = applicationBackupTaskSchema.parse(JSON.parse(run.task_json));
     this.host(run.host_id);
     this.db
       .prepare(
-        "UPDATE application_backup_runs SET status='queued',task_json=?,requested_by=?,claimed_at=NULL,result_json=NULL WHERE id=?",
+        "UPDATE application_backup_runs SET status=?,task_json=?,requested_by=?,claimed_at=NULL,result_json=NULL WHERE id=?",
       )
       .run(
+        APPLICATION_BACKUP_RUN_STATUS.queued,
         JSON.stringify({
           ...task,
           attempt: task.attempt + 1,
@@ -502,7 +534,7 @@ export class ApplicationPlansService {
     const plan = this.plan(row.plan_id);
     const task = applicationBackupTaskSchema.parse(JSON.parse(row.task_json));
     return (
-      row.operation === "capture" &&
+      row.operation === APPLICATION_BACKUP_OPERATION.capture &&
       row.request_key.startsWith(`scheduled:${plan.id}:`) &&
       !!plan.enabled &&
       plan.definition_json === JSON.stringify(task.definition)
@@ -514,7 +546,7 @@ export class ApplicationPlansService {
     const allowed =
       host.applicationBackups &&
       run.host_id === host.id &&
-      run.status === "running" &&
+      run.status === APPLICATION_BACKUP_RUN_STATUS.running &&
       task.attempt === attempt &&
       task.expiresAt > this.clock() &&
       this.permitted(run);
@@ -528,9 +560,9 @@ export class ApplicationPlansService {
     if (!host.applicationBackups) return [];
     const rows = this.db
       .prepare(
-        "SELECT * FROM application_backup_runs WHERE host_id=? AND status='queued' AND task_json<>? ORDER BY created_at LIMIT 1",
+        "SELECT * FROM application_backup_runs WHERE host_id=? AND status=? AND task_json<>? ORDER BY created_at LIMIT 1",
       )
-      .all(host.id, UNWRITTEN_TASK) as RunRow[];
+      .all(host.id, APPLICATION_BACKUP_RUN_STATUS.queued, UNWRITTEN_TASK) as RunRow[];
     const output = [];
     for (const row of rows) {
       if (!this.permitted(row)) {
@@ -547,14 +579,15 @@ export class ApplicationPlansService {
         continue;
       }
       // A runner too old for this leaves it queued, and it expires: no older runner is sent what it cannot read.
-      if (task.operation === "boot-drill" && !host.applicationBootDrills) continue;
+      if (task.operation === APPLICATION_BACKUP_OPERATION.bootDrill && !host.applicationBootDrills) continue;
       if (
         this.db
-          .prepare("UPDATE application_backup_runs SET status='running',claimed_at=? WHERE id=? AND status='queued'")
-          .run(this.clock(), row.id).changes !== 1
+          .prepare("UPDATE application_backup_runs SET status=?,claimed_at=? WHERE id=? AND status=?")
+          .run(APPLICATION_BACKUP_RUN_STATUS.running, this.clock(), row.id, APPLICATION_BACKUP_RUN_STATUS.queued)
+          .changes !== 1
       )
         continue;
-      if (task.operation === "drill" || task.operation === "boot-drill" || task.operation === "restore") {
+      if (ARTIFACT_OPENING_OPERATIONS.includes(task.operation)) {
         const artifact = this.artifact(task.artifactId);
         if (artifact.host_id !== host.id) throw invalid();
         task.identity = Buffer.from(
@@ -564,7 +597,7 @@ export class ApplicationPlansService {
       // Its test values go only to the task that uses them, and an older runner's strict reading never meets them.
       const { bootDrill, ...definition } = task.definition;
       output.push(
-        task.operation === "boot-drill"
+        task.operation === APPLICATION_BACKUP_OPERATION.bootDrill
           ? { ...task, definition: { ...definition, bootDrill } }
           : { ...task, definition },
       );
@@ -586,7 +619,8 @@ export class ApplicationPlansService {
   authorizeTransfer(host: HostRow, taskId: string, artifactId: string, attempt: number) {
     const { run } = this.bound(host, taskId, artifactId);
     const task = applicationBackupTaskSchema.parse(JSON.parse(run.task_json));
-    if (run.status !== "running" || task.attempt !== attempt) throw new DomainError(API_ERRORS.resultConflict);
+    if (run.status !== APPLICATION_BACKUP_RUN_STATUS.running || task.attempt !== attempt)
+      throw new DomainError(API_ERRORS.resultConflict);
     return { allowed: true };
   }
   private path(id: string) {
@@ -597,10 +631,10 @@ export class ApplicationPlansService {
     this.authorizeTransfer(host, runId, artifactId, attempt);
     const { run, artifact } = this.bound(host, runId, artifactId);
     if (
-      run.status !== "running" ||
-      (run.operation === "capture"
+      run.status !== APPLICATION_BACKUP_RUN_STATUS.running ||
+      (run.operation === APPLICATION_BACKUP_OPERATION.capture
         ? artifactId !== run.artifact_id
-        : run.operation !== "restore" || artifactId !== run.safety_artifact_id)
+        : run.operation !== APPLICATION_BACKUP_OPERATION.restore || artifactId !== run.safety_artifact_id)
     )
       throw invalid();
     if (this.writing.has(artifactId)) throw new DomainError(API_ERRORS.applicationBackupBusy);
@@ -656,9 +690,9 @@ export class ApplicationPlansService {
     this.authorizeTransfer(host, runId, artifactId, attempt);
     const { run, artifact } = this.bound(host, runId, artifactId);
     if (
-      !["drill", "boot-drill", "restore"].includes(run.operation) ||
-      run.status !== "running" ||
-      artifact.status !== "ready"
+      !ARTIFACT_OPENING_OPERATIONS.includes(run.operation) ||
+      run.status !== APPLICATION_BACKUP_RUN_STATUS.running ||
+      artifact.status !== APPLICATION_BACKUP_ARTIFACT_STATUS.ready
     )
       throw invalid();
     return createReadStream(this.path(artifactId));
@@ -673,49 +707,50 @@ export class ApplicationPlansService {
       if (run.result_json !== JSON.stringify(result)) throw new DomainError(API_ERRORS.resultConflict);
       return { ok: true };
     }
-    if (run.status !== "running" && run.status !== "recovery-required") throw invalid();
+    if (
+      run.status !== APPLICATION_BACKUP_RUN_STATUS.running &&
+      run.status !== APPLICATION_BACKUP_RUN_STATUS.recoveryRequired
+    )
+      throw invalid();
     if (
       result.ok &&
-      run.operation === "capture" &&
+      run.operation === APPLICATION_BACKUP_OPERATION.capture &&
       (!artifact.payload_bytes ||
         artifact.payload_bytes !== result.payloadBytes ||
         artifact.payload_sha256 !== result.payloadSha256)
     )
       throw invalid();
     const now = this.clock(),
-      status = result.ok
-        ? "succeeded"
-        : result.recoveryRequired || result.stopped.length
-          ? "recovery-required"
-          : "failed";
+      status = finishedStatusOf(result);
     this.db.transaction(() => {
       this.db
         .prepare("UPDATE application_backup_runs SET status=?,result_json=?,finished_at=? WHERE id=?")
         .run(status, JSON.stringify(result), now, run.id);
-      if (run.operation === "capture")
+      if (run.operation === APPLICATION_BACKUP_OPERATION.capture)
         this.db
           .prepare(
             "UPDATE application_backup_artifacts SET status=?,verified_at=?,metadata_json=?,image_id=? WHERE id=?",
           )
           .run(
-            result.ok ? "ready" : "failed",
+            result.ok ? APPLICATION_BACKUP_ARTIFACT_STATUS.ready : APPLICATION_BACKUP_ARTIFACT_STATUS.failed,
             result.ok ? now : null,
             JSON.stringify({ definition: expectedTask.definition, result }),
             result.imageId ?? null,
             artifact.id,
           );
-      if (result.ok && run.operation === "drill")
+      if (result.ok && run.operation === APPLICATION_BACKUP_OPERATION.drill)
         this.db.prepare("UPDATE application_backup_artifacts SET last_drill_at=? WHERE id=?").run(now, artifact.id);
       // A failed boot says nothing against the backup: its other marks stay as they are. Staying up is not proof, as a
       // process supervisor stays up whatever fails inside it: only the image's own health check earns this mark.
-      if (result.ok && run.operation === "boot-drill" && result.boot?.readiness === APPLICATION_BOOT_READINESS.healthy)
+      const bootedHealthy = result.boot?.readiness === APPLICATION_BOOT_READINESS.healthy;
+      if (result.ok && run.operation === APPLICATION_BACKUP_OPERATION.bootDrill && bootedHealthy)
         this.db.prepare("UPDATE application_backup_artifacts SET boot_verified_at=? WHERE id=?").run(now, artifact.id);
       if (run.safety_artifact_id)
         this.db
           .prepare(
-            "UPDATE application_backup_artifacts SET status=CASE WHEN payload_bytes IS NULL THEN status ELSE 'ready' END,retained_by_run_id=? WHERE id=?",
+            "UPDATE application_backup_artifacts SET status=CASE WHEN payload_bytes IS NULL THEN status ELSE ? END,retained_by_run_id=? WHERE id=?",
           )
-          .run(result.ok ? null : run.id, run.safety_artifact_id);
+          .run(APPLICATION_BACKUP_ARTIFACT_STATUS.ready, result.ok ? null : run.id, run.safety_artifact_id);
     })();
     await this.retention(run.plan_id);
     await this.cleanupFailed();
@@ -724,9 +759,14 @@ export class ApplicationPlansService {
   private async cleanupFailed() {
     const rows = this.db
       .prepare(
-        "SELECT a.* FROM application_backup_artifacts a JOIN application_backup_runs r ON r.id=a.capture_run_id WHERE a.retained_by_run_id IS NULL AND (a.status='failed' OR (a.status='pending' AND r.status='failed')) AND NOT EXISTS (SELECT 1 FROM application_backup_runs work WHERE (work.artifact_id=a.id OR work.safety_artifact_id=a.id) AND work.status IN ('queued','running','recovery-required'))",
+        "SELECT a.* FROM application_backup_artifacts a JOIN application_backup_runs r ON r.id=a.capture_run_id WHERE a.retained_by_run_id IS NULL AND (a.status=? OR (a.status=? AND r.status=?)) AND NOT EXISTS (SELECT 1 FROM application_backup_runs work WHERE (work.artifact_id=a.id OR work.safety_artifact_id=a.id) AND work.status IN (SELECT value FROM json_each(?)))",
       )
-      .all() as ArtifactRow[];
+      .all(
+        APPLICATION_BACKUP_ARTIFACT_STATUS.failed,
+        APPLICATION_BACKUP_ARTIFACT_STATUS.pending,
+        APPLICATION_BACKUP_RUN_STATUS.failed,
+        OPEN_RUNS,
+      ) as ArtifactRow[];
     for (const artifact of rows) {
       await rm(this.path(artifact.id), { force: true });
       await rm(keyFileIn(this.settings.dataDirectory, artifact.id), { force: true });
@@ -736,25 +776,25 @@ export class ApplicationPlansService {
       }
       this.db
         .prepare(
-          "UPDATE application_backup_artifacts SET status='failed',payload_bytes=NULL,payload_sha256=NULL,key_ciphertext='' WHERE id=?",
+          "UPDATE application_backup_artifacts SET status=?,payload_bytes=NULL,payload_sha256=NULL,key_ciphertext='' WHERE id=?",
         )
-        .run(artifact.id);
+        .run(APPLICATION_BACKUP_ARTIFACT_STATUS.failed, artifact.id);
     }
   }
   private async retention(planId: string) {
     const plan = this.plan(planId);
     const retain = applicationPlanDefinitionSchema.parse(JSON.parse(plan.definition_json)).retain;
     const rows = this.db
-      .prepare("SELECT * FROM application_backup_artifacts WHERE plan_id=? AND status='ready' ORDER BY created_at DESC")
-      .all(planId) as ArtifactRow[];
+      .prepare("SELECT * FROM application_backup_artifacts WHERE plan_id=? AND status=? ORDER BY created_at DESC")
+      .all(planId, APPLICATION_BACKUP_ARTIFACT_STATUS.ready) as ArtifactRow[];
     for (const artifact of rows.slice(retain)) {
       if (
         artifact.retained_by_run_id ||
         this.db
           .prepare(
-            "SELECT id FROM application_backup_runs WHERE artifact_id=? AND status IN ('queued','running','recovery-required')",
+            "SELECT id FROM application_backup_runs WHERE artifact_id=? AND status IN (SELECT value FROM json_each(?))",
           )
-          .get(artifact.id)
+          .get(artifact.id, OPEN_RUNS)
       )
         continue;
       await rm(this.path(artifact.id), { force: true });
@@ -762,8 +802,8 @@ export class ApplicationPlansService {
       if (this.settings.offboxBackupDirectory)
         await rm(payloadFileIn(this.settings.offboxBackupDirectory, artifact.id), { force: true });
       this.db
-        .prepare("UPDATE application_backup_artifacts SET status='failed',key_ciphertext='' WHERE id=?")
-        .run(artifact.id);
+        .prepare("UPDATE application_backup_artifacts SET status=?,key_ciphertext='' WHERE id=?")
+        .run(APPLICATION_BACKUP_ARTIFACT_STATUS.failed, artifact.id);
     }
   }
   async schedule() {
@@ -779,7 +819,7 @@ export class ApplicationPlansService {
         .all(now) as PlanRow[]) {
         try {
           await this.run(null, plan.id, {
-            operation: "capture",
+            operation: APPLICATION_BACKUP_OPERATION.capture,
             requestKey: `scheduled:${plan.id}:${plan.next_due_at}`,
           });
           const definition = applicationPlanDefinitionSchema.parse(JSON.parse(plan.definition_json));

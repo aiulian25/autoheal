@@ -1,168 +1,73 @@
 import { DependencyMap } from "../components/dependency-map.js";
 import { ServiceProbes } from "../components/service-probes.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, lazy, Suspense, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useState, type FormEvent } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import {
   API_ROUTES,
   INCIDENT_QUERY,
   apiPath,
-  type HostPackagesView,
   type HostView,
   type IncidentSummaryView,
-  type JobView,
 } from "../../../src/shared/api.js";
 import {
-  DETECTOR_THRESHOLDS,
+  HOST_CHANGES_ANCHOR,
   HOST_KIND,
   HOST_LABEL_PATTERN,
-  HOST_PACKAGES,
   HOST_SECTIONS,
   HOST_STATE,
-  JOB_ACTION,
-  TASK_RESOURCE,
-  type TaskSnooze,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { arrangedCards } from "../card-preferences.js";
+import {
+  ArrangeLine,
+  CardGroup,
+  fixedCard,
+  usePageArrangement,
+  type ArrangedCard,
+  type MovableCard,
+} from "../components/arranged-cards.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { Badge, ErrorNotice, Loading, TimeAgo } from "../components/common.js";
-import { Icon } from "../components/icons.js";
-import { isWaiting } from "../components/container-actions.js";
 import { incidentLink } from "../components/incident-parts.js";
-import { JOB_REFRESH_MILLISECONDS, PATHS, RECENT_INCIDENTS, REFRESH_MILLISECONDS, TEXT } from "../constants.js";
-import { countInWords, dateTime, duration, listSeparator, percent, timeAgo } from "../format.js";
-import { boardQuery, hostContainersQuery, hostPackagesQuery, hostTasksQuery, hostsQuery } from "../queries.js";
-import { SnoozeChoices } from "../components/snooze-choices.js";
+import {
+  CARD_PAGES,
+  DEPENDENCY_MAP_TEXT,
+  HOST_CARDS,
+  PATHS,
+  RECENT_INCIDENTS,
+  REFRESH_MILLISECONDS,
+  TEXT,
+} from "../constants.js";
+import { dateTime, duration, timeAgo } from "../format.js";
+import { hostContainersQuery, hostTasksQuery, hostsQuery } from "../queries.js";
 import { useScrollToHash } from "../components/section-tabs.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { RecoveryHoldBadge, StateBadge, waitingUpdates } from "./fleet-page.js";
 import { HostChanges } from "./host-changes.js";
-import { HostContainers, HostControl } from "./host-control.js";
+import { HostControl } from "./host-control.js";
+import { HostContainers } from "../components/host-containers.js";
 import { HostImages } from "./host-images.js";
-import { RebootWarning, hostPackageJobKey, useHostPackageBusy } from "./host-packages.js";
+import { RebootWarning } from "./host-packages.js";
 import { HostUpdates } from "./host-updates.js";
 import { HostOllamaFact } from "./ollama-servers.js";
-import { HostDials, HostHistory, diskUsedPercent } from "./host-stats.js";
+import { HostDials, HostHistory } from "./host-stats.js";
 import { HostProfileFold } from "./host-profile.js";
 import { HostSystem } from "./host-system.js";
 import { SshHostCard, SwitchToSsh } from "./host-ssh.js";
+import { JoinCodeCard } from "./host-join-code.js";
 import { RunnerBehind, isRunnerHost } from "./runner-behind.js";
 import { PowerButtons, PowerStrip } from "./host-power.js";
+import { CheckUpdates, TerminalButton } from "./host-page-actions.js";
+import { DiskWarning, InPlaceWaiting, ContainersStale, ReportTrimmed } from "./host-notices.js";
+import { HostTabs } from "./host-tabs.js";
 
 const taskLink = (taskId: string) => apiPath(PATHS.task, { taskId });
-
-// The host's .env lets its packages be listed: a check can be asked for.
-const packagesCheckable = (view: HostPackagesView | undefined) =>
-  view?.facts !== null &&
-  view?.facts !== undefined &&
-  view.facts.unsupported === null &&
-  view.facts.setting !== HOST_PACKAGES.off;
-
-type CheckAction = typeof JOB_ACTION.checkUpdates | typeof JOB_ACTION.checkPackages;
 
 // The terminal and xterm.js load when a shell first opens: most visits never need them.
 const HostTerminal = lazy(() =>
   import("../components/shell-terminal.js").then((module) => ({ default: module.HostTerminal })),
 );
-
-/** Why no shell can open on the host now; null when one can. */
-function terminalUnavailable(host: HostView): string | null {
-  const reasons = TEXT.hostTerminal.unavailable;
-  if (host.state !== HOST_STATE.online) return reasons.silent(host.label);
-  const allowed = host.hostTerminal ?? null;
-  if (allowed === null) return reasons.runner(host.label);
-  return allowed ? null : reasons.off(host.label);
-}
-
-function TerminalButton({ host, open, onToggle }: { host: HostView; open: boolean; onToggle: () => void }) {
-  const unavailable = terminalUnavailable(host);
-  return (
-    <button
-      type="button"
-      disabled={unavailable !== null}
-      title={unavailable ?? undefined}
-      aria-pressed={open}
-      onClick={onToggle}
-    >
-      <Icon name="terminal" />
-      {TEXT.hostTerminal.button}
-    </button>
-  );
-}
-
-/**
- * Asks the host's runner to check now, instead of at its next scheduled check: its containers' images, or its own
- * packages. Each button follows its own job, by its id: the host's bounded recent-jobs list may no longer hold it.
- */
-function CheckButton({
-  hostId,
-  action,
-  disabled = false,
-}: {
-  hostId: string;
-  action: CheckAction;
-  disabled?: boolean;
-}) {
-  const queryClient = useQueryClient();
-  const [accepted, setAccepted] = useState<JobView | null>(null);
-  const forPackages = action === JOB_ACTION.checkPackages;
-  const result = useQuery({
-    queryKey: ["job", accepted?.id],
-    queryFn: () => api<JobView>("GET", apiPath(API_ROUTES.job, { jobId: accepted!.id })),
-    enabled: accepted !== null,
-    initialData: accepted ?? undefined,
-    staleTime: 0,
-    refetchInterval: (query) =>
-      query.state.data === undefined || isWaiting(query.state.data) ? JOB_REFRESH_MILLISECONDS : false,
-  });
-  const check = useMutation({
-    // A package check is one of the host's package jobs, which hold one another back.
-    mutationKey: forPackages ? hostPackageJobKey(hostId) : undefined,
-    mutationFn: () => api<JobView>("POST", apiPath(API_ROUTES.hostActions, { hostId }), { action }),
-    onSuccess: setAccepted,
-    onSettled: () =>
-      forPackages ? queryClient.invalidateQueries({ queryKey: hostPackagesQuery(hostId).queryKey }) : undefined,
-  });
-  const job = accepted === null ? null : (result.data ?? accepted);
-  const busy = job !== null && isWaiting(job);
-  const words = TEXT.actions.hostCheck;
-  return (
-    <div className="header-action stack">
-      {job !== null && (
-        <span className="small muted" role="status">
-          {forPackages ? words.packages : words.images}: {words.states[job.status]}
-        </span>
-      )}
-      <button type="button" disabled={disabled || check.isPending || busy} onClick={() => check.mutate()}>
-        {forPackages ? TEXT.actions.checkPackages : TEXT.actions.checkImages}
-      </button>
-      <ErrorNotice error={check.error} />
-      {busy && result.isError && (
-        <>
-          <p className="notice error small" role="alert">
-            {words.unavailable}
-          </p>
-          <button type="button" disabled={result.isFetching} onClick={() => void result.refetch()}>
-            {words.refresh}
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Its images are checked only where it runs Docker, and its packages only where its .env lets them be listed.
-function CheckUpdates({ hostId, docker }: { hostId: string; docker: boolean }) {
-  const packages = useQuery(hostPackagesQuery(hostId));
-  const packagesBusy = useHostPackageBusy(hostId, packages.data, packages.isError);
-  return (
-    <>
-      {docker && <CheckButton hostId={hostId} action={JOB_ACTION.checkUpdates} />}
-      {packagesCheckable(packages.data) && (
-        <CheckButton hostId={hostId} action={JOB_ACTION.checkPackages} disabled={packagesBusy} />
-      )}
-    </>
-  );
-}
 
 // "delta3640 · 192.168.10.178 · Ubuntu 24.04.5 LTS · up 1 day · reported 12 seconds ago"
 function aboutHost(host: HostView): string {
@@ -176,145 +81,6 @@ function aboutHost(host: HostView): string {
   ]
     .filter((part) => part !== null)
     .join(TEXT.separator);
-}
-
-// Reached through a runner container of its own: older views name no kind.
-
-/** This machine, while its runner waits to be looked after from Autoheal's own container: why, and what to do. */
-function InPlaceWaiting({ host }: { host: HostView }) {
-  const problem = host.inPlace?.problem ?? null;
-  if (problem === null) {
-    return null;
-  }
-  return (
-    <p className="notice warning small" role="status">
-      {problem}
-    </p>
-  );
-}
-
-/** The disks the tasks count as almost full, fullest first, in one sentence above everything else. */
-function DiskWarning({ host, admin }: { host: HostView; admin: boolean }) {
-  const queryClient = useQueryClient();
-  const tasks = useQuery(hostTasksQuery(host.id));
-  const taskOf = (path: string) =>
-    tasks.data?.find((task) => task.resource?.kind === TASK_RESOURCE.disk && task.resource.id === path);
-  const full = (host.health?.disks ?? [])
-    .map((disk) => ({ path: disk.path, used: diskUsedPercent(disk) }))
-    .filter((disk) => disk.used >= DETECTOR_THRESHOLDS.diskPercent && !taskOf(disk.path)?.snoozedUntil)
-    .sort((first, second) => second.used - first.used);
-  const snooze = useMutation({
-    mutationFn: (snoozed: TaskSnooze) =>
-      Promise.all(
-        full
-          .flatMap((disk) => taskOf(disk.path) ?? [])
-          .map((task) => api("PATCH", apiPath(API_ROUTES.task, { taskId: task.id }), { snoozed })),
-      ),
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
-      void queryClient.invalidateQueries({ queryKey: boardQuery.queryKey });
-    },
-  });
-  if (full.length === 0) {
-    return null;
-  }
-  const canSnooze = admin && full.every((disk) => taskOf(disk.path) !== undefined);
-  return (
-    <div className="banner danger" role="status">
-      <Icon name="alert" />
-      <p>
-        {TEXT.hosts.disksAlmostFull(countInWords(full.length))}
-        {full.map((disk, index) => (
-          <Fragment key={disk.path}>
-            {listSeparator(index, full.length)}
-            <code>{disk.path}</code>
-            {TEXT.hosts.diskAt(percent(disk.used))}
-          </Fragment>
-        ))}
-        {TEXT.sentenceEnd}
-      </p>
-      {canSnooze && <SnoozeChoices disabled={snooze.isPending} onChoose={(length) => snooze.mutate(length)} />}
-      <a href={`#${HOST_SECTIONS.overview}`}>{TEXT.hosts.seeDisks}</a>
-      <ErrorNotice error={snooze.error} />
-    </div>
-  );
-}
-
-const SECTION_ORDER = [
-  HOST_SECTIONS.overview,
-  HOST_SECTIONS.containers,
-  HOST_SECTIONS.updates,
-  HOST_SECTIONS.dependencies,
-  HOST_SECTIONS.control,
-];
-type Section = (typeof SECTION_ORDER)[number];
-
-const isSectionOf = (sections: readonly Section[], hash: string): hash is Section =>
-  (sections as readonly string[]).includes(hash);
-// What a host without Docker has: its system and its packages. The rest is its containers', and comes back with Docker.
-const WITHOUT_DOCKER: readonly Section[] = [HOST_SECTIONS.overview, HOST_SECTIONS.updates];
-const sectionsOf = (docker: boolean): readonly Section[] => (docker ? SECTION_ORDER : WITHOUT_DOCKER);
-
-/** The section crossing this share of the window's height is the one being read. */
-const READING_LINE = 1 / 3;
-
-/** Which section a person has scrolled to; null until they scroll, and again each time a tab jumps. */
-function useSectionScrolledTo(docker: boolean, hash: string): Section | null {
-  const [scrolledTo, setScrolledTo] = useState<Section | null>(null);
-  useEffect(() => setScrolledTo(null), [hash]);
-  useEffect(() => {
-    const look = () => {
-      const line = window.innerHeight * READING_LINE;
-      const passed = sectionsOf(docker).filter(
-        (section) => (document.getElementById(section)?.getBoundingClientRect().top ?? Infinity) <= line,
-      );
-      setScrolledTo(passed.at(-1) ?? null);
-    };
-    window.addEventListener("scroll", look, { passive: true });
-    return () => window.removeEventListener("scroll", look);
-  }, [docker]);
-  return scrolledTo;
-}
-
-/** The page's sections as tabs that jump to them, the one being read underlined. */
-function HostTabs({
-  containers,
-  updates,
-  docker,
-  onContainers,
-}: {
-  containers: number;
-  updates: number;
-  docker: boolean;
-  onContainers: () => void;
-}) {
-  const hash = useLocation().hash.slice(1);
-  const sections = sectionsOf(docker);
-  const scrolledTo = useSectionScrolledTo(docker, hash);
-  const jumpedTo = isSectionOf(sections, hash) ? hash : HOST_SECTIONS.overview;
-  const active = scrolledTo ?? jumpedTo;
-  const extras: Record<Section, ReactNode> = {
-    overview: null,
-    dependencies: null,
-    containers: <span className="tab-count">{containers}</span>,
-    updates: updates > 0 ? <span className="tab-pill">{updates}</span> : null,
-    control: null,
-  };
-  return (
-    <nav className="tabs host-tabs" aria-label={TEXT.hosts.tabs.label}>
-      {sections.map((section) => (
-        <a
-          key={section}
-          href={`#${section}`}
-          aria-current={active === section ? "true" : undefined}
-          onClick={section === HOST_SECTIONS.containers ? onContainers : undefined}
-        >
-          {TEXT.hosts.tabs[section]}
-          {extras[section]}
-        </a>
-      ))}
-    </nav>
-  );
 }
 
 function HostTasks({ hostId }: { hostId: string }) {
@@ -373,14 +139,13 @@ function HostIncidents({ hostId }: { hostId: string }) {
 /** Taking the host off the dashboard: its runner keeps healing on its own, and stops reporting here. */
 function RevokeHost({ host }: { host: HostView }) {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const revoke = useMutation({
     mutationFn: () => api("POST", apiPath(API_ROUTES.hostRevoke, { hostId: host.id })),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: hostsQuery.queryKey }),
   });
   const confirmRevoke = () => {
-    if (window.confirm(TEXT.hosts.revokeConfirm(host.label))) {
-      revoke.mutate();
-    }
+    asking.confirm(TEXT.hosts.revokeConfirm(host.label), () => revoke.mutate());
   };
   return (
     <section className="card revoke-host" aria-labelledby="revoke-host-title">
@@ -391,6 +156,7 @@ function RevokeHost({ host }: { host: HostView }) {
       <button type="button" className="danger" disabled={revoke.isPending} onClick={confirmRevoke}>
         {TEXT.hosts.revoke}
       </button>
+      {asking.question}
       <ErrorNotice error={revoke.error} />
     </section>
   );
@@ -453,6 +219,93 @@ function HostTitle({ host, admin }: { host: HostView; admin: boolean }) {
   );
 }
 
+/**
+ * What this browser may pin first or hide on a host's page, section by section. A link to one shows it hidden or not,
+ * and so does the system card while the host's clock pauses its automatic recovery. Its containers, its open work and
+ * what an admin does here keep their place.
+ */
+function hostCards({
+  host,
+  admin,
+  enrolled,
+  hasDocker,
+  linkedTo,
+}: {
+  host: HostView;
+  admin: boolean;
+  enrolled: boolean;
+  hasDocker: boolean;
+  linkedTo: string;
+}) {
+  const overview: ArrangedCard[] = [
+    { id: HOST_CARDS.dials, title: TEXT.metrics.dials, node: <HostDials host={host} /> },
+    { id: HOST_CARDS.history, title: TEXT.metrics.statsHistory, node: <HostHistory host={host} /> },
+    {
+      id: HOST_CARDS.system,
+      title: TEXT.hostSystem.title,
+      pressing: (host.clockSkewSeconds ?? null) !== null,
+      node:
+        host.health === null ? (
+          <p className="muted">{TEXT.hosts.noReport}</p>
+        ) : (
+          <HostSystem host={host} health={host.health} />
+        ),
+    },
+    fixedCard(HOST_CARDS.ollama, <HostOllamaFact hostId={host.id} />),
+    ...(admin && hasDocker
+      ? [{ id: HOST_CARDS.profile, title: TEXT.hostProfile.title, node: <HostProfileFold hostId={host.id} /> }]
+      : []),
+    ...(admin ? [{ id: HOST_CARDS.probes, title: TEXT.probes.title, node: <ServiceProbes hostId={host.id} /> }] : []),
+  ];
+  const images: MovableCard[] = enrolled
+    ? [{ id: HOST_CARDS.images, title: TEXT.hostImages.title, node: <HostImages host={host} admin={admin} /> }]
+    : [];
+  const updates: MovableCard[] = [
+    {
+      id: HOST_CARDS.updates,
+      title: TEXT.containerImages.heading,
+      pressing: linkedTo === HOST_SECTIONS.updates,
+      node: <HostUpdates host={host} admin={admin} />,
+    },
+  ];
+  const dependencies: MovableCard[] = [
+    {
+      id: HOST_CARDS.dependencies,
+      title: DEPENDENCY_MAP_TEXT.title,
+      pressing: linkedTo === HOST_SECTIONS.dependencies,
+      node: (
+        <>
+          <DependencyMap host={host} />
+          {admin && (
+            <p>
+              <Link to={`${PATHS.backups}#application-plans`}>Application backup coverage and restore drills</Link>
+            </p>
+          )}
+        </>
+      ),
+    },
+  ];
+  const control: MovableCard[] = enrolled
+    ? [
+        {
+          id: HOST_CARDS.control,
+          title: TEXT.hostControl.title(host.label),
+          pressing: linkedTo === HOST_SECTIONS.control,
+          node: <HostControl host={host} admin={admin} />,
+        },
+      ]
+    : [];
+  const changes: MovableCard[] = [
+    {
+      id: HOST_CARDS.changes,
+      title: TEXT.hostChanges.title,
+      pressing: linkedTo === HOST_CHANGES_ANCHOR,
+      node: <HostChanges hostId={host.id} />,
+    },
+  ];
+  return { overview, images, updates, dependencies, control, changes };
+}
+
 /** One host: how it runs, its containers, what waits to be updated, and what Autoheal may do there. */
 export function HostPage() {
   const { hostId = "" } = useParams();
@@ -462,6 +315,8 @@ export function HostPage() {
   const [containersAsked, setContainersAsked] = useState(0);
   const hosts = useQuery(hostsQuery);
   const containers = useQuery({ ...hostContainersQuery(hostId), enabled: hostId !== "" });
+  const page = usePageArrangement(CARD_PAGES.host);
+  const linkedTo = useLocation().hash.slice(1);
   // A link from Attention or a task to one section lands on it once the host is drawn.
   useScrollToHash(hosts.data !== undefined);
   if (hosts.data === undefined) {
@@ -481,6 +336,29 @@ export function HostPage() {
   // Its containers' sections show while it reports Docker, and come back by themselves once Docker is installed.
   const hasDocker = host.docker !== false;
   const terminalOpen = admin && terminalHost === host.id;
+  const { overview, images, updates, dependencies, control, changes } = hostCards({
+    host,
+    admin,
+    enrolled,
+    hasDocker,
+    linkedTo,
+  });
+  // A section with every card hidden goes, and its tab with it.
+  const shown = (cards: readonly ArrangedCard[]) => arrangedCards(cards, page.arrangement).length > 0;
+  const showsUpdates = shown(updates);
+  const showsDependencies = hasDocker && shown(dependencies);
+  const showsControl = hasDocker && shown(control);
+  const hiddenSections = [
+    ...(showsUpdates ? [] : [HOST_SECTIONS.updates]),
+    ...(showsDependencies ? [] : [HOST_SECTIONS.dependencies]),
+    ...(showsControl ? [] : [HOST_SECTIONS.control]),
+  ];
+  const arrangeable = [
+    ...overview,
+    ...(hasDocker ? [...images, ...dependencies, ...control] : []),
+    ...updates,
+    ...changes,
+  ];
   // Keyed by host: what is ticked, found or opened on one host, and its containers' last report, never carry over.
   return (
     <div className="page host-page" key={host.id}>
@@ -515,47 +393,38 @@ export function HostPage() {
       <DiskWarning host={host} admin={admin} />
       <RebootWarning hostId={host.id} hostLabel={host.label} admin={admin} />
       <InPlaceWaiting host={host} />
+      <ContainersStale host={host} />
+      <ReportTrimmed host={host} />
       {isRunnerHost(host) && <RunnerBehind host={host} />}
       <HostTabs
         containers={host.containerCount}
         updates={waitingUpdates(host, containers.data ?? [])}
         docker={hasDocker}
+        hidden={hiddenSections}
         onContainers={() => setContainersAsked((asked) => asked + 1)}
       />
       <section id={HOST_SECTIONS.overview} className="host-section">
-        <HostDials host={host} />
-        <HostHistory host={host} />
-        {host.health === null ? (
-          <p className="muted">{TEXT.hosts.noReport}</p>
-        ) : (
-          <HostSystem host={host} health={host.health} />
-        )}
-        <HostOllamaFact hostId={host.id} />
-        {admin && hasDocker && <HostProfileFold hostId={host.id} />}
-        {admin && <ServiceProbes hostId={host.id} />}
+        <CardGroup cards={overview} page={page} />
       </section>
       {hasDocker && (
         <section id={HOST_SECTIONS.containers} className="host-section">
           <HostContainers host={host} admin={admin} containersAsked={containersAsked} />
-          {enrolled && <HostImages host={host} admin={admin} />}
+          <CardGroup cards={images} page={page} />
         </section>
       )}
-      <section id={HOST_SECTIONS.updates} className="host-section">
-        <HostUpdates host={host} admin={admin} />
-      </section>
-      {hasDocker && (
+      {showsUpdates && (
+        <section id={HOST_SECTIONS.updates} className="host-section">
+          <CardGroup cards={updates} page={page} />
+        </section>
+      )}
+      {showsDependencies && (
         <section id={HOST_SECTIONS.dependencies} className="host-section">
-          <DependencyMap host={host} />
-          {admin && (
-            <p>
-              <Link to={`${PATHS.backups}#application-plans`}>Application backup coverage and restore drills</Link>
-            </p>
-          )}
+          <CardGroup cards={dependencies} page={page} />
         </section>
       )}
-      {enrolled && hasDocker && (
+      {showsControl && (
         <section id={HOST_SECTIONS.control} className="host-section">
-          <HostControl host={host} admin={admin} />
+          <CardGroup cards={control} page={page} />
         </section>
       )}
       <div className="host-more">
@@ -563,11 +432,13 @@ export function HostPage() {
           <HostTasks hostId={host.id} />
           <HostIncidents hostId={host.id} />
         </div>
-        <HostChanges hostId={host.id} />
+        <CardGroup cards={changes} page={page} />
         {admin && enrolled && host.kind === HOST_KIND.ssh && <SshHostCard host={host} />}
         {admin && enrolled && isRunnerHost(host) && <SwitchToSsh host={host} />}
+        {admin && enrolled && isRunnerHost(host) && host.lastHeartbeatAt !== null && <JoinCodeCard host={host} />}
         {admin && enrolled && <RevokeHost host={host} />}
       </div>
+      <ArrangeLine cards={arrangeable} page={page} />
     </div>
   );
 }

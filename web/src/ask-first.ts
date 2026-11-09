@@ -30,12 +30,12 @@ export function chooseAskFirst(on: boolean) {
   }
 }
 
-/** Whether an action on these containers goes ahead: a stop or a removal asks once first, where chosen. */
-export function goesAhead(action: JobAction, names: readonly string[]): boolean {
+/** What a stop or a removal of these containers asks once first, where this browser chose that; null goes ahead. */
+export function askFirstQuestion(action: JobAction, names: readonly string[]): string | null {
   const question = QUESTIONS[action];
   if (question === undefined || !asksFirst()) {
-    return true;
+    return null;
   }
   const said = names.map((name, index) => `${listSeparator(index, names.length)}${name}`).join("");
-  return window.confirm(question(said));
+  return question(said);
 }

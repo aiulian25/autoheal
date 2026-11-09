@@ -92,4 +92,4 @@ Then use `https://192.168.10.30` as Home Assistant's address in Settings, with t
 
 ## Renewing
 
-Server certificates last 825 days. Run `issue` again, copy the new files, and restart the container. Runners that trust the CA need nothing; others need a new join code once the key changes.
+Server certificates last 825 days. Run `issue` again and copy the new files, the certificate and its key together. The control plane reads its files again once a day and serves the new certificate within a day, or at once if you restart it; Ollama and Home Assistant need a restart. `issue` makes a new key each time. Runners that trust the CA need nothing, and neither do the runners Autoheal runs itself or this machine's runner container, which take the new key by themselves; any other runner needs a new join code, from **Join code** on its host's page.

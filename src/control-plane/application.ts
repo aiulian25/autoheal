@@ -35,6 +35,7 @@ import {
   OLLAMA_STATUS_INTERVAL_MILLISECONDS,
   METRICS_SWEEP_INTERVAL_MILLISECONDS,
   RETENTION_SWEEP_INTERVAL_MILLISECONDS,
+  BOARD_CHANGE_CHECK_MILLISECONDS,
   ROLLOUT_TICK_INTERVAL_MILLISECONDS,
   TERMINAL_SWEEP_INTERVAL_MILLISECONDS,
   USER_INTERFACE_PORT,
@@ -53,7 +54,13 @@ import { settleSelfUpdateRollback } from "./self-update/self-update-settlement.j
 import { builtWebAssets } from "./http/web-assets.js";
 import { buildHealthServer, buildUserInterfaceServer, type StaticSettingsView } from "./server.js";
 import { createControlPlaneServices, type ControlPlaneServices } from "./services.js";
-import { ownCertificate, providedCertificate, type ServerCertificate } from "./tls/certificate.js";
+import {
+  ownCertificate,
+  providedCertificate,
+  serveRenewed,
+  tlsOptionsOf,
+  type ServerCertificate,
+} from "./tls/certificate.js";
 
 function isDatabaseReachable(databaseHandle: DatabaseHandle) {
   try {
@@ -98,19 +105,47 @@ function serverCertificate(
   return { certificate: material, issued };
 }
 
-const tlsOptionsOf = (certificate: ServerCertificate) => ({
-  cert: Buffer.from(certificate.certificate),
-  key: Buffer.from(certificate.key),
-});
+// A new key matters to more than browsers: runners trust the control plane by it.
+function renewalMessage(config: ControlPlaneConfig, keyChanged: boolean): string {
+  if (keyChanged) return TLS_MESSAGES.newKey;
+  return config.tls === null ? TLS_MESSAGES.renewed : TLS_MESSAGES.reread;
+}
 
-/** A certificate Autoheal made is signed again before it ends; both listeners take it without a restart. */
-function renewWhenDue(config: ControlPlaneConfig, servers: readonly FastifyInstance[], now: number) {
-  const { certificate, issued } = serverCertificate(config, now);
-  if (!issued) {
-    return;
+/**
+ * Looked at once a day: Autoheal's own certificate is signed again before it ends, and the operator's files, which a
+ * renewal replaces, are read again. Both listeners serve what changed without a restart, and a new key is handed on.
+ * What is served afterwards; after a failure, the one from before, so that all of it is tried again the next day.
+ */
+export function renewWhenDue(
+  config: ControlPlaneConfig,
+  servers: readonly FastifyInstance[],
+  served: ServerCertificate,
+  newKey: (pin: string) => void,
+  now: number,
+): ServerCertificate {
+  try {
+    const { certificate } = serverCertificate(config, now);
+    const listeners = servers.map((server) => server.server as unknown as TlsServer);
+    if (!serveRenewed(listeners, served, certificate)) return served;
+    const keyChanged = certificate.pin !== served.pin;
+    if (keyChanged) newKey(certificate.pin);
+    log(renewalMessage(config, keyChanged));
+    return certificate;
+  } catch (error) {
+    log(TLS_MESSAGES.renewFailed(describeError(error)));
+    return served;
   }
-  servers.forEach((server) => (server.server as unknown as TlsServer).setSecureContext(tlsOptionsOf(certificate)));
-  log(TLS_MESSAGES.renewed);
+}
+
+/** Runs each part in turn: one that throws is told to `failed`, and the parts after it run all the same. */
+export function eachApart(parts: readonly (() => unknown)[], failed: (error: unknown) => void) {
+  for (const part of parts) {
+    try {
+      part();
+    } catch (error) {
+      failed(error);
+    }
+  }
 }
 
 /** Whatever the previous process left half-done has no process behind it any more. */
@@ -166,10 +201,14 @@ export async function runControlPlane(): Promise<number> {
     clock,
   });
   await recoverFromRestart(services, databaseHandle, config.dataDirectory, auditLog, clock());
-  // With the Docker socket mounted, this machine is looked after from this container: no runner container joins.
-  if (isMountPoint(JOIN_DIRECTORY) && !services.localHostRunner.inPlace()) {
-    services.hostsService.ensureLocalRunner(JOIN_DIRECTORY);
-  }
+  // With the Docker socket mounted, this machine is looked after from this container: no runner container joins. One
+  // that does finds its join code, naming the control plane's key as it is now, in the volume both mount.
+  const joinLocalRunner = () => {
+    if (isMountPoint(JOIN_DIRECTORY) && !services.localHostRunner.inPlace()) {
+      services.hostsService.ensureLocalRunner(JOIN_DIRECTORY);
+    }
+  };
+  joinLocalRunner();
   services.homeAssistant.start();
 
   const tls = tlsOptionsOf(certificate);
@@ -206,6 +245,8 @@ export async function runControlPlane(): Promise<number> {
 
   // Detectors open and close tasks, escalations nothing is left to decide about settle; then Autoheal works its own.
   const detectAndWork = async () => {
+    // Jobs a quiet host never answered end first: the tasks they held are handed back before the detectors look.
+    services.jobsService.expireStale();
     await services.detectorService.run();
     await services.incidentReconciler.run();
     // Ollama may take its time over a repair: the other work never waits for it.
@@ -215,12 +256,18 @@ export async function runControlPlane(): Promise<number> {
     void services.failureReporter.run().catch(logFailure);
     // Ollama may take its time over the updates people hold: the problem checks never wait for it.
     void services.autohealWorker.adviseUpdates().catch(logFailure);
-    services.hostPackages.tick();
-    services.hostControl.tick();
-    services.embeddedRunners.tick();
-    services.localHostRunner.tick();
-    services.power.tick();
-    void services.jarvis.tick().catch(logFailure);
+    // Each looks after a part of its own: one that fails says so, and stops none of the others.
+    eachApart(
+      [
+        () => services.hostPackages.tick(),
+        () => services.hostControl.tick(),
+        () => services.embeddedRunners.tick(),
+        () => services.localHostRunner.tick(),
+        () => services.power.tick(),
+        () => void services.jarvis.tick().catch(logFailure),
+      ],
+      logFailure,
+    );
   };
   let detectorTimer: NodeJS.Timeout | null = null;
   const detectorStart = setTimeout(() => {
@@ -272,14 +319,25 @@ export async function runControlPlane(): Promise<number> {
     TERMINAL_SWEEP_INTERVAL_MILLISECONDS,
   );
   scheduled(() => services.retentionSweep.sweep());
+  scheduled(() => services.boardChanges.check());
+  const boardTimer = setInterval(() => scheduled(() => services.boardChanges.check()), BOARD_CHANGE_CHECK_MILLISECONDS);
   const retentionTimer = setInterval(
     () => scheduled(() => services.retentionSweep.sweep()),
     RETENTION_SWEEP_INTERVAL_MILLISECONDS,
   );
-  const renewTimer =
-    config.tls === null
-      ? setInterval(() => renewWhenDue(config, [userInterface, runnerServer], clock()), TLS_RENEW_CHECK_MILLISECONDS)
-      : null;
+  let served = certificate;
+  // A renewed certificate with a new key: what is handed out from now on names it, as after a restart.
+  const newKey = (pin: string) => {
+    services.keyChanged(pin);
+    joinLocalRunner();
+  };
+  const renewTimer = setInterval(
+    () =>
+      scheduled(() => {
+        served = renewWhenDue(config, [userInterface, runnerServer], served, newKey, clock());
+      }),
+    TLS_RENEW_CHECK_MILLISECONDS,
+  );
 
   return untilShutdown(async () => {
     clearTimeout(detectorStart);
@@ -298,7 +356,8 @@ export async function runControlPlane(): Promise<number> {
     clearInterval(applicationBackupTimer);
     clearInterval(metricsTimer);
     clearInterval(retentionTimer);
-    clearInterval(renewTimer ?? undefined);
+    clearInterval(boardTimer);
+    clearInterval(renewTimer);
     // Their last reports still reach the runner API, which closes below.
     await services.embeddedRunners.stop();
     await services.localHostRunner.stop();

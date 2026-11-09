@@ -7,7 +7,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ownCertificate, providedCertificate, type ServerCertificate } from "../control-plane/tls/certificate.js";
 import { INSTALL_FETCH } from "../shared/constants.js";
-import { ControlPlaneClient, PinMismatchError } from "./control-plane-client.js";
+import {
+  ControlPlaneClient,
+  ControlPlaneError,
+  JoinCodeRefusedError,
+  PinMismatchError,
+  redeemJoinCode,
+} from "./control-plane-client.js";
 
 const TOKEN = `ahk_${"a".repeat(43)}`;
 const FIXTURES = join(import.meta.dirname, "../../test/fixtures/tls");
@@ -78,6 +84,37 @@ describe("the runner's connection to the control plane", () => {
     const client = new ControlPlaneClient({ url, token: TOKEN, pin: material.pin });
     await expect(client.takeWork()).resolves.toEqual(WORK);
     expect(requests).toEqual([`GET /runner/v1/work Bearer ${TOKEN}`]);
+  });
+
+  it("trades a join code with no token on the request, and tells a refusal from a failure", async () => {
+    const material = ownCertificate(directory, ["127.0.0.1"], Date.now()).material;
+    const answers = [204, 401, 503];
+    const bodies: unknown[] = [];
+    server = createServer({ key: material.key, cert: material.certificate }, (request, response) => {
+      requests.push(`${request.method} ${request.url} ${request.headers.authorization}`);
+      let body = "";
+      request.on("data", (chunk) => {
+        body += String(chunk);
+      });
+      request.on("end", () => {
+        bodies.push(JSON.parse(body));
+        response.statusCode = answers.shift()!;
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const code = { url, enrolment: `ahe_${"E".repeat(43)}`, pin: material.pin };
+
+    await expect(redeemJoinCode(code, TOKEN)).resolves.toBeUndefined();
+    await expect(redeemJoinCode(code, TOKEN)).rejects.toBeInstanceOf(JoinCodeRefusedError);
+    await expect(redeemJoinCode(code, TOKEN)).rejects.toBeInstanceOf(ControlPlaneError);
+    expect(requests).toEqual(Array.from({ length: 3 }, () => "POST /runner/v1/join undefined"));
+    expect(bodies).toEqual(Array.from({ length: 3 }, () => ({ enrolment: code.enrolment, token: TOKEN })));
+
+    const other = ownCertificate(join(directory, "other"), ["127.0.0.1"], Date.now()).material;
+    await expect(redeemJoinCode({ ...code, pin: other.pin }, TOKEN)).rejects.toBeInstanceOf(PinMismatchError);
+    expect(requests).toHaveLength(3);
   });
 
   it("refuses any other key before sending anything, token included", async () => {

@@ -1,7 +1,8 @@
 # Autoheal's runner for one more host. The dashboard's Hosts > Add a host writes this file, and an
 # .env next to it with AUTOHEAL_JOIN (from there) and DOCKER_GID (stat -c %g /var/run/docker.sock).
 # Optional settings go in that .env too: see the README.
-# Runner safety budgets use runtime-managed autoheal-guard-* Docker volumes; retain them across upgrades.
+# Runner safety budgets and its token use runtime-managed autoheal-guard-* and autoheal-runner-* Docker volumes;
+# retain them across upgrades.
 services:
   runner:
     image: ghcr.io/aiulian25/autoheal:1

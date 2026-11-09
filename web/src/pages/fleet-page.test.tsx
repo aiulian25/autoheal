@@ -66,6 +66,7 @@ const container = (name: string, overrides: Partial<ContainerView> = {}): Contai
   composeService: null,
   link: null,
   version: null,
+  source: null,
   ports: null,
   hostNetwork: false,
   update: { status: "current", checkedAt: Date.now(), policy: "ask", remote: null, reason: null },

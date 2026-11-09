@@ -1,0 +1,426 @@
+/* --- Attention's Updates: choosing, handing over, and the rows. */
+
+/* The Updates heading with its choosing and handing over on the right; they wrap under it on a phone. */
+.section-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.section-actions > button.link {
+  color: var(--text-soft);
+  font-size: var(--text-small);
+}
+
+.decision.handable {
+  cursor: grab;
+}
+
+.decision-meta > .grip {
+  width: 16px;
+  height: 16px;
+  margin-right: -4px;
+}
+
+/* Whether the agent can take work now, beside what it has in hand. */
+.side-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.side-row > .side-list {
+  flex: 1;
+}
+
+.agent-pill {
+  flex: none;
+  padding: 3px 10px;
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius-pill);
+  background: var(--control);
+  color: var(--text-muted);
+  font-size: var(--text-badge);
+  white-space: nowrap;
+}
+
+.agent-pill.tone-danger {
+  color: var(--danger);
+}
+
+.attention-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+@media (min-width: 64rem) {
+  .attention-layout {
+    grid-template-columns: minmax(0, 1fr) var(--side-column-width);
+  }
+}
+
+.attention-main,
+.attention-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attention-main {
+  --cards-gap: 33px;
+  gap: var(--cards-gap);
+}
+
+.attention-side {
+  --cards-gap: 14px;
+  gap: var(--cards-gap);
+}
+
+.attention-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.attention-section > .section-label {
+  margin-bottom: -1px;
+}
+
+.section-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: var(--text-small);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+  color: var(--tone);
+}
+
+.section-label.tone-accent {
+  --tone: var(--accent);
+}
+
+.section-hint {
+  font-weight: var(--weight-normal);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-faint);
+}
+
+.decision {
+  gap: 0;
+  padding: 20px 22px;
+}
+
+.decision.waiting {
+  border-color: var(--warning-border);
+}
+
+.decision-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.decision-name {
+  margin-top: 16px;
+  font-size: var(--text-name);
+  font-weight: var(--weight-strong);
+}
+
+.decision .reading {
+  margin-top: 4px;
+}
+
+.decision .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: 12.5px;
+}
+
+.decision .card-actions {
+  margin-top: 12.5px;
+}
+
+.decision .chips + .card-actions {
+  margin-top: 13.5px;
+}
+
+/* A plain-text choice sits closer to the buttons before it than a button's own padding, as drawn. */
+.decision .card-actions button.quiet {
+  padding-inline: 12px;
+}
+
+.fix-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--space-3);
+}
+
+.fix {
+  gap: 0;
+  padding-bottom: 18px;
+}
+
+.fix-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.fix-head h3 {
+  font-size: var(--text-large);
+  font-weight: var(--weight-strong);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.fix-figure {
+  font-size: var(--text-figure);
+  font-weight: var(--weight-strong);
+  line-height: 1.2;
+}
+
+.fix .bar {
+  margin-top: 16px;
+}
+
+.fix > p {
+  margin-top: 13px;
+}
+
+.fix .card-actions {
+  margin-top: 11.5px;
+  gap: 10px;
+}
+
+.fix .card-actions button.quiet {
+  padding-inline: 10px;
+}
+
+/* The way to the host is a touch taller and tighter than a plain button, as drawn. */
+.fix .card-actions .button {
+  min-height: 46px;
+  padding-inline: 14px;
+}
+
+.update-group {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  overflow: hidden;
+}
+
+.update-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: 4px 20px 0;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-large);
+}
+
+.update-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.update-group > summary strong {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.update-group > summary a,
+.update-group > summary .accent {
+  font-size: var(--text-body);
+}
+
+.update-group[open] > summary {
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+.update-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.update-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: var(--update-row-height);
+  padding: 0 20px;
+}
+
+.update-row + .update-row {
+  border-top: var(--border-width) solid var(--divider);
+}
+
+/* On Attention a row starts with its handle and its tick, then a tile with what kind of update it is. */
+.update-group .update-row {
+  gap: 12px;
+}
+
+.update-group .update-row.handable {
+  cursor: grab;
+}
+
+.update-group .update-row > .grip,
+.update-group .update-row > .grip-space {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.grip {
+  color: var(--next-ring);
+}
+
+.update-group .update-row > input[type="checkbox"],
+.update-group .update-row > .tick-space {
+  margin: 0 6px 0 4px;
+}
+
+.update-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-right: 4px;
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--control);
+  color: var(--text-muted);
+}
+
+.update-tile .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.update-row > .badge {
+  flex: none;
+}
+
+/* Ollama's word on an update is set a touch heavier than a package's held or security mark. */
+.update-row.container-update > .badge {
+  font-weight: var(--weight-medium);
+}
+
+/* Under the rows: the way to apply the ticked ones, one at a time. */
+.update-group-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--update-row-height);
+  padding: 0 20px;
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.update-group-foot > .small {
+  translate: 0 2px;
+}
+
+.update-what {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin-right: auto;
+  line-height: 1.3;
+}
+
+.update-what .faint {
+  font-size: var(--text-badge);
+}
+
+.update-what .mono {
+  font-size: var(--text-body);
+  color: var(--text);
+}
+
+.side-card {
+  gap: 8px;
+}
+
+/* A side card's one line when it has nothing to list. */
+.side-empty {
+  margin-top: 2px;
+  line-height: 1.2;
+}
+
+.side-card.muted-surface {
+  background: var(--surface-muted);
+}
+
+.side-card code {
+  color: var(--text);
+}
+
+.side-card > p.small {
+  margin-top: 1.5px;
+  line-height: 1.46;
+}
+
+/* The way on, under a card's text. */
+.side-card p + a {
+  margin-top: 8.5px;
+  line-height: 1;
+}
+
+.side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.side-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.side-facts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16.5px var(--space-3);
+  margin: 5px 0 0;
+  font-size: var(--text-small);
+  line-height: 1;
+}
+
+.side-facts dt {
+  color: var(--text-muted);
+}
+
+.side-facts dd {
+  margin: 0;
+  text-align: right;
+}

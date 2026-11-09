@@ -1,12 +1,16 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestClient,
+  type TestControlPlane,
+} from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type AuditEventView, type EnrolledHostView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, HTTP_STATUS } from "../../shared/constants.js";
 import type { ImageTrustView } from "./image-trust-service.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { RUNNER_ROUTES, type HeartbeatResponse } from "../../shared/protocol.js";
 
 const keyPair = () => generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -36,7 +40,7 @@ describe("requiring a signed image before an update", () => {
     controlPlane = await startTestControlPlane();
     admin = (await fullySignedInAdmin(controlPlane)).client;
     const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
-    runnerToken = decodeJoinCode(enrolled.joinCode)!.token;
+    runnerToken = runnerTokenOf(enrolled);
   });
 
   afterEach(async () => {
@@ -66,6 +70,22 @@ describe("requiring a signed image before an update", () => {
     const ruleId = (await view()).rules[0]!.id;
     await admin.delete(apiPath(API_ROUTES.imageTrustRule, { ruleId }));
     expect((await heartbeat()).imageTrust!.revision).not.toBe(second);
+  });
+
+  it("never gives two different policies the same revision, whatever the clock does between changes", async () => {
+    await addPublisher({ name: "example", publicKey: OWNER_KEY });
+    await addRule({ registry: "ghcr.io", repository: "example/first" });
+    const start = controlPlane.clock.now;
+    controlPlane.clock.now += 100;
+    await addRule({ registry: "ghcr.io", repository: "example/second" });
+    const before = (await heartbeat()).imageTrust!.revision;
+
+    const first = (await view()).rules.find(({ repository }) => repository === "example/first")!;
+    await admin.delete(apiPath(API_ROUTES.imageTrustRule, { ruleId: first.id }));
+    // Set back, as a time sync can: the new rule is dated before the newest one kept.
+    controlPlane.clock.now = start + 50;
+    await addRule({ registry: "ghcr.io", repository: "example/third" });
+    expect((await heartbeat()).imageTrust!.revision).not.toBe(before);
   });
 
   it("refuses a key that does not read as a public key, and keeps nothing", async () => {

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { Server as TlsServer } from "node:tls";
 import type { FastifyInstance } from "fastify";
 import type { Actor } from "../../src/control-plane/audit/audit-log.js";
 import { buildRunnerServer } from "../../src/control-plane/runner-api/runner-server.js";
@@ -20,6 +21,12 @@ const TLS = {
   key: readFileSync("test/fixtures/tls/server-key.pem"),
 };
 const PIN = publicKeyPin(new X509Certificate(TLS.cert).publicKey);
+// The runner API's certificate renewed with a new key, as many renewals bring one.
+const RENEWED_TLS = {
+  cert: readFileSync("test/fixtures/tls/untrusted-server.pem"),
+  key: readFileSync("test/fixtures/tls/untrusted-server-key.pem"),
+};
+export const RENEWED_PIN = publicKeyPin(new X509Certificate(RENEWED_TLS.cert).publicKey);
 const SETTLE_MILLISECONDS = 15_000;
 // The host's own /proc, as its user reads it over SSH.
 const HOST_FILES = {
@@ -51,6 +58,32 @@ export async function until<Value>(
   }
 }
 
+/**
+ * The runner API serves the renewed certificate from its next connection, as the control plane's daily check has it
+ * do, and the connections open now are closed: until they end they would keep the certificate they started with.
+ */
+export function renewRunnerCertificate(runnerServer: FastifyInstance) {
+  (runnerServer.server as unknown as TlsServer).setSecureContext(RENEWED_TLS);
+  runnerServer.server.closeAllConnections();
+}
+
+/**
+ * A container started on the host, and its runner's reports read until they show it. The start is told again at each
+ * look, so a report that failed is followed by another within seconds, not at the next heartbeat.
+ */
+export function startedAndReported<Value>(
+  engine: FakeDockerEngine,
+  name: string,
+  read: () => Promise<Value>,
+  done: (value: Value) => boolean,
+): Promise<Value> {
+  engine.add(runningContainer(name));
+  return until(async () => {
+    engine.emit({ Type: "container", Action: "start", Actor: { Attributes: { name } } });
+    return read();
+  }, done);
+}
+
 async function freePort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -63,6 +96,8 @@ export interface EmbeddedSshHost {
   engine: FakeDockerEngine;
   server: FakeSshServer;
   controlPlane: TestControlPlane;
+  // The runner API the host's runner reaches, on loopback.
+  runnerServer: FastifyInstance;
   admin: TestClient;
   actor: Actor;
   hostId: string;
@@ -122,5 +157,5 @@ export async function startEmbeddedSshHost(
     await engine.close();
     rmSync(hostFiles, { recursive: true, force: true });
   };
-  return { engine, server, controlPlane, admin, actor, hostId, hostFiles, stop };
+  return { engine, server, controlPlane, runnerServer, admin, actor, hostId, hostFiles, stop };
 }

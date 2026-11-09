@@ -1,0 +1,214 @@
+/* --- a container's panel, under its row: buttons, the smallest gauges, then tabs ---------------------- */
+
+.container-panel {
+  gap: 6px;
+}
+
+/* What it last did goes to the foot of the panel, on one line. */
+.container-panel > .stack {
+  display: contents;
+}
+
+.container-panel > .stack > .stack.small {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  order: 1;
+  font-size: 0.6875rem;
+}
+
+.panel-actions {
+  gap: 4px;
+}
+
+.panel-actions button {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: var(--text-small);
+  border-radius: var(--radius-small);
+}
+
+.panel-actions button .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.panel-separator {
+  width: var(--border-width);
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.panel-actions .panel-remove {
+  margin-left: auto;
+}
+
+.mini-gauges {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 4px;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
+.mini-gauge {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 6px;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+  border-right: var(--border-width) solid var(--border);
+}
+
+.mini-gauge:last-child {
+  border-right: 0;
+}
+
+.mini-gauge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mini-ring {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  rotate: -90deg;
+}
+
+.mini-ring circle {
+  fill: none;
+  stroke-width: 4;
+}
+
+.mini-ring-track {
+  stroke: var(--border);
+}
+
+.mini-ring-arc {
+  stroke: var(--tone);
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 1px;
+  overflow-x: auto;
+  box-shadow: inset 0 calc(-1 * var(--border-width)) 0 var(--border);
+}
+
+.detail-tabs button {
+  min-height: 0;
+  padding: 3px 8px;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-bottom: var(--focus-width) solid transparent;
+  border-radius: 0;
+}
+
+.detail-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.detail-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.detail-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 2px 14px;
+  align-content: start;
+  margin: 0;
+  font-size: 0.71875rem;
+}
+
+.detail-facts > div {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.detail-facts dt {
+  color: var(--text-muted);
+}
+
+.detail-facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-table {
+  overflow-x: auto;
+}
+
+.detail-table table {
+  width: 100%;
+  min-width: 0;
+  table-layout: auto;
+}
+
+.host-containers .detail-table th,
+.host-containers .detail-table td,
+.detail-table th,
+.detail-table td {
+  height: auto;
+  padding: 2px 8px 2px 0;
+  font-size: 0.71875rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 48rem) {
+  .mini-gauges {
+    flex-wrap: wrap;
+    padding: 4px;
+  }
+
+  .mini-gauge {
+    flex: 1 1 45%;
+    border-right: 0;
+  }
+
+  .detail-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.detail-good {
+  color: var(--series-green);
+}
+
+/* How a host is set up: one line each, what it is and how many do it. */
+.profile-lines {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+}
+
+.profile-line {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.profile-line dt {
+  color: var(--text-muted);
+}
+
+.profile-line dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

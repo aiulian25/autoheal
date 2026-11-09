@@ -1,5 +1,9 @@
 import { eq, inArray, sql } from "drizzle-orm";
-import { APPLICATION_BACKUP_FAILURE } from "../../shared/application-backups.js";
+import {
+  APPLICATION_BACKUP_FAILURE,
+  APPLICATION_BACKUP_RUN_STATUS,
+  OPEN_APPLICATION_BACKUP_RUN_STATUSES,
+} from "../../shared/application-backups.js";
 import {
   INCIDENT_STATUS,
   JOB_STATUS,
@@ -10,6 +14,7 @@ import {
   UPDATE_RUN_STATUS,
   WORK_ITEM_STATUS,
 } from "../../shared/constants.js";
+import { ROLLOUT_STATUS } from "../../shared/rollouts.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import {
   incidentEvents,
@@ -25,6 +30,10 @@ import {
 const STALE_INCIDENT_STATUSES = [INCIDENT_STATUS.deciding, INCIDENT_STATUS.awaitingApproval, INCIDENT_STATUS.approved];
 const OPEN_WORK = [WORK_ITEM_STATUS.pending, WORK_ITEM_STATUS.delivered];
 const OPEN_JOBS = [JOB_STATUS.pending, JOB_STATUS.delivered];
+// Bound as one list: `status IN (SELECT value FROM json_each(?))`.
+const OPEN_BACKUP_RUNS = JSON.stringify(OPEN_APPLICATION_BACKUP_RUN_STATUSES);
+// A rollout still moving, and what it is held at until a fresh plan is reviewed.
+const MOVING_ROLLOUTS = JSON.stringify([ROLLOUT_STATUS.updating, ROLLOUT_STATUS.observing, ROLLOUT_STATUS.ready]);
 
 /**
  * What a database put back from an earlier copy says is still in hand, settled: the hosts went on working while that
@@ -58,25 +67,31 @@ export function settleDispatchedWork(databaseHandle: DatabaseHandle, now: number
   // so the normal failed-upload cleanup cannot destroy their independently retained recovery keys.
   sqlite
     .prepare(
-      "UPDATE application_backup_artifacts AS artifact SET retained_by_run_id=COALESCE(retained_by_run_id,(SELECT work.id FROM application_backup_runs work WHERE work.status IN ('queued','running','recovery-required') AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id) ORDER BY work.created_at LIMIT 1)) WHERE EXISTS (SELECT 1 FROM application_backup_runs work WHERE work.status IN ('queued','running','recovery-required') AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id))",
+      "UPDATE application_backup_artifacts AS artifact SET retained_by_run_id=COALESCE(retained_by_run_id,(SELECT work.id FROM application_backup_runs work WHERE work.status IN (SELECT value FROM json_each(?)) AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id) ORDER BY work.created_at LIMIT 1)) WHERE EXISTS (SELECT 1 FROM application_backup_runs work WHERE work.status IN (SELECT value FROM json_each(?)) AND (work.id=artifact.capture_run_id OR work.artifact_id=artifact.id OR work.safety_artifact_id=artifact.id))",
     )
-    .run();
+    .run(OPEN_BACKUP_RUNS, OPEN_BACKUP_RUNS);
+  sqlite
+    .prepare("UPDATE application_backup_runs SET status=?,failure=?,finished_at=?,progress_json=? WHERE status=?")
+    .run(
+      APPLICATION_BACKUP_RUN_STATUS.failed,
+      APPLICATION_BACKUP_FAILURE.databaseRestored,
+      now,
+      reconciliation,
+      APPLICATION_BACKUP_RUN_STATUS.queued,
+    );
+  sqlite
+    .prepare("UPDATE application_backup_runs SET status=?,progress_json=? WHERE status=?")
+    .run(APPLICATION_BACKUP_RUN_STATUS.recoveryRequired, reconciliation, APPLICATION_BACKUP_RUN_STATUS.running);
   sqlite
     .prepare(
-      "UPDATE application_backup_runs SET status='failed',failure=?,finished_at=?,progress_json=? WHERE status='queued'",
-    )
-    .run(APPLICATION_BACKUP_FAILURE.databaseRestored, now, reconciliation);
-  sqlite
-    .prepare("UPDATE application_backup_runs SET status='recovery-required',progress_json=? WHERE status='running'")
-    .run(reconciliation);
-  sqlite
-    .prepare(
-      "UPDATE rollouts SET state_json=json_set(state_json,'$.status','held','$.reason',?,'$.updatedAt',?),updated_at=? WHERE json_valid(state_json) AND json_extract(state_json,'$.status') IN ('updating','observing','ready')",
+      "UPDATE rollouts SET state_json=json_set(state_json,'$.status',?,'$.reason',?,'$.updatedAt',?),updated_at=? WHERE json_valid(state_json) AND json_extract(state_json,'$.status') IN (SELECT value FROM json_each(?))",
     )
     .run(
+      ROLLOUT_STATUS.held,
       "Database restored. Hold retained rollout state until a fresh plan is reviewed; no later cohort may run.",
       now,
       now,
+      MOVING_ROLLOUTS,
     );
   database.update(tasks).set({ checkedOutBy: null, checkedOutAt: null }).run();
   database

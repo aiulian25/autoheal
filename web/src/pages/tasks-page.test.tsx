@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,7 +10,7 @@ import {
   type TaskDetailView,
   type TaskSummaryView,
 } from "../../../src/shared/api.js";
-import { PATHS, SESSION_QUERY_KEY } from "../constants.js";
+import { PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { TasksPage } from "./tasks-page.js";
 
 const session: SessionView = {
@@ -63,6 +63,7 @@ const whoami: ContainerView = {
   composeService: null,
   link: null,
   version: null,
+  source: null,
   ports: null,
   hostNetwork: false,
   update: { status: "available", checkedAt: Date.now(), policy: "ask", remote: null, reason: null },
@@ -167,6 +168,31 @@ describe("the tasks page", () => {
     fireEvent.click(card);
     expect(router.state.location.pathname).toBe(PATHS.tasks);
     expect(screen.queryByRole("region", { name: "#7 Update whoami on Alder" })).toBeNull();
+  });
+
+  it("lets an admin say from the task what it waits on, and take that back", async () => {
+    const taskPath = apiPath(API_ROUTES.task, { taskId: "t1" });
+    const blockers = apiPath(API_ROUTES.taskBlockers, { taskId: "t1" });
+    const blocker = apiPath(API_ROUTES.taskBlocker, { taskId: "t1", blockerId: "t2" });
+    const cables = summary({ id: "t2", number: 8, title: "Tidy the cables", labels: [], resource: null });
+    const fetch = serve({
+      [API_ROUTES.tasks]: [summary({}), cables],
+      [taskPath]: detail(),
+      [API_ROUTES.assignees]: { users: [{ id: "u1", name: "admin" }], agents: [] },
+      [API_ROUTES.containers]: [whoami],
+      [`POST ${blockers}`]: detail({ blockedBy: [cables] }),
+      [blocker]: detail(),
+    });
+    renderTasks(apiPath(PATHS.task, { taskId: "t1" }));
+    const panel = await screen.findByRole("region", { name: "#7 Update whoami on Alder" });
+
+    fireEvent.change(await within(panel).findByLabelText(TEXT.tasks.waitsOn), { target: { value: "t2" } });
+    fireEvent.click(within(panel).getByRole("button", { name: TEXT.tasks.addBlocker }));
+    await waitFor(() => expect(calls(fetch, "POST")).toContainEqual([blockers, { blockedById: "t2" }]));
+    fireEvent.click(await within(panel).findByRole("button", { name: TEXT.tasks.stopWaiting(8) }));
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([url, init]) => url === blocker && init?.method === "DELETE")).toBe(true),
+    );
   });
 
   it("offers only what the host allows: a protected container's logs, and why nothing else", async () => {

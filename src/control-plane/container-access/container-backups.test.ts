@@ -101,12 +101,14 @@ describe("container backups", () => {
 
   describe("on storage several hosts share", () => {
     let otherToken: string;
+    let otherHostId: string;
     const otherRunner = (method: "GET" | "POST", url: string, payload?: object) =>
       controlPlane.runnerApp.inject({ method, url, payload, headers: { authorization: `Bearer ${otherToken}` } });
 
     beforeEach(async () => {
       const other = (await admin.post(API_ROUTES.hosts, { label: "Other" })).json<EnrolledHostView>();
       otherToken = runnerTokenOf(other);
+      otherHostId = other.host.id;
       await otherRunner(
         "POST",
         RUNNER_ROUTES.heartbeat,
@@ -123,6 +125,19 @@ describe("container backups", () => {
       Buffer.from(await encryptBackup(Buffer.from(await generateX25519Identity()), TEST_BACKUP_PASSPHRASE)).toString(
         "base64",
       );
+
+    it("names the host in each job and each question, so its backups go in a folder of its own", async () => {
+      const asking = admin.post(route(API_ROUTES.hostBackupAsk), { kind: BACKUP_ASK.list, target: TARGET });
+      const [request] = (await runner("GET", RUNNER_ROUTES.containerAccess)).json<ContainerAccessWork>().backups ?? [];
+      expect(request?.hostId).toBe(hostId);
+      await runner("POST", apiPath(RUNNER_ROUTES.backupAnswer, { requestId: request!.id }), { refusal: "not today" });
+      await asking;
+      await start();
+      const hostOf = (jobs: WorkResponse["jobs"]) =>
+        backupJobSchema.parse((jobs[0] as unknown as { backup: unknown }).backup).hostId;
+      expect(hostOf(await delivered())).toBe(hostId);
+      expect(hostOf((await otherRunner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs)).toBe(otherHostId);
+    });
 
     it("never opens another host's key, for a backup or for a restore", async () => {
       const foreign = await otherHostsKey();

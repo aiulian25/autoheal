@@ -84,6 +84,7 @@ const story: ContainerTimelineEntry[] = [
       recoveryBackupId: null,
       packages: [],
       progress: null,
+      stack: null,
     },
   },
   {

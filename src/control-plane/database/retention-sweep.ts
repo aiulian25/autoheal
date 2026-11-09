@@ -11,6 +11,8 @@ import {
   REPLAY_FINISHED,
   RETENTION_MILLISECONDS,
   RETENTION_SWEEP_BATCH_ROWS,
+  SESSION_IDLE_MILLISECONDS,
+  SET_ASIDE_KEPT_MILLISECONDS,
   SYSTEM_ACTOR_LABEL,
   UPDATE_RUN_STATUS,
   WORK_ITEM_STATUS,
@@ -18,6 +20,7 @@ import {
 import { DATA_KIND, type DataKind, type DataView } from "../../shared/api.js";
 import { REBOOT_PLAN_STATUS } from "../../shared/reboot-plans.js";
 import type { AuditLog } from "../audit/audit-log.js";
+import { forgetSetAsideDatabases } from "../backups/restore-service.js";
 import type { DatabaseHandle } from "./connection.js";
 
 const listed = (values: readonly string[]) => JSON.stringify(values);
@@ -175,7 +178,8 @@ export type RetentionCounts = Record<string, number>;
 /**
  * Removes finished records once they outlive their window, in bounded batches so no transaction grows large.
  * What a kept record still names stays: an open task's incident, a rollout's job, a kept artifact's backup run.
- * The audit log stays whole: its triggers refuse deletes, and only adds the sweep's own entry.
+ * The audit log stays whole: its triggers refuse deletes, and only adds the sweep's own entry. A database an offline
+ * restore set aside goes too, once the local backups no longer reach back to it.
  */
 export class RetentionSweep {
   // The latest sweep since the control plane started; the first runs at start.
@@ -189,9 +193,11 @@ export class RetentionSweep {
 
   sweep(): RetentionCounts {
     const now = this.clock();
-    const removed: RetentionCounts = Object.fromEntries(
-      EXPIRIES.map((expiry) => [expiry.name, this.expire(expiry, now - expiry.window)]),
-    );
+    const removed: RetentionCounts = {
+      ...Object.fromEntries(EXPIRIES.map((expiry) => [expiry.name, this.expire(expiry, now - expiry.window)])),
+      previousDatabases: forgetSetAsideDatabases(this.databaseHandle.path, now - SET_ASIDE_KEPT_MILLISECONDS),
+      endedSessions: this.endSessions(now),
+    };
     const total = Object.values(removed).reduce((sum, count) => sum + count, 0);
     this.last = { at: now, removed: total };
     if (total > 0) {
@@ -220,6 +226,14 @@ export class RetentionSweep {
       ],
       lastSweep: this.last,
     };
+  }
+
+  // A session is otherwise removed only when it is presented after it ended, so one never presented again stays: those
+  // past their end, or left unused past the idle limit, go, as signing in with them would.
+  private endSessions(now: number): number {
+    return this.databaseHandle.sqlite
+      .prepare("DELETE FROM sessions WHERE expires_at <= ? OR last_seen_at <= ?")
+      .run(now, now - SESSION_IDLE_MILLISECONDS).changes;
   }
 
   // ponytail: batches run back to back on the event loop; yield between them if a first sweep of a years-old

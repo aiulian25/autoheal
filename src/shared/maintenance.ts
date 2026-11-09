@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const MAINTENANCE_MAX_MILLISECONDS = 24 * 60 * 60 * 1000;
 export const MAINTENANCE_FRESH_MILLISECONDS = 120_000;
+// How far a runner's clock may be from the control plane's, or move while it holds a policy, for that policy to count.
+export const MAINTENANCE_CLOCK_TOLERANCE_MILLISECONDS = 60_000;
 // Windows open at once per host and in all, and the longest container name and reason a window takes.
 export const MAINTENANCE_LIMITS = {
   windowsPerHost: 128,

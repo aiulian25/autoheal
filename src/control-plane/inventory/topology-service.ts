@@ -42,7 +42,8 @@ export class TopologyService {
     runners: Pick<WaitingRunners, "wake">,
     private readonly clock = Date.now,
   ) {
-    this.relay = new RunnerRelay(runners);
+    // A preview only says what an action would do, so it may go to the runner twice.
+    this.relay = new RunnerRelay(runners, () => true);
   }
   private host(hostId: string) {
     const host = this.handle.database.select().from(hosts).where(eq(hosts.id, hostId)).get();
@@ -195,5 +196,9 @@ export class TopologyService {
     this.relay.reset();
     this.prepared.clear();
     this.cached.clear();
+  }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
   }
 }

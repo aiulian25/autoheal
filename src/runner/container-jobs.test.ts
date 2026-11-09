@@ -1,6 +1,6 @@
 import { UPDATE_GROUP_LABEL } from "./update-group.js";
 import { describe, expect, it, vi } from "vitest";
-import { OUTCOME_TEXT_LIMIT, STACK_OUTCOMES } from "../shared/constants.js";
+import { JOB_OUTCOMES, OUTCOME_TEXT_LIMIT, STACK_OUTCOMES } from "../shared/constants.js";
 import type {
   ContainerJob,
   ContainerSettings,
@@ -973,6 +973,7 @@ describe("ContainerJobs", () => {
       run: async () => ({ succeeded: true, outcome: "", output: null }),
       membersOf: async () => [],
       applySettings: vi.fn(async () => write),
+      changeTag: async () => ({ succeeded: true, outcome: "", output: null }),
     });
 
     it("goes through its file when that can be written", async () => {
@@ -1144,5 +1145,45 @@ describe("rollout proof and post-pull admission", () => {
       expect(result).toMatchObject({ succeeded: false, outcome: "Nothing was changed." });
       expect(result).not.toHaveProperty("recoveryBackupId");
     });
+  });
+});
+
+describe("a newer version handed to the agent", () => {
+  it("has its Compose files change the tag, with the data kept by the host's copies, holding the project meanwhile", async () => {
+    const changeTag = vi.fn(async () => ({ succeeded: true, outcome: "moved", output: null }));
+    const stacks = {
+      run: async () => ({ succeeded: true, outcome: "", output: null }),
+      membersOf: async () => ["paperless", "paperless-db"],
+      applySettings: async () => ({ written: false as const, reason: null }),
+      changeTag,
+    };
+    const { jobs, calls, dependencies } = jobsWith({ stacks });
+    const checkpoints = { take: vi.fn(), restore: vi.fn(), discard: vi.fn() };
+    dependencies.checkpoints = checkpoints as never;
+    dependencies.docker.inspect = async () =>
+      ({ Config: { Labels: { "com.docker.compose.project": "paperless" } } }) as never;
+
+    const result = await jobs.run({ ...job({}), action: "change_tag", tag: "2.1" } as never);
+
+    expect(result).toMatchObject({ succeeded: true, outcome: "moved" });
+    expect(changeTag).toHaveBeenCalledWith("paperless", "2.1", checkpoints, expect.anything());
+    expect(calls).toEqual(
+      expect.arrayContaining(["held paperless", "held paperless-db", "released paperless", "released paperless-db"]),
+    );
+  });
+
+  it("is refused by a delegated operator, and where the host keeps no copies", async () => {
+    const stacks = {
+      run: async () => ({ succeeded: true, outcome: "", output: null }),
+      membersOf: async () => [],
+      applySettings: async () => ({ written: false as const, reason: null }),
+      changeTag: vi.fn(),
+    };
+    const { jobs } = jobsWith({ stacks });
+    const asOperator = await jobs.run({ ...job({ operatorUserId: "u1" }), action: "change_tag", tag: "2.1" } as never);
+    expect(asOperator.succeeded).toBe(false);
+    const withoutCopies = await jobs.run({ ...job({}), action: "change_tag", tag: "2.1" } as never);
+    expect(withoutCopies).toMatchObject({ succeeded: false, outcome: JOB_OUTCOMES.checkpointUnavailable });
+    expect(stacks.changeTag).not.toHaveBeenCalled();
   });
 });

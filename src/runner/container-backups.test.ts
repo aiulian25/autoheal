@@ -21,6 +21,9 @@ const GIB = 1024 ** 3;
 const SHA = "a".repeat(64);
 const KEY = { recipient: "r".repeat(50), sealedKey: "s".repeat(50) };
 const RESTORE_ID = "20261001T000000Z";
+const HOST = "5d6e7f80-9a1b-4c2d-8e3f-4a5b6c7d8e9f";
+// This host's own folder within the backup folder, as a person browsing it sees it.
+const OWN = `_host_${HOST}`;
 
 interface FakeContainer {
   image?: string;
@@ -53,6 +56,8 @@ function setup(
   } = {},
 ) {
   const events: string[] = [];
+  // Everything the helper was asked: the command, its arguments, and what it was given on stdin.
+  const asked: { what: string; args: readonly string[]; input: unknown }[] = [];
   const helperMounts: unknown[] = [];
   const running = new Map(Object.entries(fleet).map(([name, one]) => [name, one.running !== false]));
   const policies = new Map(Object.keys(fleet).map((name) => [name, "always"]));
@@ -164,6 +169,7 @@ function setup(
         return fault ?? { exitCode: 0, stderr: "" };
       }
       const what = command[4] ?? "";
+      asked.push({ what, args: command.slice(5), input: given });
       if (what === COPY_COMMAND.reveal) {
         output.end(Buffer.from(JSON.stringify({ projects: [], files: [] })));
         return { exitCode: 0, stderr: "" };
@@ -195,7 +201,7 @@ function setup(
     reportProgress: async () => undefined,
     sleep: async () => undefined,
   } as unknown as ContainerBackupsDependencies);
-  return { backups, docker, events, helperMounts, running, policies, volumes, guard };
+  return { backups, docker, events, asked, helperMounts, running, policies, volumes, guard };
 }
 
 const job = (over: Partial<BackupJobDetails> = {}): BackupJobDetails => ({
@@ -205,6 +211,7 @@ const job = (over: Partial<BackupJobDetails> = {}): BackupJobDetails => ({
   include: [],
   key: KEY,
   restoreId: null,
+  hostId: HOST,
   ...over,
 });
 const backUp = (context: ReturnType<typeof setup>, over?: Partial<BackupJobDetails>) =>
@@ -243,6 +250,9 @@ const IDENTITY = "AGE-SECRET-KEY";
 const sealed = (one: BackupManifest): BackupManifest => ({ ...one, seal: manifestSeal(one, IDENTITY) });
 const unchecked = (one: BackupManifest) => ({ [COPY_COMMAND.read]: () => ({ manifest: one, key: "c2VhbGVk" }) });
 const readable = (one = manifest()) => ({ [COPY_COMMAND.read]: () => ({ manifest: sealed(one), key: "c2VhbGVk" }) });
+// What the helper was given for each time it was asked this.
+const inputsOf = (context: ReturnType<typeof setup>, what: string) =>
+  context.asked.filter((one) => one.what === what).map(({ input }) => input as Record<string, unknown>);
 
 describe("backing up", () => {
   it("stops it, copies, starts it again, and only then checks and keeps it", async () => {
@@ -348,6 +358,7 @@ describe("backing up", () => {
       kind: "preview",
       target: job().target,
       directory: job().directory,
+      hostId: HOST,
     });
     expect(preview?.mounts.map(({ source }) => source)).toEqual(["/srv/app"]);
   });
@@ -931,6 +942,7 @@ describe("restoring", () => {
         kind: "list",
         target: { container: "app", stack: null },
         directory: "/var/backups/autoheal",
+        hostId: HOST,
       });
       expect(answer.backups?.map(({ unsealed }) => unsealed).toSorted()).toEqual([false, true]);
     });
@@ -1297,6 +1309,19 @@ describe("restoring", () => {
       expect(context.policies.get("db")).toBe("always");
       expect(context.backups.isBlocked("db")).toBe(false);
       expect(context.volumes.size).toBe(0);
+    });
+
+    it("puts the old database back from the copy in this host's own folder", async () => {
+      const fault = ((line: string) =>
+        line.includes("psql -X -q")
+          ? { exitCode: 0, stderr: "ERROR:  syntax error at line 3" }
+          : { exitCode: 0, stderr: "" }) as unknown as Handler;
+      const context = setup({ db: DATABASE }, { answers: { ...readable(dumped), databaseFault: fault } });
+      await restore(context, { target });
+      const [safety] = inputsOf(context, COPY_COMMAND.finish) as { manifest: BackupManifest }[];
+      expect(inputsOf(context, COPY_COMMAND.restore).map(({ folder }) => folder)).toEqual([
+        `${OWN}/db/${safety!.manifest.id}`,
+      ]);
     });
 
     it("leaves it stopped if even the old database cannot be put back", async () => {
@@ -1767,6 +1792,59 @@ describe("a stack's Compose files", () => {
       expect(outcome).toContain(BACKUP_TEXT.restoredNotUp("web"));
       expect(made.context.backups.isBlocked("web")).toBe(true);
     });
+  });
+});
+
+describe("on a backup folder several hosts share", () => {
+  const UNFINISHED = new RegExp(`^${OWN}/app/\\${CONTAINER_BACKUP.unfinishedPrefix}\\d{8}T\\d{6}Z$`);
+  const onlyIn = (folder: string) => ({
+    [COPY_COMMAND.read]: (input: unknown) => {
+      if ((input as { folder: string }).folder !== folder) throw new Error("no such file");
+      return { manifest: sealed(manifest()), key: "c2VhbGVk" };
+    },
+  });
+
+  it("makes, checks and keeps a backup in this host's own folder, and lets go of old ones only there", async () => {
+    const context = setup({ app: APP });
+    expect((await backUp(context)).succeeded).toBe(true);
+    const [captured] = inputsOf(context, COPY_COMMAND.capture);
+    expect(captured!.folder).toMatch(UNFINISHED);
+    const stored = context.asked.filter(({ what }) => what === COPY_COMMAND.store).map(({ args }) => args[0]);
+    expect(stored).toEqual([captured!.folder]);
+    expect(inputsOf(context, COPY_COMMAND.verify)).toMatchObject([{ folder: captured!.folder }]);
+    expect(inputsOf(context, COPY_COMMAND.finish)).toMatchObject([
+      { parent: `${OWN}/app`, unfinished: captured!.folder },
+    ]);
+  });
+
+  it("lists this host's own folder and the one every host shared before, for it and for its stack", async () => {
+    const context = setup({ app: { ...APP, project: "pair" } });
+    await context.backups.answer({
+      id: "r",
+      kind: "list",
+      target: { container: "app", stack: null },
+      directory: "/var/backups/autoheal",
+      hostId: HOST,
+    });
+    expect(inputsOf(context, COPY_COMMAND.list)).toEqual([
+      { folders: [`${OWN}/app`, "app", `${OWN}/_stack_pair`, "_stack_pair"] },
+    ]);
+  });
+
+  it.each([
+    ["this host's own folder", `${OWN}/app/${RESTORE_ID}`],
+    ["the folder every host shared before", `app/${RESTORE_ID}`],
+  ])("restores a backup from %s, and keeps its safety copy in its own", async (_where, folder) => {
+    const context = setup({ app: APP }, { answers: onlyIn(folder) });
+    expect((await restore(context)).succeeded).toBe(true);
+    expect(inputsOf(context, COPY_COMMAND.restore)).toMatchObject([{ folder }]);
+    expect(inputsOf(context, COPY_COMMAND.finish)).toMatchObject([{ parent: `${OWN}/app`, protect: RESTORE_ID }]);
+  });
+
+  it("keeps to the folder it always used when an older dashboard names no host", async () => {
+    const context = setup({ app: APP });
+    expect((await backUp(context, { hostId: undefined })).succeeded).toBe(true);
+    expect(inputsOf(context, COPY_COMMAND.finish)).toMatchObject([{ parent: "app" }]);
   });
 });
 

@@ -58,7 +58,7 @@ import {
   type HostPackagesSetting,
   SELF_UPDATE,
 } from "../shared/constants.js";
-import { decodeJoinCode, type JoinDetails } from "../shared/join-code.js";
+import { decodeEnrolment, decodeJoinCode, type EnrolmentDetails, type JoinDetails } from "../shared/join-code.js";
 import {
   ConfigError,
   flag,
@@ -83,6 +83,9 @@ export interface RunnerConfig {
   hostLabel: string;
   selfContainerName: string;
   controlPlane: ControlPlaneSettings | null;
+  // A join code that works once, until it is traded for the token this runner makes: null once it is, and for a code
+  // that carries its token.
+  enrolment: EnrolmentDetails | null;
   // Where the join code came from, when it was the join volume: read again if the control plane's key changes.
   joinFile: string | null;
   // Null to use the dashboard's address, which the control plane sends.
@@ -117,7 +120,7 @@ const joinCode = () =>
     z
       .string()
       .transform((code, context) => {
-        const details = decodeJoinCode(code.trim());
+        const details = decodeJoinCode(code.trim()) ?? decodeEnrolment(code.trim());
         if (details === null) {
           context.addIssue({ code: "custom", message: CONFIG_MESSAGES.joinCode });
           return z.NEVER;
@@ -194,11 +197,21 @@ function hostnameLabel(hostRoot: string): string | null {
   return HOST_LABEL_PATTERN.test(label) ? label : null;
 }
 
+const isEnrolment = (code: JoinDetails | EnrolmentDetails | undefined): code is EnrolmentDetails =>
+  code !== undefined && "enrolment" in code;
+
+// A code that works once names no token: the runner trades it for one on first contact.
+const enrolmentOf = (fromEnvironment: JoinDetails | EnrolmentDetails | undefined, url: string | undefined) =>
+  isEnrolment(fromEnvironment) ? { ...fromEnvironment, url: url ?? fromEnvironment.url } : null;
+
 function controlPlaneOf(
-  fromEnvironment: JoinDetails | undefined,
+  fromEnvironment: JoinDetails | EnrolmentDetails | undefined,
   fromFile: JoinDetails | null,
   legacy: { url: string | undefined; token: string | undefined },
 ): ControlPlaneSettings | null {
+  if (isEnrolment(fromEnvironment)) {
+    return null;
+  }
   const joined = fromEnvironment ?? fromFile;
   if (joined !== null) {
     return { ...joined, url: legacy.url ?? joined.url };
@@ -216,9 +229,10 @@ export function loadRunnerConfig(environment: NodeJS.ProcessEnv, joinFile: strin
     url: values[ENV_CONTROL_PLANE_URL],
     token: values[ENV_RUNNER_TOKEN],
   });
+  const enrolment = enrolmentOf(values[ENV_JOIN_CODE], values[ENV_CONTROL_PLANE_URL]);
   const ollamaUrl = values[ENV_OLLAMA_URL];
   // On its own, a runner has nobody else to tell it where Ollama is.
-  if (controlPlane === null && ollamaUrl === undefined) {
+  if (controlPlane === null && enrolment === null && ollamaUrl === undefined) {
     throw new ConfigError([`${ENV_OLLAMA_URL}: ${CONFIG_MESSAGES.runnerNeedsOllama}`]);
   }
   const ollama =
@@ -231,6 +245,7 @@ export function loadRunnerConfig(environment: NodeJS.ProcessEnv, joinFile: strin
     hostLabel: values[ENV_HOST_LABEL] ?? hostnameLabel(hostRoot) ?? DEFAULT_HOST_LABEL,
     selfContainerName,
     controlPlane,
+    enrolment,
     joinFile: fromFile === null ? null : joinFile,
     publicBaseUrl: values[ENV_PUBLIC_BASE_URL] ?? null,
     ollama,

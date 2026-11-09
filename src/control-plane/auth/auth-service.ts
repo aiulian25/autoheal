@@ -31,6 +31,7 @@ export type LoginResult =
 export type PasswordChangeResult =
   | { kind: "changed"; token: string }
   | { kind: "session_ended" }
+  | { kind: "throttled"; retryAfterSeconds: number }
   | { kind: "wrong_password" }
   | { kind: "same_password" }
   | { kind: "policy"; problems: string[] };
@@ -117,7 +118,17 @@ export class AuthService {
   ): Promise<PasswordChangeResult> {
     const database = this.databaseHandle.database;
     const user = database.select().from(users).where(eq(users.id, session.user.id)).get();
-    if (user === undefined || !(await verifyPassword(user.passwordHash, change.currentPassword))) {
+    if (user === undefined) {
+      return { kind: "wrong_password" };
+    }
+    // Wrong guesses wait as at sign-in, and count with it: a borrowed session must not guess the password fast either.
+    const retryAfterSeconds = this.throttle.retryAfterSeconds(user.username, context.ip);
+    if (retryAfterSeconds > 0) {
+      return { kind: "throttled", retryAfterSeconds };
+    }
+    const passwordMatches = await verifyPassword(user.passwordHash, change.currentPassword);
+    this.throttle.record(user.username, context.ip, passwordMatches);
+    if (!passwordMatches) {
       return { kind: "wrong_password" };
     }
     if (change.newPassword === change.currentPassword) {

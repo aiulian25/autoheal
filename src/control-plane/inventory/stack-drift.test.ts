@@ -5,10 +5,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
-import { HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 import type { StackDrift, StackDriftReport, StackDriftView } from "../../shared/stacks.js";
 
@@ -39,7 +39,7 @@ describe("how a host's stacks differ from their files", () => {
       method,
       url,
       payload,
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
   async function report(stackDrift?: StackDriftReport) {
     const containers = [containerSnapshot({ name: "wiki-1", composeProject: "wiki" })];

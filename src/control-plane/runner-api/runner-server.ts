@@ -15,6 +15,7 @@ import type { HostRow } from "../hosts/hosts-service.js";
 import { registerErrorHandling } from "../http/errors.js";
 import { createServer, type TlsMaterial } from "../http/fastify.js";
 import type { ControlPlaneServices } from "../services.js";
+import { RUNNER_ROUTES } from "../../shared/protocol.js";
 import { registerRunnerRoutes } from "./runner-routes.js";
 
 declare module "fastify" {
@@ -50,7 +51,9 @@ export async function buildRunnerServer(tls: TlsMaterial | null, services: Contr
   app.decorateRequest("runnerHost", null);
   app.addHook("onRequest", async (request, reply) => {
     request.runnerHost = hostOf(request);
-    if (request.runnerHost === null) {
+    // A runner trading its join code has no token yet: the code it sends is what opens the door.
+    const joining = request.routeOptions.url === RUNNER_ROUTES.join;
+    if (request.runnerHost === null && !joining) {
       return reply.code(HTTP_STATUS.unauthorized).send({ error: API_ERRORS.unknownRunner });
     }
   });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { composeOf, type InstallSpec } from "../shared/install.js";
+import { INSTALLED_LINE, composeOf, type InstallSpec } from "../shared/install.js";
 import { INSTALL_EXIT, checkScript, downScript, parseComposeScript, writeScript } from "./install-script.js";
 
 const execute = promisify(execFile);
@@ -117,18 +117,38 @@ describe("the scripts an install runs on a host", () => {
 
   it("takes away its files and keeps data, or removes the lot, only when asked", async () => {
     await run(writeScript(spec));
-    const keep = downScript(spec.folder, false).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
+    const keep = downScript(spec.folder, spec.name, false).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
     expect(keep).not.toContain("down -v");
-    expect(downScript(spec.folder, true)).toContain("down -v");
+    expect(downScript(spec.folder, spec.name, true)).toContain("down -v");
     expect((await run(keep)).code).toBe(0);
     expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(false);
     expect(existsSync(join(spec.folder, ".env"))).toBe(false);
     expect(existsSync(join(spec.folder, "data"))).toBe(true);
     await run(writeScript(spec));
-    const all = downScript(spec.folder, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
+    const all = downScript(spec.folder, spec.name, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
     expect((await run(all)).code).toBe(0);
     expect(existsSync(spec.folder)).toBe(false);
     expect(existsSync(join(root, "media"))).toBe(true);
+  });
+
+  it("is taken away as any container its file names, its database too, and as no other", async () => {
+    await run(writeScript({ ...spec, database: { image: "postgres:16" } }));
+    const down = (name: string) =>
+      run(downScript(spec.folder, name, false).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true"));
+    expect((await down("Other")).code).toBe(INSTALL_EXIT.notItsFolder);
+    expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(true);
+    expect(existsSync(join(spec.folder, ".env"))).toBe(true);
+    expect((await down("App-DB")).code).toBe(0);
+    expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(false);
+  });
+
+  it("removes nothing, data included, when Compose cannot take the app down", async () => {
+    await run(writeScript(spec));
+    const failing = downScript(spec.folder, spec.name, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=false");
+    expect((await run(failing)).code).toBe(INSTALL_EXIT.notTakenDown);
+    expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(true);
+    expect(existsSync(join(spec.folder, ".env"))).toBe(true);
+    expect(existsSync(join(spec.folder, "data"))).toBe(true);
   });
 });
 
@@ -137,11 +157,47 @@ describe("taking away what Autoheal did not install", () => {
     const folder = mkdtempSync(join(tmpdir(), "autoheal-not-ours-"));
     writeFileSync(join(folder, "docker-compose.yml"), "services:\n  app:\n    image: example/app:1\n");
     writeFileSync(join(folder, ".env"), "SECRET=kept\n");
-    const script = downScript(folder, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
+    const script = downScript(folder, "app", true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
     expect((await run(script)).code).toBe(INSTALL_EXIT.notOurs);
     expect(existsSync(join(folder, "docker-compose.yml"))).toBe(true);
     expect(existsSync(join(folder, ".env"))).toBe(true);
     rmSync(folder, { recursive: true, force: true });
+  });
+});
+
+describe("taking an app away from a folder only when its Compose file names the container", () => {
+  let folder: string;
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "autoheal-named-"));
+  });
+  afterEach(() => rmSync(folder, { recursive: true, force: true }));
+
+  // A file Autoheal wrote, naming one container in the line given, then taken down as the container named.
+  const takeDown = (name: string, line: string) => {
+    writeFileSync(
+      join(folder, "docker-compose.yml"),
+      `services:\n  app:\n${line}\n    labels:\n      ${INSTALLED_LINE}\n`,
+    );
+    return run(downScript(folder, name, false).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true"));
+  };
+
+  it.each([
+    ["as Autoheal writes it", '    container_name: "App"'],
+    ["indented otherwise and unquoted", "  container_name: App"],
+    ["in single quotes, with trailing spaces and a Windows line ending", "    container_name: 'App'  \r"],
+  ])("takes App away from a file naming it %s", async (_how, line) => {
+    expect((await takeDown("App", line)).code).toBe(0);
+    expect(existsSync(join(folder, "docker-compose.yml"))).toBe(false);
+  });
+
+  it.each([
+    ["naming another container", "App", '    container_name: "Other"'],
+    ["naming one whose name only begins the same", "App", '    container_name: "App-DB"'],
+    ["naming it in a comment only", "App", '    # container_name: "App"'],
+    ["naming one its name matches only as a pattern would", "my.app", '    container_name: "myXapp"'],
+  ])("leaves a file alone %s", async (_how, name, line) => {
+    expect((await takeDown(name, line)).code).toBe(INSTALL_EXIT.notItsFolder);
+    expect(existsSync(join(folder, "docker-compose.yml"))).toBe(true);
   });
 });
 

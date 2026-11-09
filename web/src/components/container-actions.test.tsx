@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ContainerView, SessionView } from "../../../src/shared/api.js";
 import { API_ROUTES, apiPath } from "../../../src/shared/api.js";
@@ -26,6 +26,7 @@ const container: ContainerView = {
   composeService: "db",
   link: null,
   version: null,
+  source: null,
   ports: null,
   hostNetwork: false,
   update: { status: "available", checkedAt: 1, policy: "ask", remote: null, reason: null },
@@ -116,26 +117,26 @@ it("preserves administrator controls without requesting delegated grants", async
 });
 it("asks once before a stop where this browser is set to, and sends it only on yes", async () => {
   const actionPath = apiPath(API_ROUTES.containerActions, { hostId: HOST, containerName: container.name });
-  const answers = [false, true];
-  const confirm = vi.fn<(question: string) => boolean>(() => answers.shift() ?? false);
-  vi.stubGlobal("confirm", confirm);
+  const answer = (said: string) =>
+    fireEvent.click(within(screen.getByRole("group", { name: "Stop database?" })).getByRole("button", { name: said }));
   window.localStorage.setItem(ASK_FIRST_STORAGE_KEY, ASK_FIRST_ON);
   try {
     const state = show({ revision: 0, grants: [] }, true);
     const asked = (action: string) => expect.objectContaining({ method: "POST", body: JSON.stringify({ action }) });
 
     fireEvent.click(screen.getByRole("button", { name: TEXT.actions.names.stop }));
-    expect(confirm).toHaveBeenLastCalledWith("Stop database?");
+    answer(TEXT.no);
     expect(state.fetch).not.toHaveBeenCalledWith(actionPath, asked("stop"));
     fireEvent.click(screen.getByRole("button", { name: TEXT.actions.names.stop }));
+    answer(TEXT.yes);
     await waitFor(() => expect(state.fetch).toHaveBeenCalledWith(actionPath, asked("stop")));
 
     // A restart never asks.
     const restart = screen.getByRole("button", { name: TEXT.actions.names.restart }) as HTMLButtonElement;
     await waitFor(() => expect(restart.disabled).toBe(false));
     fireEvent.click(restart);
+    expect(screen.queryByRole("group", { name: /^Restart/ })).toBeNull();
     await waitFor(() => expect(state.fetch).toHaveBeenCalledWith(actionPath, asked("restart")));
-    expect(confirm).toHaveBeenCalledTimes(2);
     // The no sent nothing, then or later: the stop and the restart are all it asked.
     expect(state.fetch.mock.calls.filter(([path]) => path === actionPath)).toHaveLength(2);
   } finally {

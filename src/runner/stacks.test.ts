@@ -8,11 +8,12 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STACK_OUTCOMES } from "../shared/constants.js";
 import type { StackAnswer } from "../shared/stacks.js";
 import type { ContainerSummary } from "./docker-client.js";
@@ -56,6 +57,8 @@ function stacksWith(
     keptVersions?: string[];
     // Where each path really is on the host; null where it cannot be told. Others are as written.
     canonical?: Record<string, string | null>;
+    // Files that, once every link is followed, lie outside the stack's folder.
+    outside?: string[];
     // What is there once Compose has run, and how each of those looks when inspected; else as before it.
     membersAfterUp?: ContainerSummary[];
     membersBefore?: ContainerSummary[];
@@ -80,6 +83,7 @@ function stacksWith(
       const output = paths.flatMap((path, index) => {
         const text = files[path] ?? null;
         const kept = overrides.keptVersions?.includes(path) ? [`${mark} ${index} previous`] : [];
+        if (overrides.outside?.includes(path)) return [`${mark} ${index} file`, `${mark} ${index} outside`, ...kept];
         return [`${mark} ${index} file`, text === null ? `${mark} ${index} absent` : encoded(text), ...kept];
       });
       return { exitCode: 0, output: output.join("\n") };
@@ -260,7 +264,6 @@ describe("a stack's files", () => {
 
   it.each([
     ["only watches", { dryRun: true }, "only watches"],
-    ["keeps changes off", { hostDeploy: false }, "off in this host's .env"],
     ["keeps a container to itself", { protectedContainers: new Set(["Wiki"]) }, "read only here"],
     ["is the runner's own", { selfContainerName: "Wiki" }, "read only here"],
   ])("changes nothing on a host that %s, though it can still be read", async (_case, settings, refusal) => {
@@ -272,6 +275,113 @@ describe("a stack's files", () => {
     expect((await stacks.run("stack_up", { project: "wiki", removeData: false })).outcome).toContain(refusal);
     expect((await ask({ kind: "restore" })).error).toContain(refusal);
     expect(scripts.some((script) => /mv |up -d|cp -p/.test(script))).toBe(false);
+  });
+
+  it("neither opens nor changes a stack's files on a host that keeps changes off, though it still shows its logs", async () => {
+    const { ask, stacks, scripts } = stacksWith({ settings: { hostDeploy: false } });
+
+    expect((await ask({ kind: "read" })).error).toBe(STACK_OUTCOMES.filesOff);
+    expect((await ask({ kind: "check", files: [] })).error).toBe(STACK_OUTCOMES.filesOff);
+    const changesOff = STACK_OUTCOMES.deployOff;
+    expect((await ask({ kind: "save", files: [{ path: COMPOSE, text: "x", hash: null }] })).error).toBe(changesOff);
+    expect((await stacks.run("stack_up", { project: "wiki", removeData: false })).outcome).toContain(changesOff);
+    expect((await ask({ kind: "restore" })).error).toBe(changesOff);
+    expect(scripts).toEqual([]);
+
+    expect((await ask({ kind: "logs" })).error).toBeNull();
+  });
+
+  it("asks Compose nothing about a stack whose Compose file lies outside its folder", async () => {
+    const { ask, scripts } = stacksWith({ outside: [COMPOSE] });
+
+    const checked = await ask({ kind: "check", files: [] });
+
+    expect(checked.check?.problem).toBe(STACK_OUTCOMES.outsideFolder(COMPOSE, FOLDER));
+    expect(scripts.some((script) => script.includes("config"))).toBe(false);
+  });
+});
+
+describe("a stack's files, opened only inside its folder", () => {
+  const SECRET = "root:not-a-compose-file\n";
+  let root: string;
+  let folder: string;
+  let elsewhere: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "autoheal-stack-inside-"));
+    folder = join(root, "wiki");
+    elsewhere = join(root, "elsewhere", "secret.yml");
+    mkdirSync(folder);
+    mkdirSync(join(root, "elsewhere"));
+    writeFileSync(join(folder, "docker-compose.yml"), FILE_TEXT);
+    writeFileSync(join(folder, ".env"), ENV_TEXT);
+    writeFileSync(elsewhere, SECRET);
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // Labels as anything may write them, then the real read script run by a real shell over real files.
+  const readWith = (workingFolder: string, composeFile: string) => {
+    const labelled = member("Wiki", "wiki", HASH_A);
+    labelled.Labels = {
+      ...labelled.Labels,
+      "com.docker.compose.project.working_dir": workingFolder,
+      "com.docker.compose.project.config_files": composeFile,
+    };
+    const stacks = new Stacks({
+      docker: {
+        containerSummaries: async () => [labelled],
+        networks: async () => [],
+        inspectImage: async () => null,
+        inspect: async () => null,
+      },
+      hostScript: async (script: string) => {
+        const ran = spawnSync("sh", ["-c", script], { encoding: "utf8" });
+        return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}` };
+      },
+      imageExists: async () => true,
+      settings: {
+        containerAccess: true,
+        hostDeploy: true,
+        dryRun: false,
+        protectedContainers: new Set<string>(),
+        selfContainerName: "autoheal",
+      },
+      wait: async () => undefined,
+      clock: () => 0,
+    });
+    return stacks.answer({ id: "r1", project: "wiki", kind: "read" });
+  };
+
+  it("refuses a Compose file outside its folder, whatever its labels say, and shows none of it", async () => {
+    expect(await readWith(folder, elsewhere)).toEqual({ error: STACK_OUTCOMES.outsideFolder(elsewhere, folder) });
+  });
+
+  it("refuses a Compose file inside its folder that is a link to one outside it", async () => {
+    const linked = join(folder, "docker-compose.override.yml");
+    symlinkSync(elsewhere, linked);
+    expect(await readWith(folder, linked)).toEqual({ error: STACK_OUTCOMES.outsideFolder(linked, folder) });
+  });
+
+  it("leaves out its settings files that are links to files outside its folder, and shows none of them", async () => {
+    rmSync(join(folder, ".env"));
+    symlinkSync(elsewhere, join(folder, ".env"));
+    symlinkSync(elsewhere, join(folder, "app.env"));
+    const listing = "services:\n  wiki:\n    image: wiki:2\n    env_file:\n      - .env\n      - app.env\n";
+    writeFileSync(join(folder, "docker-compose.yml"), listing);
+    const answer = await readWith(folder, join(folder, "docker-compose.yml"));
+    expect(answer.error).toBeNull();
+    expect(answer.files?.files.map(({ path }) => path)).toEqual([join(folder, "docker-compose.yml")]);
+    expect(JSON.stringify(answer)).not.toContain("not-a-compose-file");
+  });
+
+  it("opens a stack whose folder is reached through a link, as Compose may have been given it", async () => {
+    const throughLink = join(root, "stacks");
+    symlinkSync(folder, throughLink);
+    const answer = await readWith(throughLink, join(throughLink, "docker-compose.yml"));
+    expect(answer.error).toBeNull();
+    expect(answer.files?.files.map(({ kind, text }) => [kind, text])).toEqual([
+      ["compose", FILE_TEXT],
+      ["env", ENV_TEXT],
+    ]);
   });
 });
 
@@ -297,9 +407,16 @@ describe("a stack as one thing", () => {
         saved = await running.ask({ kind: "save", files: [{ path: COMPOSE, text: "services: {}\n", hash }] });
       });
 
-      const ran = await host.stacks.run("stack_up", { project: "wiki", removeData: false });
+      const phases: string[] = [];
+      const ran = await host.stacks.run(
+        "stack_up",
+        { project: "wiki", removeData: false },
+        { enter: (phase) => void phases.push(phase) },
+      );
 
       expect(ran.succeeded).toBe(true);
+      // One line under its row says each step, as an update's does.
+      expect(phases).toEqual(["recreating", "checking"]);
       expect(saved!.error).toBe(STACK_OUTCOMES.beingChanged("wiki"));
       // Nothing of that save reached the files Compose was reading.
       expect(host.scripts.some((script) => /mv |cp -p/.test(script))).toBe(false);
@@ -1350,5 +1467,142 @@ exec /usr/bin/mv "$@"
     expect(ran.succeeded).toBe(true);
     expect(host.contents()).toEqual(OLD);
     expect(host.leftovers()).toEqual([]);
+  });
+});
+
+describe("a newer version handed to the agent, its tag changed in its files", () => {
+  const TAGGED = "services:\n  wiki:\n    image: wiki:2.0 # pinned\n    env_file: .env\n";
+  const imageIn = (text: string) => /image: (\S+)/.exec(text)?.[1] ?? "";
+
+  // The real scripts on real files, under a test's own folder; only Compose and Docker are faked.
+  function tagHost({ holdsOnNew = true, keeps = true, text = TAGGED } = {}) {
+    const root = mkdtempSync(join(tmpdir(), "autoheal-retag-"));
+    const folder = join(root, "wiki");
+    mkdirSync(folder);
+    const composeFile = join(folder, "docker-compose.yml");
+    writeFileSync(composeFile, text);
+    writeFileSync(join(folder, ".env"), ENV_TEXT);
+    const commands: string[] = [];
+    const onDiskImage = () => imageIn(readFileSync(composeFile, "utf8"));
+    const resolved = (script: string) => {
+      const edited = /printf %s '([^']+)' \| base64 -d > "\$work\/0"/.exec(script)?.[1];
+      const read = edited === undefined ? readFileSync(composeFile, "utf8") : Buffer.from(edited, "base64").toString();
+      return { services: { wiki: { image: imageIn(read), env_file: [{ path: ".env" }] } } };
+    };
+    const hostScript = vi.fn(async (script: string) => {
+      const marker = /echo "(AUTOHEAL-[0-9a-f-]+)"/.exec(script)?.[1] ?? "";
+      if (script.includes("config --hash")) {
+        return { exitCode: 0, output: `wiki ${HASH_A}\n${marker}\n${encoded(JSON.stringify(resolved(script)))}` };
+      }
+      if (script.includes("config --format json")) {
+        return { exitCode: 0, output: `${marker}\n${encoded(JSON.stringify(resolved(script)))}` };
+      }
+      if (script.includes("docker compose version")) {
+        const command = / (stop|up -d --no-deps|up --no-start --no-deps) (.*) 2>&1/.exec(script);
+        if (command !== null) commands.push(`${command[1]} ${command[2]}`);
+        return { exitCode: 0, output: "" };
+      }
+      const ran = spawnSync("sh", ["-c", script.replaceAll(FOLDER, folder)], { encoding: "utf8" });
+      return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}`.replaceAll(folder, FOLDER) };
+    });
+    // Running on what it was, or on the new version when that holds; else the new version exits at once.
+    const details = () => {
+      const failing = !holdsOnNew && onDiskImage() === "wiki:2.1";
+      return {
+        Id: "Wiki",
+        Name: "/Wiki",
+        Config: { Labels: member("Wiki", "wiki", HASH_A).Labels, Image: onDiskImage() },
+        Mounts: [],
+        State: failing
+          ? { Running: false, Status: "exited", ExitCode: 1, FinishedAt: "2026-11-07T10:00:00Z" }
+          : { Running: true, Status: "running" },
+        RestartCount: 0,
+      } as never;
+    };
+    const keeper = {
+      take: vi.fn(async () => {
+        // Copied while the old version is still what the files say.
+        expect(onDiskImage()).toBe("wiki:2.0");
+        return { containerId: "Wiki", mounts: [], complete: keeps, outcome: keeps ? "" : " The copy failed." };
+      }),
+      restore: vi.fn(async () => ({ at: 1, problem: null })),
+      discard: vi.fn(async () => undefined),
+    };
+    const stacks = new Stacks({
+      docker: {
+        containerSummaries: async () => [member("Wiki", "wiki", HASH_A)],
+        networks: async () => [],
+        inspectImage: async () => null,
+        inspect: async () => details(),
+      },
+      hostScript,
+      imageExists: async () => true,
+      settings: {
+        containerAccess: true,
+        hostDeploy: true,
+        dryRun: false,
+        protectedContainers: new Set<string>(),
+        selfContainerName: "autoheal",
+      },
+      wait: async () => undefined,
+      clock: (() => {
+        let now = 0;
+        return () => (now += 60_000);
+      })(),
+    });
+    return { stacks, keeper, commands, composeText: () => readFileSync(composeFile, "utf8") };
+  }
+
+  it("changes only the tag, copies the data aside first, recreates it, and drops the copy once it holds", async () => {
+    const host = tagHost();
+    const phases: string[] = [];
+
+    const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper, { enter: (phase) => void phases.push(phase) });
+
+    expect(ran).toEqual({
+      succeeded: true,
+      outcome: STACK_OUTCOMES.tagChanged(["Wiki"], "2.1", STACK_OUTCOMES.tagLine("docker-compose.yml")),
+      output: null,
+    });
+    expect(host.composeText()).toBe(TAGGED.replace("wiki:2.0", "wiki:2.1"));
+    expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'"]);
+    expect(host.keeper.take).toHaveBeenCalledTimes(1);
+    expect(host.keeper.discard).toHaveBeenCalledWith("Wiki");
+    expect(phases).toEqual(["stopping", "keeping_data", "recreating", "checking"]);
+  });
+
+  it("puts the data, the file and the old container back when the new version does not come back well", async () => {
+    const host = tagHost({ holdsOnNew: false });
+
+    const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+    expect(ran.succeeded).toBe(false);
+    expect(ran.outcome).toContain("were put back on 2.0");
+    expect(host.composeText()).toBe(TAGGED);
+    expect(host.keeper.restore).toHaveBeenCalledWith("Wiki", expect.objectContaining({ Id: "Wiki" }));
+    expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'", "stop 'wiki'", "up -d --no-deps 'wiki'"]);
+  });
+
+  it("changes nothing when its data could not be copied aside, and starts it again", async () => {
+    const host = tagHost({ keeps: false });
+
+    const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+    expect(ran).toMatchObject({ succeeded: false, outcome: STACK_OUTCOMES.tagNoCopy(" The copy failed.") });
+    expect(host.composeText()).toBe(TAGGED);
+    expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'"]);
+  });
+
+  it("stops nothing and writes nothing for a container whose files hold no tag it can change", async () => {
+    const built = "services:\n  wiki:\n    build: .\n";
+    const host = tagHost({ text: built });
+
+    const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+    expect(ran.succeeded).toBe(false);
+    expect(ran.outcome).toContain("has no image line");
+    expect(host.composeText()).toBe(built);
+    expect(host.commands).toEqual([]);
+    expect(host.keeper.take).not.toHaveBeenCalled();
   });
 });

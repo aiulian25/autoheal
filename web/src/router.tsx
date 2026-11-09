@@ -1,34 +1,40 @@
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ComponentType, type ReactNode } from "react";
 import { Navigate, Outlet, createBrowserRouter, type RouteObject } from "react-router";
 import { ErrorNotice, Loading } from "./components/common.js";
 import { Layout } from "./components/layout.js";
 import { RouteError } from "./components/route-error.js";
 import { PATHS } from "./constants.js";
-import { ChangePasswordPage, LoginPage, SecondFactorPage, TotpSetupPage } from "./pages/auth-pages.js";
-import {
-  AuditLogPage,
-  NotFoundPage,
-  PromptPage,
-  ReplayDetailPage,
-  ReplaysPage,
-  RunbookDetailPage,
-  RunbooksPage,
-  UsersPage,
-} from "./pages/management-pages.js";
-import { ContainersPage } from "./pages/inventory-pages.js";
-import { HostPage } from "./pages/host-page.js";
-import { SettingsPage } from "./pages/settings-page.js";
-import { FleetPage } from "./pages/fleet-page.js";
-import { IncidentDetailPage } from "./pages/incident-page.js";
-import { IncidentsPage } from "./pages/operations-pages.js";
-import { AccountPage } from "./pages/account-page.js";
-import { BackupsPage } from "./pages/backups-page.js";
-import { AttentionPage } from "./pages/attention-page.js";
-import { BoardPage } from "./pages/board-page.js";
-import { HomeAssistantPage } from "./pages/home-assistant-page.js";
-import { NetworkPage } from "./pages/network-page.js";
-import { TasksPage } from "./pages/tasks-page.js";
+import { NotFoundPage } from "./pages/not-found-page.js";
 import { isAdmin, requiredStep, useSession, useSignedInSession } from "./session.js";
+
+// Each page's code arrives the first time it is opened, not with the dashboard itself.
+const pageFrom = <Name extends string>(load: () => Promise<Record<Name, ComponentType>>, name: Name) =>
+  lazy(async () => ({ default: (await load())[name] }));
+
+const LoginPage = pageFrom(() => import("./pages/auth-pages.js"), "LoginPage");
+const SecondFactorPage = pageFrom(() => import("./pages/auth-pages.js"), "SecondFactorPage");
+const ChangePasswordPage = pageFrom(() => import("./pages/auth-pages.js"), "ChangePasswordPage");
+const TotpSetupPage = pageFrom(() => import("./pages/auth-pages.js"), "TotpSetupPage");
+const AttentionPage = pageFrom(() => import("./pages/attention-page.js"), "AttentionPage");
+const BoardPage = pageFrom(() => import("./pages/board-page.js"), "BoardPage");
+const TasksPage = pageFrom(() => import("./pages/tasks-page.js"), "TasksPage");
+const IncidentsPage = pageFrom(() => import("./pages/operations-pages.js"), "IncidentsPage");
+const IncidentDetailPage = pageFrom(() => import("./pages/incident-page.js"), "IncidentDetailPage");
+const FleetPage = pageFrom(() => import("./pages/fleet-page.js"), "FleetPage");
+const HostPage = pageFrom(() => import("./pages/host-page.js"), "HostPage");
+const ContainersPage = pageFrom(() => import("./pages/inventory-pages.js"), "ContainersPage");
+const HomeAssistantPage = pageFrom(() => import("./pages/home-assistant-page.js"), "HomeAssistantPage");
+const NetworkPage = pageFrom(() => import("./pages/network-page.js"), "NetworkPage");
+const RunbooksPage = pageFrom(() => import("./pages/runbooks-page.js"), "RunbooksPage");
+const RunbookDetailPage = pageFrom(() => import("./pages/runbooks-page.js"), "RunbookDetailPage");
+const ReplaysPage = pageFrom(() => import("./pages/replays-page.js"), "ReplaysPage");
+const ReplayDetailPage = pageFrom(() => import("./pages/replays-page.js"), "ReplayDetailPage");
+const UsersPage = pageFrom(() => import("./pages/users-page.js"), "UsersPage");
+const BackupsPage = pageFrom(() => import("./pages/backups-page.js"), "BackupsPage");
+const AuditLogPage = pageFrom(() => import("./pages/audit-page.js"), "AuditLogPage");
+const AccountPage = pageFrom(() => import("./pages/account-page.js"), "AccountPage");
+const SettingsPage = pageFrom(() => import("./pages/settings-page.js"), "SettingsPage");
+const PromptPage = pageFrom(() => import("./pages/prompt-page.js"), "PromptPage");
 
 function SessionBoundary() {
   const session = useSession();
@@ -38,7 +44,11 @@ function SessionBoundary() {
   if (session.error) {
     return <ErrorNotice error={session.error} />;
   }
-  return <Outlet />;
+  return (
+    <Suspense fallback={<Loading />}>
+      <Outlet />
+    </Suspense>
+  );
 }
 
 /** One of the sign-in steps: shown only when it is the step this session needs next. */

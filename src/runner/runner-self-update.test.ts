@@ -53,7 +53,7 @@ function engine() {
 
 describe("a sidecar runner moving to its control plane's release", () => {
   let world: ReturnType<typeof engine>;
-  const own = { reference: "runner-id", socketGroup: 998 };
+  const own = { reference: "runner-id", socketPath: "/var/run/docker.sock", socketGroup: 998 };
   beforeEach(() => {
     world = engine();
   });

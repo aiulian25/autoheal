@@ -133,6 +133,29 @@ describe("readHostHealth", () => {
     expect(health.driveTemperatures).toEqual([{ device: "sda", celsius: 45 }]);
   });
 
+  it("says whether a time service keeps the host's clock from the units systemd runs, and nothing without that list", async () => {
+    const ntpActive = async () =>
+      (await readHostHealth({ hostRoot, filesystems: ["/"], procRoot, packages: "off" })).ntpActive;
+    // No systemd, or one too old to list what it runs.
+    expect(await ntpActive()).toBeNull();
+    const units = join(hostRoot, "run/systemd/units");
+    write(hostRoot, "run/systemd/units/log-extra-fields:cron.service", "");
+    expect(await ntpActive()).toBeNull();
+    // Running, as systemd lists them: each points at its invocation's id. timedated answers timedatectl, and keeps no time.
+    for (const unit of ["cron", "systemd-timedated"]) {
+      symlinkSync("0b4f7a1c5e6d4f3a8b9c0d1e2f3a4b5c", join(units, `invocation:${unit}.service`));
+    }
+    expect(await ntpActive()).toBe(false);
+    for (const unit of ["systemd-timesyncd", "chrony", "chronyd", "ntp", "ntpd", "ntpsec", "openntpd"]) {
+      const entry = join(units, `invocation:${unit}.service`);
+      symlinkSync("8c2f3c1e5b7a4d369e0f1a2b3c4d5e6f", entry);
+      expect(await ntpActive(), unit).toBe(true);
+      rmSync(entry);
+    }
+    // Stopped, it is gone from the list.
+    expect(await ntpActive()).toBe(false);
+  });
+
   it("finds every local disk when none is listed, but one mounted after the runner started", async () => {
     write(hostRoot, "proc/1/mounts", "/dev/sda2 / ext4 rw 0 0\n/dev/sdb1 /mnt/later ext4 rw 0 0\n");
     mkdirSync(join(hostRoot, "mnt/later"), { recursive: true });

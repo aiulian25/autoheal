@@ -19,6 +19,7 @@ import {
   REPORT_LIMITS,
   WHOLE_HOST_ACTIONS,
   isHostPackageAction,
+  type JobAction,
 } from "../../shared/constants.js";
 import { packageNameSchema } from "../../shared/protocol.js";
 import type { HostPackagesService } from "../host-packages/host-packages-service.js";
@@ -35,11 +36,18 @@ const containerParameters = hostParameters.extend({
 const stackParameters = hostParameters.extend({
   stack: z.string().max(REPORT_LIMITS.nameCharacters).regex(COMPOSE_PROJECT_PATTERN),
 });
+// What carries details of its own is asked for elsewhere, with them: an edit with its settings, a backup or a restore
+// with what it covers, a tag change only by handing a newer version to the agent.
+const CARRIES_DETAILS: ReadonlySet<JobAction> = new Set([
+  JOB_ACTION.edit,
+  JOB_ACTION.backupContainer,
+  JOB_ACTION.restoreContainer,
+  JOB_ACTION.changeTag,
+]);
 const containerActionBody = z.object({
-  // An edit carries its settings: it has its own route.
   action: z.enum(
     JOB_ACTIONS.filter(
-      (action) => !WHOLE_HOST_ACTIONS.has(action) && !isHostPackageAction(action) && action !== JOB_ACTION.edit,
+      (action) => !WHOLE_HOST_ACTIONS.has(action) && !isHostPackageAction(action) && !CARRIES_DETAILS.has(action),
     ),
   ),
   taskId: z.uuid().optional(),

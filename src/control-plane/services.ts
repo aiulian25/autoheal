@@ -96,6 +96,7 @@ import { IncidentReconciler } from "./incidents/incident-reconciler.js";
 import { RepairWorker } from "./incidents/repair-worker.js";
 import { DispatchService } from "./agent/dispatch-service.js";
 import { FailureReporter } from "./agent/failure-reporter.js";
+import { BoardChanges } from "./live/board-changes.js";
 import { LiveEvents } from "./live/live-events.js";
 import { IncidentsService } from "./incidents/incidents-service.js";
 import { InventoryService } from "./inventory/inventory-service.js";
@@ -201,6 +202,9 @@ export interface ControlPlaneServices {
   backupPassphraseNotice: BackupPassphraseNotice;
   // What every heartbeat answer tells runners: read at each answer, so a change in Settings reaches them.
   runnerSettings: (hostId: string) => HeartbeatResponse;
+  // The runner API shows a new key, its certificate renewed with one: join codes from now on, and the runners in this
+  // process, which read it once the old one stops matching, name it.
+  keyChanged: (pin: string) => void;
   // The Ollama Autoheal asks: the .env's, unless Settings chose another.
   ollamaSettings: OllamaSettingsService;
   incidentsService: IncidentsService;
@@ -238,6 +242,8 @@ export interface ControlPlaneServices {
   failureReporter: FailureReporter;
   // What changes, pushed to the dashboards open now.
   live: LiveEvents;
+  // Looks each second whether the board's tasks or incidents changed, and tells the dashboards open.
+  boardChanges: BoardChanges;
   // Work a person hands to the Ollama agent on Attention.
   dispatchService: DispatchService;
   widgetKeysService: WidgetKeysService;
@@ -335,9 +341,11 @@ export function createControlPlaneServices(
       (hostId) => hostsService.localHost(JOIN_DIRECTORY).hostId === hostId,
     ),
   );
+  // Where the runners in this process reach the runner API, and the key it shows them, which `keyChanged` replaces.
+  const runnerApi = { url: runners.apiUrl ?? EMBEDDED_RUNNER_URL, pin: runners.pin };
   const embeddedRunners = new EmbeddedRunners({
     hosts: sshHostsService,
-    controlPlane: { url: runners.apiUrl ?? EMBEDDED_RUNNER_URL, pin: runners.pin },
+    controlPlane: runnerApi,
     autohealImage: runners.image,
   });
   const trustedProxies = tracked(new TrustedProxiesService(settingsStore, auditLog, trustedProxyAddresses));
@@ -369,17 +377,35 @@ export function createControlPlaneServices(
   // The dashboard's host, in each authenticator entry's name, and its logo beside the entry.
   const accountHost = new URL(publicBaseUrl).host;
   const authenticatorImage = joinUrl(publicBaseUrl, BRAND_ASSETS.logo);
+  // What join codes carry, the key among it, which `keyChanged` replaces.
+  const joinSettings = { ...runners, publicBaseUrl };
   const hostsService = tracked(
-    new HostsService(databaseHandle, auditLog, settingsStore, { ...runners, publicBaseUrl }, clock, (hostId) => {
+    new HostsService(databaseHandle, auditLog, settingsStore, joinSettings, clock, (hostId) => {
       metricsStore.remove(hostId);
       void embeddedRunners.close(hostId);
       localHostRunner.tick();
+      // Nothing more passes between it and the dashboard: its shells end, what waits on its runner is refused, and a
+      // poll it has open goes back empty.
+      services.terminals.endForHost(hostId);
+      for (const relayed of [
+        services.files,
+        services.containerSettings,
+        services.hostProfiles,
+        services.volumeLooks,
+        services.stackFiles,
+        services.containerBackups,
+        services.installs,
+        topology,
+      ]) {
+        relayed.resetHost(hostId);
+      }
+      waitingRunners.wake(hostId);
     }),
   );
   const localHostService = tracked(new LocalHostService(databaseHandle, auditLog, secretBox, hostsService, clock));
   const localHostRunner = new LocalHostRunner({
     hosts: localHostService,
-    controlPlane: { url: runners.apiUrl ?? EMBEDDED_RUNNER_URL, pin: runners.pin },
+    controlPlane: runnerApi,
     environment: environment ?? null,
   });
   // ponytail: signatures read without registry credentials, as Autoheal's own image is public; pass the local host's
@@ -392,6 +418,7 @@ export function createControlPlaneServices(
   const selfUpdate = tracked(
     new SelfUpdateService({
       docker: localHostRunner.inPlace() ? new DockerClient(localHostRunner.socketPath) : null,
+      socketPath: localHostRunner.socketPath,
       reference: runners.image,
       outcomes: new SelfUpdateOutcomeFile(backups.dataDirectory),
       auditLog,
@@ -658,6 +685,7 @@ export function createControlPlaneServices(
       inventory: inventoryService,
       assessor: tracked(new UpdateAssessor(ollamaPool)),
       notifier,
+      clock,
     }),
   );
   const logged = (error: unknown) => log(describeError(error));
@@ -668,8 +696,7 @@ export function createControlPlaneServices(
       {
         incidents: incidentsService,
         runbooks: runbooksService,
-        queue: decisionQueue,
-        ollama: ollamaClient,
+        models: ollamaPool,
       },
       clock,
     ),
@@ -700,7 +727,9 @@ export function createControlPlaneServices(
     containerAccess,
     terminals: tracked(new TerminalService(containerAccess, auditLog, waitingRunners, sessions, clock)),
     files: tracked(new FileService(containerAccess, auditLog, waitingRunners)),
-    containerSettings: tracked(new SettingsService(containerAccess, jobsService, auditLog, waitingRunners, clock)),
+    containerSettings: tracked(
+      new SettingsService(containerAccess, jobsService, auditLog, waitingRunners, databaseHandle, secretBox),
+    ),
     hostProfiles: tracked(new HostProfileService(containerAccess, waitingRunners)),
     volumeLooks: tracked(new VolumeLookService(containerAccess, waitingRunners)),
     stackFiles: tracked(new StackService(containerAccess, waitingRunners, auditLog)),
@@ -720,7 +749,7 @@ export function createControlPlaneServices(
     ),
     waitingRunners,
     passkeys: tracked(new PasskeyService(databaseHandle, auditLog, sessions, publicBaseUrl, clock)),
-    accountService: tracked(new AccountService(databaseHandle, auditLog, sessions, accountHost)),
+    accountService: tracked(new AccountService(databaseHandle, auditLog, sessions, accountHost, throttle)),
     viewPreferences: tracked(new ViewPreferencesService(databaseHandle, clock)),
     usersService: tracked(new UsersService(databaseHandle, auditLog, clock)),
     hostsService,
@@ -746,6 +775,10 @@ export function createControlPlaneServices(
         // A fleet asking proof of nobody is told nothing about it, as every control plane before it was.
         ...(trust.required.length === 0 && trust.publishers.length === 0 ? {} : { imageTrust: trust }),
       };
+    },
+    keyChanged: (pin) => {
+      runnerApi.pin = pin;
+      joinSettings.pin = pin;
     },
     registryCredentials: registryCredentialsService,
     imageTrust,
@@ -829,6 +862,7 @@ export function createControlPlaneServices(
         probes,
         rebootPlans,
         notifier,
+        deliveries: notificationDeliveries,
         clock,
       }),
     ),
@@ -843,6 +877,7 @@ export function createControlPlaneServices(
     repairWorker,
     autohealWorker,
     live,
+    boardChanges: new BoardChanges(databaseHandle, live),
     failureReporter: tracked(
       new FailureReporter({
         tasks: tasksService,
@@ -857,6 +892,7 @@ export function createControlPlaneServices(
         inventory: inventoryService,
         hostPackages,
         auditLog,
+        databaseHandle,
         wake: () => {
           void autohealWorker.run().catch(logged);
           void repairWorker.run().catch(logged);

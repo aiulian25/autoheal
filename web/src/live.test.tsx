@@ -203,6 +203,18 @@ describe("the dashboard's live stream", () => {
     next.unmount();
   });
 
+  it("reads the board and every list of tasks or incidents again once they change, and nothing else", () => {
+    const keys = [["board"], ["tasks", "host", "h1"], ["incidents", "open"], ["containers", "hostId=a"]];
+    for (const key of keys) queryClient.setQueryData(key, []);
+    const hook = listen();
+    act(() => FakeEventSource.opened[0]!.send("board", {}));
+    expect(stale(["board"])).toBe(true);
+    expect(stale(["tasks", "host", "h1"])).toBe(true);
+    expect(stale(["incidents", "open"])).toBe(true);
+    expect(stale(["containers", "hostId=a"])).toBe(false);
+    hook.unmount();
+  });
+
   it("invalidates all cached page data whenever the connection opens again", () => {
     const keys = [["containers"], ["jobs", "h1"], ["board"], ["host-packages", "h2"], ["settings"]];
     for (const key of keys) queryClient.setQueryData(key, []);

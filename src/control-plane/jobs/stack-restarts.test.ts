@@ -9,15 +9,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type StackRestartView } from "../../shared/api.js";
-import {
-  HTTP_HEADERS,
-  RUNNER_CAPABILITIES,
-  STACK_RESTARTS_KEPT,
-  STACK_RESTART_INTERRUPTED,
-} from "../../shared/constants.js";
+import { HTTP_HEADERS, STACK_RESTARTS_KEPT, STACK_RESTART_INTERRUPTED } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 import type { ResourceGrant, ResourcePermissionsView } from "../../shared/resource-permissions.js";
 import type { TopologySnapshot } from "../../shared/topology.js";
@@ -72,7 +67,7 @@ describe("restarting a Compose stack one container at a time", () => {
       method,
       url,
       payload,
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
   async function report() {
     const response = await runner("POST", RUNNER_ROUTES.heartbeat, {
@@ -196,7 +191,7 @@ describe("a stack restart across a control plane restart", () => {
       method,
       url,
       payload,
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
   const takeWork = async () => (await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs;
   const succeed = (jobId: string) =>

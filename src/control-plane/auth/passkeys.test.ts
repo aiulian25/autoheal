@@ -8,7 +8,12 @@ import { startTestControlPlane, type TestClient, type TestControlPlane } from ".
 import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { SoftwarePasskey } from "../../../test/support/software-passkey.js";
 import { API_ROUTES, apiPath, type PasskeyStatusView, type PasskeyView, type SessionView } from "../../shared/api.js";
-import { LOCAL_PUBLIC_BASE_URL, PASSKEY_CEREMONY_MILLISECONDS, TOTP_PERIOD_SECONDS } from "../../shared/constants.js";
+import {
+  LOCAL_PUBLIC_BASE_URL,
+  PASSKEY_CEREMONY_LIMIT,
+  PASSKEY_CEREMONY_MILLISECONDS,
+  TOTP_PERIOD_SECONDS,
+} from "../../shared/constants.js";
 import { PasskeyService } from "./passkey-service.js";
 
 const GOOGLE_PASSWORD_MANAGER = "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4";
@@ -134,6 +139,19 @@ describe("passkeys", () => {
     });
   });
 
+  it("lets a flood of sign-in starts from one address end only its own, not someone else's sign-in under way", async () => {
+    const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+    await enrol(passkey);
+    const visitor = controlPlane.client();
+    const options = (await visitor.post(API_ROUTES.passkeySignInOptions)).json<PublicKeyCredentialRequestOptionsJSON>();
+    const flood = { ip: "192.0.2.66", userAgent: null };
+    for (let start = 0; start < PASSKEY_CEREMONY_LIMIT; start += 1) {
+      await controlPlane.services.passkeys.signInOptions(flood);
+    }
+    const answered = await visitor.post(API_ROUTES.passkeySignIn, { response: passkey.signIn(options) });
+    expect(answered.statusCode).toBe(200);
+  });
+
   it("ends an enrolment's challenge with its first answer, even one the WebAuthn library refuses unread", async () => {
     const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
     const options = (
@@ -186,6 +204,6 @@ describe("passkeys", () => {
 
     const atAddress = new PasskeyService(databaseHandle, auditLog, sessions, "https://192.168.10.83:8443");
     expect(atAddress.status()).toEqual({ usable: false, offered: false });
-    await expect(atAddress.signInOptions()).rejects.toMatchObject({ code: "passkeys_unavailable" });
+    await expect(atAddress.signInOptions({ ip: "192.0.2.10" })).rejects.toMatchObject({ code: "passkeys_unavailable" });
   });
 });

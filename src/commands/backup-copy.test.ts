@@ -23,6 +23,7 @@ import {
   BACKUP_WHY,
   CONTAINER_BACKUP,
   backupAnswerSchema,
+  backupFolderName,
   backupManifestSchema,
   type BackupManifest,
 } from "../shared/container-backups.js";
@@ -465,6 +466,49 @@ describe("the helper's copying", () => {
     it("makes the second copy", async () => {
       expect((await finished(idOf(1), { copy: true })).copyError).toBeNull();
       expect(await readdir(join(roots.copy, "app"))).toEqual([idOf(1)]);
+    });
+
+    describe("in a folder several hosts share", () => {
+      const TARGET = { container: "app", stack: null };
+      const ONE = "0b1e8f3c-4d2a-4c6b-9e7f-1a2b3c4d5e6f";
+      const OTHER = "7c9d0e1f-2a3b-4c5d-8e6f-9a0b1c2d3e4f";
+      const finishedOn = async (hostId: string | null, id: string) => {
+        const parent = backupFolderName(TARGET, hostId);
+        const unfinished = `${parent}/${CONTAINER_BACKUP.unfinishedPrefix}${id}`;
+        await mkdir(join(roots.backups, unfinished), { recursive: true });
+        const done = await finish(roots, {
+          parent,
+          unfinished,
+          manifest: manifestOf(id),
+          key: KEY,
+          name: "app",
+          copy: true,
+        });
+        expect(done.copyError).toBeNull();
+      };
+      const left = async (root: string, hostId: string | null) =>
+        (await readdir(join(root, backupFolderName(TARGET, hostId)))).toSorted();
+
+      it("never lets go of another host's backups, or of one it is still making", async () => {
+        await finishedOn(OTHER, idOf(1));
+        await finishedOn(OTHER, idOf(2));
+        const making = `${CONTAINER_BACKUP.unfinishedPrefix}${idOf(3)}`;
+        await mkdir(join(roots.backups, backupFolderName(TARGET, OTHER), making));
+        for (let day = 4; day <= 9; day += 1) await finishedOn(ONE, idOf(day));
+        expect(await left(roots.backups, OTHER)).toEqual([making, idOf(1), idOf(2)]);
+        expect(await left(roots.copy, OTHER)).toEqual([idOf(1), idOf(2)]);
+        expect(await left(roots.backups, ONE)).toEqual([5, 6, 7, 8, 9].map(idOf));
+        expect(await left(roots.copy, ONE)).toEqual([5, 6, 7, 8, 9].map(idOf));
+        const { manifests } = (await list(roots, { folders: [backupFolderName(TARGET, OTHER)] })) as ListedBackups;
+        expect(manifests.map(({ manifest }) => manifest.id)).toEqual([idOf(1), idOf(2)]);
+      });
+
+      it("leaves the folder every host shared before as it is", async () => {
+        for (let day = 1; day <= 5; day += 1) await finishedOn(null, idOf(day));
+        await finishedOn(ONE, idOf(6));
+        expect(await left(roots.backups, null)).toEqual([1, 2, 3, 4, 5].map(idOf));
+        expect(await left(roots.copy, null)).toEqual([1, 2, 3, 4, 5].map(idOf));
+      });
     });
   });
 });

@@ -4,41 +4,40 @@ import { createPortal } from "react-dom";
 import {
   API_ROUTES,
   apiPath,
-  type AssessedPackageView,
   type HostPackagesView,
   type JobView,
   type LifecycleView,
-  type RemovablePackageView,
 } from "../../../src/shared/api.js";
 import {
   APT_HISTORY,
-  HOST_PACKAGE_COMMANDS,
   HOST_PACKAGE_MANAGER,
   HOST_KIND,
   HOST_PACKAGES,
   isChangingPackageAction,
   JOB_ACTION,
-  JOB_STATUS,
   LIFECYCLE_STATUS,
   type ChangingPackageAction,
   type HostPackageAction,
-  type HostPackageManager,
   type LifecycleStatus,
 } from "../../../src/shared/constants.js";
-import type { PackageChange } from "../../../src/shared/protocol.js";
 import { api } from "../api-client.js";
-import { LatestJob } from "../components/container-actions.js";
-import { Badge, ErrorNotice, FollowedLog, Loading, PlainText, TimeAgo } from "../components/common.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
+import { ErrorNotice, Loading, TimeAgo } from "../components/common.js";
 import { Icon } from "../components/icons.js";
 import { JOB_REFRESH_MILLISECONDS, REFRESH_MILLISECONDS, TEXT } from "../constants.js";
-import { capitalized, day } from "../format.js";
+import { day } from "../format.js";
 import { hostPackagesQuery, hostsQuery } from "../queries.js";
+import {
+  isWaiting,
+  managerOf,
+  type Selection,
+  PackageRun,
+  PackageRows,
+  Removable,
+  RecentJobs,
+  RecentChanges,
+} from "./host-package-rows.js";
 
-const CHANGE_NAMES_SHOWN = 6;
-const isWaiting = (job: JobView | null) =>
-  job !== null && (job.status === JOB_STATUS.pending || job.status === JOB_STATUS.delivered);
-// A runner from before dnf only knew apt.
-const managerOf = (view: HostPackagesView) => view.facts?.manager ?? HOST_PACKAGE_MANAGER.apt;
 const LIFECYCLE_NOTICES = {
   ending: "warning",
   extended: "warning",
@@ -95,22 +94,15 @@ const rebootWaitingOf = (view: HostPackagesView) =>
   view.rebootRequired ||
   (view.facts !== null && (view.facts.rebootPackages.length > 0 || view.facts.kernelWaiting !== null));
 
-function whoOf(view: HostPackagesView, name: string): string {
-  const { whoNames } = TEXT.hostPackages;
-  if (view.automatic.includes(name)) {
-    return whoNames.automatic;
-  }
-  return view.unattended.includes(name) ? whoNames.unattended[managerOf(view)] : whoNames.person;
-}
-
 // How long the release gets security fixes: a plain line while that is far off, a warning after.
 function Lifecycle({ lifecycle }: { lifecycle: LifecycleView | null }) {
   if (lifecycle === null) {
     return null;
   }
-  const { release, status, securityUntil, extendedUntil } = lifecycle;
+  const { release, status, securityUntil, extendedUntil, datesAsOf } = lifecycle;
   const until = status === LIFECYCLE_STATUS.extended ? extendedUntil : securityUntil;
-  const text = TEXT.hostPackages.lifecycle[status](release, until === null ? null : day(until));
+  const support = TEXT.hostPackages.lifecycle[status](release, until === null ? null : day(until));
+  const text = `${support} ${TEXT.hostPackages.lifecycleDatesAsOf(day(datesAsOf))}`;
   if (status === LIFECYCLE_STATUS.supported) {
     return <p className="muted small">{text}</p>;
   }
@@ -124,6 +116,7 @@ function Lifecycle({ lifecycle }: { lifecycle: LifecycleView | null }) {
 export function RebootWarning({ hostId, hostLabel, admin }: { hostId: string; hostLabel: string; admin: boolean }) {
   const packages = useHostPackages(hostId);
   const run = useHostPackageJob(hostId);
+  const asking = useAskInPlace();
   const busy = useHostPackageBusy(hostId, packages.data, packages.isError);
   const [hidden, setHidden] = useState(false);
   const view = packages.data;
@@ -131,9 +124,9 @@ export function RebootWarning({ hostId, hostLabel, admin }: { hostId: string; ho
     return null;
   }
   const reboot = () => {
-    if (window.confirm(TEXT.hostPackages.confirmReboot(hostLabel))) {
-      run.mutate({ action: JOB_ACTION.reboot, names: [] });
-    }
+    asking.confirm(TEXT.hostPackages.confirmReboot(hostLabel), () =>
+      run.mutate({ action: JOB_ACTION.reboot, names: [] }),
+    );
   };
   const details = TEXT.hostPackages.rebootDetails(view.facts?.rebootPackages ?? [], view.facts?.kernelWaiting ?? null);
   // The last reboot asked for since the host's last check: on its way, or what the host said, a refusal included.
@@ -148,6 +141,7 @@ export function RebootWarning({ hostId, hostLabel, admin }: { hostId: string; ho
         <p>{TEXT.hostPackages.rebootWarning}</p>
         {details !== "" && <p className="small muted">{details}</p>}
         {rebootLine !== undefined && rebootLine !== null && <p className="small">{rebootLine}</p>}
+        {asking.question}
         <ErrorNotice error={run.error} />
       </div>
       <div className="banner-actions">
@@ -158,233 +152,6 @@ export function RebootWarning({ hostId, hostLabel, admin }: { hostId: string; ho
         )}
         <button type="button" className="quiet" onClick={() => setHidden(true)}>
           {TEXT.hostPackages.hideAlert}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-interface Selection {
-  disabled: boolean;
-  isTicked: (name: string) => boolean;
-  toggle: (name: string) => void;
-}
-
-/**
- * One package as drawn: a tick, its name and what it is, a security fix marked. Its name opens the
- * details under it: the new version, the one installed, where it comes from, and who installs it.
- */
-function PackageRow({
-  view,
-  item,
-  selection,
-}: {
-  view: HostPackagesView;
-  item: AssessedPackageView;
-  selection: Selection | null;
-}) {
-  const [open, setOpen] = useState(false);
-  const text = TEXT.hostPackages;
-  return (
-    <li className="update-row">
-      {selection === null ? (
-        <span className="tick-space" />
-      ) : (
-        <input
-          type="checkbox"
-          disabled={selection.disabled}
-          checked={selection.isTicked(item.name)}
-          onChange={() => selection.toggle(item.name)}
-          aria-label={text.selectOne(item.name)}
-        />
-      )}
-      <span className="update-what">
-        <button type="button" className="link mono" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {item.name}
-        </button>
-        <span className="small faint">{item.summary ?? TEXT.none}</span>
-        {open && (
-          <span className="package-details small">
-            <span className="new-version">{text.newVersion(item.candidate)}</span>
-            <span className="mono muted">{text.installedVersion(item.installed)}</span>
-            <span className={item.security ? "security-source" : "muted"}>
-              {item.source === null ? TEXT.none : capitalized(item.source)}
-            </span>
-            <span className="muted">{text.kindAndWho(text.kindNames[item.kind], whoOf(view, item.name))}</span>
-          </span>
-        )}
-      </span>
-      {item.held && <Badge value={text.held} tone="neutral" />}
-      {item.security && <Badge value={text.security} tone="danger" />}
-    </li>
-  );
-}
-
-function PackageRows({
-  view,
-  packages,
-  selection,
-}: {
-  view: HostPackagesView;
-  packages: readonly AssessedPackageView[];
-  selection: Selection | null;
-}) {
-  return (
-    <ul className="update-rows">
-      {packages.map((item) => (
-        <PackageRow key={item.name} view={view} item={item} selection={selection} />
-      ))}
-    </ul>
-  );
-}
-
-function Removable({
-  packages,
-  canRemove,
-  busy,
-  onRemove,
-}: {
-  packages: readonly RemovablePackageView[];
-  canRemove: boolean;
-  busy: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <details className="fold">
-      <summary className="small">{TEXT.hostPackages.removable(packages.length)}</summary>
-      <ul className="plain-list small">
-        {packages.map(({ name, installed }) => (
-          <li key={name} className="mono">
-            {name} {installed}
-          </li>
-        ))}
-      </ul>
-      {canRemove && (
-        <button type="button" disabled={busy} onClick={onRemove}>
-          {TEXT.hostPackages.removeUnused(packages.length)}
-        </button>
-      )}
-    </details>
-  );
-}
-
-// The newest package job with what it printed; the ones before it, by what they did.
-function RecentJobs({ jobs }: { jobs: readonly JobView[] }) {
-  const [latest, ...earlier] = jobs;
-  if (latest === undefined) {
-    return null;
-  }
-  return (
-    <div className="stack" aria-label={TEXT.hostPackages.recentJobs}>
-      <LatestJob job={latest} />
-      <ul className="plain-list small">
-        {earlier.map((job) => (
-          <li key={job.id} className="row">
-            <Badge value={job.status} />
-            <span>{TEXT.actions.names[job.action]}</span>
-            <TimeAgo timestamp={job.completedAt ?? job.createdAt} />
-            {job.outcome !== null && <span className="muted">{job.outcome}</span>}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function changeLine(change: PackageChange): string {
-  const names = change.upgraded
-    .slice(0, CHANGE_NAMES_SHOWN)
-    .map(({ name, version }) => `${name} ${version}`)
-    .join(", ");
-  const parts = [
-    change.upgradedCount === 0 ? "" : TEXT.hostPackages.upgraded(names, change.upgradedCount - CHANGE_NAMES_SHOWN),
-    change.installed.length === 0 ? "" : TEXT.hostPackages.installed(change.installed.join(", ")),
-    change.removed.length === 0 ? "" : TEXT.hostPackages.removed(change.removed.join(", ")),
-  ];
-  return parts.filter((part) => part !== "").join("; ");
-}
-
-function RecentChanges({ changes }: { changes: readonly PackageChange[] }) {
-  return (
-    <div className="stack">
-      <h4 className="small muted">{TEXT.hostPackages.recentChanges}</h4>
-      {changes.length === 0 && <p className="muted small">{TEXT.hostPackages.noChanges}</p>}
-      <ul className="plain-list small">
-        {changes.map((change) => (
-          <li key={change.endedAt} className="row">
-            <TimeAgo timestamp={change.endedAt} />
-            <span className="muted">
-              {change.byUnattendedUpgrades ? TEXT.hostPackages.changeBy.unattended : TEXT.hostPackages.changeBy.apt}
-            </span>
-            <span>{changeLine(change)}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-// Exactly what the host runs for the job, as HOST_PACKAGE_COMMANDS has it.
-function commandOf(action: ChangingPackageAction, manager: HostPackageManager, packages: readonly string[]): string {
-  const commands = HOST_PACKAGE_COMMANDS[manager];
-  if (action === JOB_ACTION.upgradePackages) {
-    return commands.upgrade(packages).join(" ");
-  }
-  if (action === JOB_ACTION.autoremovePackages) {
-    return commands.autoremove.join(" ");
-  }
-  return HOST_PACKAGE_COMMANDS.apt.repair.join(" ");
-}
-
-/**
- * A package job as it runs: what it does, the command, the package manager's own
- * output as it comes in, how it ended, and the check that follows it.
- */
-function PackageRun({
-  job,
-  view,
-  onBack,
-}: {
-  job: JobView & { action: ChangingPackageAction };
-  view: HostPackagesView;
-  onBack: () => void;
-}) {
-  const { run } = TEXT.hostPackages;
-  const finished = !isWaiting(job);
-  const refetch = finished
-    ? view.recent.find(
-        (other) => other.action === JOB_ACTION.checkPackages && other.createdAt >= (job.completedAt ?? Infinity),
-      )
-    : undefined;
-  const output = job.output ?? (finished ? "" : run.waiting);
-  return (
-    <div className="stack" role="group" aria-label={run.title}>
-      <p>{run.now[job.action](job.packages)}</p>
-      {!finished && (
-        <p className="muted small" role="status">
-          {run.continues}
-        </p>
-      )}
-      <p className="mono small muted">
-        {run.command[job.action](commandOf(job.action, managerOf(view), job.packages))}
-      </p>
-      {finished ? (
-        <PlainText text={output} className="log terminal" />
-      ) : (
-        <FollowedLog text={output} className="log terminal" />
-      )}
-      {finished && job.status === JOB_STATUS.succeeded && (
-        <p>
-          {run.done[job.action]} {job.outcome}
-        </p>
-      )}
-      {finished && job.status !== JOB_STATUS.succeeded && (
-        <p className="notice error">{run.failed(job.outcome ?? job.status)}</p>
-      )}
-      {refetch !== undefined && <p className="muted">{isWaiting(refetch) ? run.refetching : run.refetched}</p>}
-      <div className="row">
-        <button type="button" disabled={!finished} onClick={onBack}>
-          {run.back}
         </button>
       </div>
     </div>
@@ -479,6 +246,7 @@ export function HostPackages({
   actionsIn?: HTMLElement | null;
 }) {
   const packages = useHostPackages(hostId);
+  const asking = useAskInPlace();
   // Where its package setting lives: a runner's .env, or an SSH host's own card.
   const overSsh = useQuery(hostsQuery).data?.find((host) => host.id === hostId)?.kind === HOST_KIND.ssh;
   const run = useHostPackageJob(hostId);
@@ -525,9 +293,7 @@ export function HostPackages({
       : null;
   const removeUnused = () => {
     const lines = view.removable.map(({ name, installed }) => `${name} ${installed}`);
-    if (window.confirm(text.confirmRemove(lines))) {
-      ask(JOB_ACTION.autoremovePackages, []);
-    }
+    asking.confirm(text.confirmRemove(lines), () => ask(JOB_ACTION.autoremovePackages, []));
   };
   const tonight = selected.every((name) => view.automatic.includes(name));
   const install = selection !== null && (
@@ -596,6 +362,7 @@ export function HostPackages({
           {text.whatChanged}
         </button>
       </footer>
+      {asking.question}
       <ErrorNotice error={run.error ?? packages.error} />
     </section>
   );

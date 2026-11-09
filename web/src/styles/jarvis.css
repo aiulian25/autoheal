@@ -1,0 +1,44 @@
+/* Jarvis's card in Settings: the block for Home Assistant scrolls in itself. */
+.jarvis-setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin-block: var(--space-3);
+}
+
+.jarvis-setup pre {
+  width: 100%;
+  max-height: 22rem;
+  white-space: pre;
+}
+
+.jarvis-recent {
+  margin-top: var(--space-3);
+}
+
+.jarvis-recent h4 {
+  margin: 0 0 var(--space-1);
+}
+
+.jarvis-names {
+  margin-top: var(--space-3);
+}
+
+.jarvis-name {
+  display: grid;
+  grid-template-columns: minmax(6rem, 10rem) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+@media (max-width: 48rem) {
+  .jarvis-name {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .jarvis-name label {
+    grid-column: 1 / -1;
+  }
+}

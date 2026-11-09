@@ -1,5 +1,5 @@
 import type { EnrolledHostView } from "../../src/shared/api.js";
-import { decodeJoinCode } from "../../src/shared/join-code.js";
+import { decodeEnrolment, newToken } from "../../src/shared/join-code.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,10 @@ import {
   type ControlPlaneServices,
   type ServiceSettings,
 } from "../../src/control-plane/services.js";
+
+// Each join code's token once traded, and the control plane started last, where tests' runners trade theirs.
+const tradedTokens = new Map<string, string>();
+let newestServices: ControlPlaneServices | null = null;
 
 export const PUBLIC_HOST = "autoheal.test";
 export const PUBLIC_ORIGIN = `https://${PUBLIC_HOST}`;
@@ -73,7 +77,7 @@ export async function startTestControlPlane({
   const clock = { now: Date.UTC(2026, 9, 20, 12) };
   const stdout: string[] = [];
   const databaseHandle = new DatabaseHandle(databasePath);
-  const auditLog = new AuditLog(databaseHandle, (line) => stdout.push(line));
+  const auditLog = new AuditLog(databaseHandle, (line) => stdout.push(line), Date.now, { refuseSecretFields: true });
   const services = createControlPlaneServices(databaseHandle, auditLog, {
     ollama: { url: ollamaUrl, model: "qwen3:4b-instruct", contextTokens: 16_384 },
     backups: {
@@ -94,6 +98,7 @@ export async function startTestControlPlane({
     },
     clock: () => clock.now,
   });
+  newestServices = services;
   const app = await buildUserInterfaceServer({
     publicHost: PUBLIC_HOST,
     publicOrigin: PUBLIC_ORIGIN,
@@ -193,5 +198,20 @@ export class TestClient {
   }
 }
 
-/** The runner token inside an enrolment's join code, as the runner itself reads it. */
-export const runnerTokenOf = (enrolled: EnrolledHostView) => decodeJoinCode(enrolled.joinCode)!.token;
+/**
+ * The token an enrolment's join code is traded for, as its runner trades it on first contact: at the control plane
+ * started last, once, and the same token each time after.
+ */
+export function runnerTokenOf(enrolled: EnrolledHostView): string {
+  const known = tradedTokens.get(enrolled.joinCode);
+  if (known !== undefined) {
+    return known;
+  }
+  const code = decodeEnrolment(enrolled.joinCode);
+  const token = newToken();
+  if (code === null || newestServices?.hostsService.redeemJoinCode(code.enrolment, token) !== true) {
+    throw new Error("This join code opens nothing at the control plane started last.");
+  }
+  tradedTokens.set(enrolled.joinCode, token);
+  return token;
+}

@@ -1,0 +1,165 @@
+/* --- The pages no mockup draws: the same parts, set out the way the drawn pages set theirs ------------ */
+
+/* A column's name and a state's words keep to one line; the cells beside them wrap instead. */
+th,
+td.state-cell {
+  white-space: nowrap;
+}
+
+/* Names in a table are links that look like names: the accent says they open, a line shows on hover. */
+td a {
+  text-decoration: none;
+}
+
+td a:hover {
+  text-decoration: underline;
+}
+
+/* A form in a card ends in its button, at its own width: only sign-in's panel spans it. */
+form.card > button {
+  align-self: flex-start;
+}
+
+/* Fields side by side, their boxes and the button on one line under the labels. */
+.inline-form {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.inline-form > label {
+  flex: 1 1 14rem;
+}
+
+/* A row's own actions, slimmer than the page's, so a table keeps to one line a row. */
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.row-actions button {
+  min-height: var(--choice-height);
+  padding-inline: var(--space-3);
+  font-size: var(--text-small);
+}
+
+/* Items of one kind in one card, a line between each: a title that opens it, what it covers, its state. */
+.list-card {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+}
+
+.list-card > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: var(--list-row-height);
+  padding: var(--space-3) 20px;
+}
+
+.list-card > li + li {
+  border-top: var(--border-width) solid var(--divider);
+}
+
+/* Suggested runbooks, a line between each case. */
+.suggestions {
+  gap: var(--space-3);
+}
+
+.suggestions > li + li {
+  border-top: var(--border-width) solid var(--divider);
+  padding-top: var(--space-3);
+}
+
+/* A suggested runbook's state: how its draft did, then what to do next. */
+.suggestion-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+
+.list-card-what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.list-card-what a {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.list-card-what a:hover {
+  color: var(--accent);
+}
+
+/* The file to restore from: the browser's own button, drawn like the others. */
+input[type="file"] {
+  padding: 6px var(--space-2);
+}
+
+input[type="file"]::file-selector-button {
+  margin-right: var(--space-3);
+  padding: 6px var(--space-3);
+  font: inherit;
+  font-size: var(--text-small);
+  color: var(--text);
+  background: var(--control);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+/* The pages the settings lead on to: card titles as on the settings page. */
+.settings-block .card > h3 {
+  font-size: var(--text-card-title);
+}
+
+/* Three looks fit on one line. */
+.appearance .choice-options {
+  flex-flow: row wrap;
+  column-gap: var(--space-6);
+}
+
+.appearance .choice-card {
+  padding-bottom: 20px;
+}
+
+.global-search {
+  position: relative;
+  margin-block: 1rem;
+}
+.global-search > input {
+  width: 100%;
+  min-width: 0;
+}
+.search-results {
+  position: absolute;
+  inset-inline-start: 0;
+  top: 100%;
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: min(70vh, 42rem);
+  overflow-y: auto;
+  z-index: 30;
+  padding: 1rem;
+}
+.search-results [role="option"] {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem;
+  border-radius: 0.4rem;
+}
+.search-results [role="option"][aria-selected="true"] {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}

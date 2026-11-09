@@ -14,7 +14,7 @@ import { CopyButton, ErrorNotice, Loading } from "../components/common.js";
 import { isWaiting } from "../components/container-actions.js";
 import { Icon } from "../components/icons.js";
 import { TEXT } from "../constants.js";
-import { Choices, Row } from "./add-container.js";
+import { Choices, Row } from "./add-container/choices.js";
 
 const text = TEXT.hostVolumes.create;
 const HERE = "here";

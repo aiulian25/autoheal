@@ -1,11 +1,15 @@
 import { LIVE_EVENT } from "../../shared/constants.js";
 import type { UpdateProgress } from "../../shared/protocol.js";
 
-/** What changed, for the dashboards open now: a host's containers, a job on its way, or an update's progress. */
+/**
+ * What changed, for the dashboards open now: a host's containers, a job on its way, an update's progress, or the
+ * board's tasks and incidents.
+ */
 export type LiveEvent =
   | { kind: typeof LIVE_EVENT.inventory; hostId: string }
   | { kind: typeof LIVE_EVENT.job; hostId: string; jobId: string }
-  | { kind: typeof LIVE_EVENT.progress; hostId: string; jobId: string; progress: UpdateProgress };
+  | { kind: typeof LIVE_EVENT.progress; hostId: string; jobId: string; progress: UpdateProgress }
+  | { kind: typeof LIVE_EVENT.board };
 
 /** In memory only: a dashboard that connects later reads the current state, then hears what changes after. */
 export class LiveEvents {

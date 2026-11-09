@@ -8,7 +8,9 @@ import {
   MILLISECONDS_PER_SECOND,
   RECOVERY_HOLD,
   RESTART_WINDOW_SECONDS,
+  RUNNER_MESSAGES,
 } from "../shared/constants.js";
+import { describeError } from "../shared/errors.js";
 import { log } from "../shared/log.js";
 import type { RecoveryHold } from "../shared/protocol.js";
 import type { DockerClient } from "./docker-client.js";
@@ -99,9 +101,11 @@ export class GuardState {
   }
 
   static async open(store: Store, time: GuardTiming = timing): Promise<GuardState> {
+    const volumes = await store.volumes(LABEL).catch((error: unknown) => {
+      throw new Error(RUNNER_MESSAGES.guardStateUnread(describeError(error)));
+    });
     try {
       const state = new GuardState(store, time);
-      const volumes = await store.volumes(LABEL);
       if (volumes.length > MAX_RETAINED_RECORDS) throw new Error("Too many retained guard records.");
       let latest: Record | null = null;
       for (const volume of volumes) {

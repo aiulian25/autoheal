@@ -1,3 +1,6 @@
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { startTestControlPlane } from "../../../test/support/control-plane.js";
@@ -7,6 +10,7 @@ import {
   ACTION_RESTART,
   ACTOR_SYSTEM,
   AUDIT_ACTIONS,
+  DATABASE_FILE_NAME,
   IN_MEMORY_DATABASE,
   INCIDENT_STATUS,
   JOB_ACTION,
@@ -15,6 +19,8 @@ import {
   REPLAY_FINISHED,
   RETENTION_SWEEP_BATCH_ROWS,
   ROLE_ADMIN,
+  ROLLBACK_SUFFIX,
+  SESSION_IDLE_MILLISECONDS,
   TASK_PRIORITY,
   TASK_SOURCE,
   TASK_STATUS,
@@ -262,6 +268,8 @@ describe("the retention sweep", () => {
       applicationBackupArtifacts: 1,
       applicationBackupRuns: 2,
       rebootPlans: 2,
+      previousDatabases: 0,
+      endedSessions: 0,
     });
 
     expect(idsIn(sqlite, "runner_results")).toEqual(["recent-receipt"]);
@@ -305,12 +313,60 @@ describe("the retention sweep", () => {
     expect(sqlite.pragma("foreign_key_check")).toEqual([]);
   });
 
+  it("lets a database an offline restore set aside go once the local backups no longer reach back to it", () => {
+    const folder = mkdtempSync(join(tmpdir(), "autoheal-sweep-"));
+    const handle = new DatabaseHandle(join(folder, DATABASE_FILE_NAME));
+    const setAside = (days: number, sideFile = "") => `${DATABASE_FILE_NAME}${ROLLBACK_SUFFIX}-${ago(days)}${sideFile}`;
+    const expired = [setAside(15), setAside(15, "-wal"), setAside(15, "-shm")];
+    const kept = [
+      setAside(14),
+      setAside(13),
+      // An online restore's own copy, which its journal looks after, and names that are not a time.
+      `${DATABASE_FILE_NAME}${ROLLBACK_SUFFIX}`,
+      `${DATABASE_FILE_NAME}${ROLLBACK_SUFFIX}-wal`,
+      `${DATABASE_FILE_NAME}${ROLLBACK_SUFFIX}-notes`,
+      `other.sqlite${ROLLBACK_SUFFIX}-${ago(30)}`,
+    ];
+    for (const name of [...expired, ...kept]) writeFileSync(join(folder, name), "");
+    const sweep = new RetentionSweep(
+      handle,
+      new AuditLog(
+        handle,
+        () => undefined,
+        () => NOW,
+      ),
+      () => NOW,
+    );
+    expect(sweep.sweep()).toMatchObject({ previousDatabases: 1 });
+    expect(
+      readdirSync(folder)
+        .filter((name) => name.includes(ROLLBACK_SUFFIX))
+        .toSorted(),
+    ).toEqual(kept.toSorted());
+    handle.close();
+  });
+
   it("never lets a new task take an old task's number", () => {
     const { sqlite, seed, sweep } = fixture();
     seed.task("first", 1, TASK_STATUS.done, 400);
     seed.task("last", 2, TASK_STATUS.done, 400);
     expect(sweep.sweep()).toMatchObject({ tasks: 1 });
     expect(idsIn(sqlite, "tasks")).toEqual(["last"]);
+  });
+
+  it("lets a session go once it ended, past its end or left unused, and keeps one still live", () => {
+    const { sqlite, sweep } = fixture();
+    const session = (tokenHash: string, lastSeenAt: number, expiresAt: number) =>
+      sqlite
+        .prepare(
+          "INSERT INTO sessions (token_hash, user_id, csrf_token, created_at, last_seen_at, expires_at) VALUES (?, 'admin', 'csrf', 0, ?, ?)",
+        )
+        .run(tokenHash, lastSeenAt, expiresAt);
+    session("past-its-end", NOW - 1, NOW - 1);
+    session("left-unused", NOW - SESSION_IDLE_MILLISECONDS, NOW + MILLISECONDS_PER_DAY);
+    session("live", NOW - 1, NOW + MILLISECONDS_PER_DAY);
+    expect(sweep.sweep()).toMatchObject({ endedSessions: 2 });
+    expect(sqlite.prepare("SELECT token_hash AS id FROM sessions").all()).toEqual([{ id: "live" }]);
   });
 
   it("works through more rows than one batch holds", () => {

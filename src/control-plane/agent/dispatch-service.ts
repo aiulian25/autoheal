@@ -1,5 +1,6 @@
 import {
   API_ERRORS,
+  hasNewerVersion,
   hasUpdate,
   type AgentDispatchRequest,
   type AgentDispatchView,
@@ -23,19 +24,28 @@ import {
   TASK_RESOURCE,
   TRACE,
 } from "../../shared/constants.js";
+import { imageTag } from "../../shared/image-reference.js";
+import { isNewMajor } from "../../shared/image-versions.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
+import type { DatabaseHandle } from "../database/connection.js";
 import { DomainError } from "../domain-error.js";
+import { isDatabaseImage } from "../host-control/host-control.js";
 import { osUpdatesKey, type HostPackagesService } from "../host-packages/host-packages-service.js";
 import type { IncidentsService } from "../incidents/incidents-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
+import { newerVersionFinding, newerVersionTaskKey } from "../tasks/detectors.js";
 import type { TaskAuthor, TaskRow, TasksService } from "../tasks/tasks-service.js";
 
 export interface DispatchDependencies {
-  tasks: Pick<TasksService, "find" | "change" | "addActivity" | "comment" | "openFor" | "setByAutoheal">;
+  tasks: Pick<
+    TasksService,
+    "find" | "change" | "addActivity" | "comment" | "openFor" | "setByAutoheal" | "openOrJoin" | "owner"
+  >;
   incidents: Pick<IncidentsService, "find" | "addEvent">;
   inventory: Pick<InventoryService, "hosts" | "containers">;
   hostPackages: Pick<HostPackagesService, "requireUpgrade" | "request">;
   auditLog: Pick<AuditLog, "recordUserAction">;
+  databaseHandle: Pick<DatabaseHandle, "atomically">;
   // The agents that take what was handed over, asked to look now rather than at their next pass.
   wake: () => void;
 }
@@ -46,6 +56,11 @@ const TO_AUTOHEAL: AssigneeChoice = { kind: "agent", id: AGENT_AUTOHEAL };
 interface UpdateHandOver {
   task: TaskRow;
   container: ContainerView;
+}
+
+interface TagHandOver {
+  container: ContainerView;
+  tag: string;
 }
 
 const isOpen = (task: TaskRow) => (OPEN_TASK_STATUSES as readonly string[]).includes(task.status);
@@ -78,14 +93,21 @@ export class DispatchService {
       this.requirePackages(hostId, names);
     }
     const incidents = [...new Set(request.incidents)].map((incidentId) => this.requireIncident(incidentId));
-    updates.forEach((handOver) => this.handOverUpdate(actor, handOver));
-    packages.forEach((names, hostId) => this.handOverPackages(actor, hostId, names));
-    incidents.forEach((incidentId) => this.handOverIncident(actor, incidentId));
+    const named = new Map(request.tags.map((asked) => [JSON.stringify([asked.hostId, asked.container]), asked]));
+    const tags = [...named.values()].map((asked) => this.tagOf(asked));
+    // All or none: the work one asks for may still be refused, by checks of its own, and takes back those before it.
+    this.dependencies.databaseHandle.atomically(() => {
+      updates.forEach((handOver) => this.handOverUpdate(actor, handOver));
+      tags.forEach((handOver) => this.handOverTag(actor, handOver));
+      packages.forEach((names, hostId) => this.handOverPackages(actor, hostId, names));
+      incidents.forEach((incidentId) => this.handOverIncident(actor, incidentId));
+    });
     this.dependencies.wake();
     return {
       updates: updates.length,
       packages: [...packages.values()].reduce((sum, names) => sum + names.length, 0),
       incidents: incidents.length,
+      tags: tags.length,
     };
   }
 
@@ -123,6 +145,32 @@ export class DispatchService {
     return { task, container };
   }
 
+  /**
+   * A newer version the agent moves to by the container's Compose files: on a host that acts now and whose runner can,
+   * that very version, and never a database's new major version, which needs a dump and a restore, not a new tag.
+   */
+  private tagOf({ hostId, container: name, tag }: AgentDispatchRequest["tags"][number]): TagHandOver {
+    const host = this.hostOf(hostId);
+    const acts = host.state === HOST_STATE.online && host.dryRun === false;
+    if (!acts || host.containerAccess !== true || host.hostDeploy !== true) {
+      throw new DomainError(API_ERRORS.notDispatchable);
+    }
+    if (host.tagChanges !== true) {
+      throw new DomainError(API_ERRORS.runnerCannotChangeTags);
+    }
+    const container = this.changeableContainer(hostId, name);
+    if (!hasNewerVersion(container) || container.update.newerTag !== tag) {
+      throw new DomainError(API_ERRORS.noNewerVersion);
+    }
+    if (container.composeProject === null) {
+      throw new DomainError(API_ERRORS.notFromCompose);
+    }
+    if (isDatabaseImage(container.image) && isNewMajor(imageTag(container.image), tag)) {
+      throw new DomainError(API_ERRORS.databaseNewMajor);
+    }
+    return { container, tag };
+  }
+
   private requirePackages(hostId: string, names: readonly string[]) {
     if (this.hostOf(hostId).dryRun !== false) {
       throw new DomainError(API_ERRORS.notDispatchable);
@@ -156,6 +204,26 @@ export class DispatchService {
       AUDIT_ACTIONS.agentDispatched,
       { kind: TARGET_CONTAINER, id: `${container.hostId}/${container.name}` },
       { update: container.name },
+    );
+  }
+
+  // Its task, opened now if its detector has not yet, goes to the agent, whose worker asks the host's runner for it.
+  private handOverTag(actor: Actor, { container, tag }: TagHandOver) {
+    const { tasks, auditLog } = this.dependencies;
+    const key = newerVersionTaskKey(container.hostId, container.name, tag);
+    const task = tasks.openFor(key) ?? tasks.openOrJoin(newerVersionFinding(container, tasks.owner())).task;
+    tasks.setByAutoheal(task.id, { assignee: TO_AUTOHEAL });
+    tasks.addActivity(task.id, TASK_ACTIVITY.dispatched, { kind: "user", actor }, { tag });
+    tasks.comment(
+      AUTOHEAL,
+      task.id,
+      AUTOHEAL_TEXT.tagDispatched(actor.username, container.name, imageTag(container.image), tag),
+    );
+    auditLog.recordUserAction(
+      actor,
+      AUDIT_ACTIONS.agentDispatched,
+      { kind: TARGET_CONTAINER, id: `${container.hostId}/${container.name}` },
+      { tag },
     );
   }
 

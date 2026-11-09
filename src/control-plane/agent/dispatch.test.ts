@@ -16,7 +16,7 @@ import {
   type TaskDetailView,
   type TaskSummaryView,
 } from "../../shared/api.js";
-import { INCIDENT_STATUS, TRACE } from "../../shared/constants.js";
+import { AUDIT_ACTIONS, INCIDENT_STATUS, TRACE } from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
   type ContainerSnapshot,
@@ -130,7 +130,7 @@ describe("work handed to the Ollama agent", () => {
     const postgresTask = await taskFor("Update postgres on Alder");
     const response = await dispatch({ updates: [whoamiTask.id, postgresTask.id] });
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toEqual({ updates: 2, packages: 0, incidents: 0 });
+    expect(response.json()).toEqual({ updates: 2, packages: 0, incidents: 0, tags: 0 });
 
     const jobs = await workArrives();
     expect(jobs.toSorted((first, second) => first.containerName.localeCompare(second.containerName))).toEqual([
@@ -184,6 +184,50 @@ describe("work handed to the Ollama agent", () => {
     expect(await takeWork()).toEqual([]);
   });
 
+  it("hands over nothing, and records nothing, when the work one item asks for is refused part-way", async () => {
+    const acknowledged = await controlPlane.runnerApp.inject({
+      method: "POST",
+      url: RUNNER_ROUTES.heartbeat,
+      payload: {
+        ...heartbeatWith({
+          containers: [whoami, postgres, npm],
+          dryRun: false,
+          host: hostHealth({ packages: packageFacts }),
+        }),
+        maintenanceGeneration: 0,
+      },
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(acknowledged.statusCode).toBe(200);
+    await controlPlane.services.hostPackages.request(
+      { kind: "agent", agent: "autoheal" },
+      hostId,
+      "check_packages",
+      [],
+    );
+    const [check] = await takeWork();
+    await answerJob(check!.id, { succeeded: true, outcome: "Checked.", output: null, packages: CHECK });
+    const whoamiTask = await taskFor("Update whoami on Alder");
+    const commentsBefore = await comments(whoamiTask.id);
+    // The host's maintenance holds the agent's package upgrade, a check the hand-over's own checks do not make.
+    const window = await admin.post(apiPath(API_ROUTES.hostMaintenance, { hostId }), {
+      containerName: null,
+      reason: "Planned work",
+      expiresAt: controlPlane.clock.now + 60_000,
+    });
+    expect(window.statusCode).toBe(200);
+    const linesBefore = controlPlane.stdout.length;
+
+    const refused = await dispatch({ updates: [whoamiTask.id], packages: [{ hostId, names: ["netdata"] }] });
+    expect(refused.json()).toEqual({ error: "maintenance_active" });
+    expect((await detail(whoamiTask.id)).assignee).toMatchObject({ kind: "user" });
+    expect(await comments(whoamiTask.id)).toEqual(commentsBefore);
+    const linesAfter = controlPlane.stdout.slice(linesBefore).join("");
+    expect(linesAfter).not.toContain(AUDIT_ACTIONS.agentDispatched);
+    expect(linesAfter).not.toContain(AUDIT_ACTIONS.taskChanged);
+    expect(await takeWork()).toEqual([]);
+  });
+
   it("installs the packages it is handed now, the held ones too, and hands their task back after", async () => {
     await controlPlane.services.hostPackages.request(
       { kind: "agent", agent: "autoheal" },
@@ -197,7 +241,7 @@ describe("work handed to the Ollama agent", () => {
     const task = controlPlane.services.tasksService.openFor(osUpdatesKey(hostId))!;
 
     const response = await dispatch({ packages: [{ hostId, names: ["netdata", "postgresql-17"] }] });
-    expect(response.json()).toEqual({ updates: 0, packages: 2, incidents: 0 });
+    expect(response.json()).toEqual({ updates: 0, packages: 2, incidents: 0, tags: 0 });
     const [upgrade] = await takeWork();
     expect(upgrade).toMatchObject({
       action: "upgrade_packages",
@@ -249,7 +293,12 @@ describe("work handed to the Ollama agent", () => {
       INCIDENT_STATUS.awaitingApproval,
     );
 
-    expect((await dispatch({ incidents: [incident.id] })).json()).toEqual({ updates: 0, packages: 0, incidents: 1 });
+    expect((await dispatch({ incidents: [incident.id] })).json()).toEqual({
+      updates: 0,
+      packages: 0,
+      incidents: 1,
+      tags: 0,
+    });
     const [job] = await workArrives();
     expect(job).toMatchObject({ containerName: "postgres", action: "update", requestedBy: "Autoheal" });
     expect(ollama.requests[0]!.messages.at(-1)!.content).toContain("Repairs on offer: recreate, update, report.");
@@ -262,5 +311,97 @@ describe("work handed to the Ollama agent", () => {
     );
 
     expect((await dispatch({ incidents: [incident.id] })).json()).toEqual({ error: "not_awaiting_approval" });
+  });
+});
+
+describe("newer versions handed to the Ollama agent", () => {
+  let controlPlane: TestControlPlane;
+  let admin: TestClient;
+  let token: string;
+  let hostId: string;
+  const pinned = (name: string, image: string, newerTag: string, composeProject: string | null) =>
+    containerSnapshot({
+      name,
+      image,
+      composeProject,
+      update: { status: "current", checkedAt: 1, remoteDigest: null, newerTag },
+    });
+  const app = pinned("app", "ghcr.io/example/app:2.0", "2.1", "app");
+  const database = pinned("app-db", "postgres:16-alpine", "18-alpine", "app");
+  const loose = pinned("tool", "example/tool:1.0", "1.1", null);
+
+  const report = async (tagChanges = true) =>
+    expect(
+      (
+        await controlPlane.runnerApp.inject({
+          method: "POST",
+          url: RUNNER_ROUTES.heartbeat,
+          payload: heartbeatWith({
+            containers: [app, database, loose],
+            dryRun: false,
+            containerAccess: true,
+            hostDeploy: true,
+            ...(tagChanges ? { tagChanges: true } : {}),
+          }),
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).statusCode,
+    ).toBe(200);
+  const runner = (method: "GET" | "POST", url: string, payload?: object) =>
+    controlPlane.runnerApp.inject({ method, url, payload, headers: { authorization: `Bearer ${token}` } });
+  const dispatch = (container: string, tag: string) =>
+    admin.post(API_ROUTES.agentDispatch, { tags: [{ hostId, container, tag }] });
+  const taskOf = async (container: string, tag: string) =>
+    (await admin.get(API_ROUTES.tasks))
+      .json<TaskSummaryView[]>()
+      .find((task) => task.title === `${tag} is out for ${container} on Alder`);
+
+  beforeEach(async () => {
+    controlPlane = await startTestControlPlane();
+    admin = (await fullySignedInAdmin(controlPlane)).client;
+    const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+    token = runnerTokenOf(enrolled);
+    hostId = enrolled.host.id;
+  });
+
+  afterEach(async () => {
+    await controlPlane.app.close();
+    await controlPlane.runnerApp.close();
+  });
+
+  it("has the host's runner change the tag, opens its task if none was, and closes it once it went well", async () => {
+    await report();
+    const response = await dispatch("app", "2.1");
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({ updates: 0, packages: 0, incidents: 0, tags: 1 });
+
+    const task = await taskOf("app", "2.1");
+    expect(task?.assignee).toMatchObject({ kind: "agent" });
+    let jobs: WorkResponse["jobs"] = [];
+    await vi.waitFor(async () => {
+      jobs = (await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs;
+      expect(jobs).toHaveLength(1);
+    });
+    expect(jobs[0]).toMatchObject({ containerName: "app", action: "change_tag", tag: "2.1" });
+    const detail = (await admin.get(apiPath(API_ROUTES.task, { taskId: task!.id }))).json<TaskDetailView>();
+    expect(detail.comments.map((comment) => comment.body).join("\n")).toContain("moving app from 2.0 to 2.1");
+
+    await runner("POST", apiPath(RUNNER_ROUTES.jobResult, { jobId: jobs[0]!.id }), {
+      succeeded: true,
+      outcome: "Moved app to 2.1.",
+      output: null,
+    });
+    const after = (await admin.get(apiPath(API_ROUTES.task, { taskId: task!.id }))).json<TaskDetailView>();
+    expect(after.status).toBe("done");
+  });
+
+  it("refuses a database's new major version, a container not from Compose, a version not out, and an old runner", async () => {
+    await report();
+    expect((await dispatch("app-db", "18-alpine")).json()).toEqual({ error: "database_new_major" });
+    expect((await dispatch("tool", "1.1")).json()).toEqual({ error: "not_from_compose" });
+    expect((await dispatch("app", "3.0")).json()).toEqual({ error: "no_newer_version" });
+    await report(false);
+    expect((await dispatch("app", "2.1")).json()).toEqual({ error: "runner_cannot_change_tags" });
+    expect((await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   runnerTokenOf,
@@ -10,6 +11,7 @@ import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type HostImagesView, type JobView } from "../../shared/api.js";
 import { RUNNER_ROUTES, type Heartbeat, type UnusedImage, type WorkResponse } from "../../shared/protocol.js";
+import { hosts } from "../database/schema.js";
 
 const digest = (character: string) => `sha256:${character.repeat(64)}`;
 const KEPT: UnusedImage = {
@@ -65,9 +67,46 @@ describe("a host's old images", () => {
     await report({ unusedImages: [KEPT, NAMELESS] });
     await report({});
 
-    expect((await images()).images).toEqual([KEPT, NAMELESS]);
+    const since = controlPlane.clock.now;
+    expect((await images()).images).toEqual([
+      { ...KEPT, unusedSince: since },
+      { ...NAMELESS, unusedSince: since },
+    ]);
     const unknownHost = await admin.get(apiPath(API_ROUTES.hostImages, { hostId: randomUUID() }));
     expect(unknownHost.json()).toMatchObject({ error: "host_not_found" });
+  });
+
+  it("says since when each one is unused, newest first, keeping that time while it stays unused", async () => {
+    await report({ unusedImages: [NAMELESS] });
+    const first = controlPlane.clock.now;
+    controlPlane.clock.now += 60_000;
+    // An update sets one aside a minute later: the one already there keeps its time.
+    await report({ unusedImages: [NAMELESS, KEPT] });
+    const later = controlPlane.clock.now;
+    controlPlane.clock.now += 60_000;
+    await report({ unusedImages: [KEPT, NAMELESS] });
+
+    expect((await images()).images!.map(({ id, unusedSince }) => ({ id, unusedSince }))).toEqual([
+      { id: KEPT.id, unusedSince: later },
+      { id: NAMELESS.id, unusedSince: first },
+    ]);
+
+    // One back in use and unused again is unused from then.
+    await report({ unusedImages: [KEPT] });
+    controlPlane.clock.now += 60_000;
+    await report({ unusedImages: [KEPT, NAMELESS] });
+    expect((await images()).images![0]).toMatchObject({ id: NAMELESS.id, unusedSince: controlPlane.clock.now });
+  });
+
+  it("knows no time for one already listed before the dashboard noted it", async () => {
+    controlPlane.services.databaseHandle.database
+      .update(hosts)
+      .set({ unusedImagesJson: JSON.stringify([KEPT]) })
+      .where(eq(hosts.id, hostId))
+      .run();
+    expect((await images()).images).toEqual([{ ...KEPT, unusedSince: null }]);
+    await report({ unusedImages: [KEPT] });
+    expect((await images()).images).toEqual([{ ...KEPT, unusedSince: null }]);
   });
 
   it("removes the ones ticked, once, only ones the host reported, and only for an admin", async () => {

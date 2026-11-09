@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ContainerSettings } from "../shared/protocol.js";
-import { composeAgrees, editedCompose, isEmptyChange, settingsChange, type SettingsChange } from "./compose-edit.js";
+import {
+  composeAgrees,
+  editedCompose,
+  editedImageTag,
+  isEmptyChange,
+  servicesMovedByTag,
+  settingsChange,
+  type SettingsChange,
+} from "./compose-edit.js";
 
 const FOLDER = "/srv/wiki";
 const ENV = `${FOLDER}/.env`;
@@ -253,5 +261,74 @@ describe("whether Compose agrees", () => {
     expect(composeAgrees({ ...right, ports: [] }, change)).toBe(false);
     expect(composeAgrees({ ...right, restart: "always" }, change)).toBe(false);
     expect(composeAgrees(undefined, change)).toBe(false);
+  });
+});
+
+describe("a newer version's tag, changed where the file writes it", () => {
+  const retag = (text: string, env: string | null = null, tag = "2.1") =>
+    editedImageTag({ text, service: "app", environmentPath: ENV, envTexts: new Map([[ENV, env]]), tag });
+
+  it("changes a tag written in the image line, and only it, keeping its quotes and its comment", () => {
+    const edit = retag('services:\n  app:\n    image: "ghcr.io/example/app:2.0" # pinned\n    restart: always\n');
+    expect(edit).toEqual({
+      problem: null,
+      text: 'services:\n  app:\n    image: "ghcr.io/example/app:2.1" # pinned\n    restart: always\n',
+      envTexts: new Map(),
+      place: { variable: null },
+    });
+  });
+
+  it("changes the variable that holds the tag, or the whole image, in the .env, leaving the file as it is", () => {
+    const tagged = retag(
+      "services:\n  app:\n    image: ghcr.io/example/app:${APP_VERSION:-release}\n",
+      "APP_VERSION=2.0\nTZ=UTC\n",
+    );
+    expect(tagged).toMatchObject({ place: { variable: "APP_VERSION", path: ENV } });
+    expect(tagged.problem === null && tagged.envTexts.get(ENV)).toBe("APP_VERSION=2.1\nTZ=UTC\n");
+    const whole = retag("services:\n  app:\n    image: ${APP_IMAGE}\n", "APP_IMAGE=registry.lan:5000/app:2.0\n");
+    expect(whole.problem === null && whole.envTexts.get(ENV)).toBe("APP_IMAGE=registry.lan:5000/app:2.1\n");
+  });
+
+  it("leaves alone what it cannot change safely, and says why", () => {
+    expect(retag("services:\n  app:\n    build: .\n").problem).toContain("has no image line");
+    expect(retag("services:\n  app:\n    image: example/app@sha256:abc\n").problem).toContain("pinned by its digest");
+    expect(retag("services:\n  app:\n    image: example/app:${MAJOR}.${MINOR}\n").problem).toContain("left alone");
+    expect(retag("services:\n  app:\n    image: ${APP_IMAGE}\n", "").problem).toContain("APP_IMAGE has no value");
+    expect(retag("services:\n  other:\n    image: example/other:1\n").problem).toContain("does not define app");
+  });
+});
+
+describe("what a tag change moves, as Compose reads the files before and after", () => {
+  const before = {
+    server: { image: "ghcr.io/immich-app/immich-server:v3.3.6", environment: { IMMICH_VERSION: "v3.3.6", TZ: "UTC" } },
+    learning: { image: "ghcr.io/immich-app/immich-machine-learning:v3.3.6" },
+    database: { image: "postgres:16" },
+  };
+  const moved = (after: Record<string, object>) => servicesMovedByTag(before, after, "v3.4.0", "IMMICH_VERSION");
+
+  it("names every service the shared tag moves, and none it leaves", () => {
+    expect(
+      moved({
+        server: {
+          image: "ghcr.io/immich-app/immich-server:v3.4.0",
+          environment: { IMMICH_VERSION: "v3.4.0", TZ: "UTC" },
+        },
+        learning: { image: "ghcr.io/immich-app/immich-machine-learning:v3.4.0" },
+        database: { image: "postgres:16" },
+      }),
+    ).toEqual(["server", "learning"]);
+  });
+
+  it("is null when anything but the tag changed: another setting, another image, another tag, another service", () => {
+    const server = {
+      image: "ghcr.io/immich-app/immich-server:v3.4.0",
+      environment: { IMMICH_VERSION: "v3.4.0", TZ: "UTC" },
+    };
+    expect(
+      moved({ ...before, server: { ...server, environment: { IMMICH_VERSION: "v3.4.0", TZ: "CET" } } }),
+    ).toBeNull();
+    expect(moved({ ...before, server: { ...server, image: "ghcr.io/someone/else:v3.4.0" } })).toBeNull();
+    expect(moved({ ...before, server: { ...server, image: "ghcr.io/immich-app/immich-server:v9" } })).toBeNull();
+    expect(moved({ server, learning: before.learning })).toBeNull();
   });
 });

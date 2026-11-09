@@ -119,8 +119,7 @@ export class RouterSettingsService {
   async probe(body: RouterSettingsBody): Promise<RouterProbeView> {
     const adapter = this.makeAdapter(this.connectionFor(body));
     try {
-      const capabilities = await adapter.capabilities();
-      return { name: null, version: null, capabilities };
+      return await adapter.capabilities();
     } catch (error) {
       throw asDomainError(error);
     }

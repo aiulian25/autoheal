@@ -2,6 +2,9 @@
 // eol is the end of free security fixes; extendedSupport, of paid or subscription support after it.
 // false means no date was announced yet, true that it ended on a date endoflife.date doesn't give.
 
+// The day these dates were read: the host's page shows it beside them.
+export const LIFECYCLE_DATES_AS_OF = "2026-10-22";
+
 export interface ReleaseLifecycle {
   cycle: string;
   eol: string | boolean;

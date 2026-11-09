@@ -95,6 +95,16 @@ describe("switching a runner host to SSH", () => {
   };
 
   it("keeps the same host and what its runner's .env said, and its runner's token stops working", async () => {
+    // Its .env kept the host's own shell and installs off as well.
+    const reported = heartbeatWith({
+      dryRun: false,
+      protectedContainers: ["autoheal", "postgres"],
+      containerAccess: true,
+      hostTerminal: false,
+      hostDeploy: false,
+      host: hostHealth({ packages: CHECKING_PACKAGES }),
+    });
+    expect(await heartbeatTo(reported)).toBe(200);
     const before = await host();
     const switched = await switchIt();
     expect(switched).toMatchObject({
@@ -109,6 +119,8 @@ describe("switching a runner host to SSH", () => {
       dryRun: false,
       protectedContainers: ["postgres"],
       containerAccess: true,
+      hostTerminal: false,
+      hostDeploy: false,
       hostPackages: "check",
     });
     const audit = JSON.stringify((await setup.admin.get(API_ROUTES.audit)).json());

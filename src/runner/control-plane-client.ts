@@ -23,7 +23,6 @@ import { connect, type ConnectionOptions } from "node:tls";
 import { apiPath } from "../shared/api.js";
 import {
   BEARER_PREFIX,
-  RUNNER_CAPABILITIES,
   CONTROL_PLANE_TIMEOUT_MILLISECONDS,
   HTTP_HEADERS,
   HTTP_STATUS,
@@ -33,9 +32,11 @@ import {
   TERMINAL_INPUT_WAIT_MILLISECONDS,
   TLS_MESSAGES,
   INSTALL_FETCH,
+  type RunnerCapability,
 } from "../shared/constants.js";
 import { installDetailsSchema, type InstallAnswer, type InstallDetails } from "../shared/install.js";
 import { publicKeyPin } from "../shared/hash.js";
+import type { EnrolmentDetails } from "../shared/join-code.js";
 import {
   RUNNER_ROUTES,
   containerSettingsSchema,
@@ -51,6 +52,7 @@ import {
   type IncidentNotice,
   type IncidentSubmission,
   type JobProgress,
+  type JoinRequest,
   type JobResult,
   type MetricsReport,
   type Outcome,
@@ -83,6 +85,9 @@ export class PinMismatchError extends Error {
     super(TLS_MESSAGES.pinMismatch);
   }
 }
+
+/** The control plane refused a join code for good: used already, expired, or never given. */
+export class JoinCodeRefusedError extends Error {}
 
 /** Where the control plane is, the token to show it, and its public key when a join code named it. */
 export interface ControlPlaneConnection {
@@ -124,23 +129,61 @@ class PinnedAgent extends Agent {
   }
 }
 
-const agentFor = (connection: ControlPlaneConnection) =>
-  connection.pin === null ? new Agent({ keepAlive: true }) : new PinnedAgent(connection.pin);
+const agentFor = (pin: string | null) => (pin === null ? new Agent({ keepAlive: true }) : new PinnedAgent(pin));
+
+/**
+ * Trades a join code that works once for the token this runner made, sending no token: over TLS that shows the key
+ * the code names, as every request after does.
+ */
+export async function redeemJoinCode(code: EnrolmentDetails, token: string): Promise<void> {
+  const agent = agentFor(code.pin);
+  const body: JoinRequest = { enrolment: code.enrolment, token };
+  try {
+    const response = await new Promise<IncomingMessage>((resolve, reject) => {
+      const outgoing = request(
+        joinUrl(code.url, RUNNER_ROUTES.join),
+        {
+          method: "POST",
+          agent,
+          signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MILLISECONDS),
+          headers: { [HTTP_HEADERS.contentType]: JSON_CONTENT_TYPE },
+        },
+        resolve,
+      );
+      outgoing.on("error", reject);
+      outgoing.end(JSON.stringify(body));
+    });
+    const content = await text(response);
+    const status = response.statusCode ?? 0;
+    if (status === HTTP_STATUS.unauthorized) {
+      throw new JoinCodeRefusedError(content);
+    }
+    if (status < HTTP_SUCCESS.from || status > HTTP_SUCCESS.through) {
+      throw new ControlPlaneError(status, content);
+    }
+  } finally {
+    agent.destroy();
+  }
+}
 
 /** The runner's side of the runner API, over TLS that is always verified. */
 export class ControlPlaneClient {
   private agent: Agent;
   private resultProtocol: Promise<void> | null = null;
+  private readonly capabilities: string;
 
   /**
    * `reload` reads the join code again when the control plane's key changed, or it refused the token: either way
    * it may have written a new code (a new key; this machine's runner added again after it was revoked).
+   * `capabilities` is what its runner can do, named on every request: none unless it says.
    */
   constructor(
     private connection: ControlPlaneConnection,
     private readonly reload: (() => ControlPlaneConnection | null) | null = null,
+    capabilities: readonly RunnerCapability[] = [],
   ) {
-    this.agent = agentFor(connection);
+    this.agent = agentFor(connection.pin);
+    this.capabilities = capabilities.join(",");
   }
 
   heartbeat(heartbeat: Heartbeat): Promise<HeartbeatResponse | null> {
@@ -221,7 +264,7 @@ export class ControlPlaneClient {
             signal,
             headers: {
               [HTTP_HEADERS.contentType]: TAR_CONTENT_TYPE,
-              [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES,
+              [HTTP_HEADERS.runnerCapabilities]: this.capabilities,
               [HTTP_HEADERS.authorization]: `${BEARER_PREFIX}${this.connection.token}`,
             },
           },
@@ -459,7 +502,7 @@ export class ControlPlaneClient {
           signal,
           headers: {
             [HTTP_HEADERS.contentType]: JSON_CONTENT_TYPE,
-            [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES,
+            [HTTP_HEADERS.runnerCapabilities]: this.capabilities,
             [HTTP_HEADERS.authorization]: `${BEARER_PREFIX}${this.connection.token}`,
           },
         },
@@ -484,7 +527,7 @@ export class ControlPlaneClient {
     }
     this.agent.destroy();
     this.connection = fresh;
-    this.agent = agentFor(fresh);
+    this.agent = agentFor(fresh.pin);
     this.resultProtocol = null;
   }
 }

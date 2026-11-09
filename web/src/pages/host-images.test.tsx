@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,11 +8,11 @@ import {
   type HostImagesView,
   type HostView,
   type JobView,
+  type OldImageView,
   type SessionView,
 } from "../../../src/shared/api.js";
-import type { UnusedImage } from "../../../src/shared/protocol.js";
 import type { RegistryCredentialView } from "../../../src/shared/registry-credentials.js";
-import { SESSION_QUERY_KEY } from "../constants.js";
+import { SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { HostImages } from "./host-images.js";
 
 const session: SessionView = {
@@ -44,13 +44,14 @@ const alder = (dryRun: boolean | null): HostView => ({
   problemCount: 0,
 });
 
-const image = (overrides: Partial<UnusedImage>): UnusedImage => ({
+const image = (overrides: Partial<OldImageView>): OldImageView => ({
   id: digest("b"),
   tags: [],
   repository: null,
   sizeBytes: 100_000_000,
-  createdAt: Date.now() - 86_400_000,
+  createdAt: Date.now() - 30 * 86_400_000,
   keptByUpdate: false,
+  unusedSince: Date.now() - 86_400_000,
   ...overrides,
 });
 
@@ -82,6 +83,12 @@ function show(element: ReactNode) {
   render(<QueryClientProvider client={queryClient}>{element}</QueryClientProvider>);
 }
 
+// The question asked where the button is, and the answer given to it there.
+function answer(question: string, said: string) {
+  const asked = screen.getByRole("group", { name: question });
+  fireEvent.click(within(asked).getByRole("button", { name: said }));
+}
+
 const removal = (fetch: ReturnType<typeof serve>, images: string[]) =>
   waitFor(() =>
     expect(fetch).toHaveBeenCalledWith(
@@ -97,8 +104,6 @@ describe("a host's old images", () => {
   });
 
   it("says what each one is, and removes one from its row once asked", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
     const fetch = serve({ images: [KEPT, NAMELESS, BUILT_HERE], lastRemoval: null });
     show(<HostImages host={alder(false)} admin />);
 
@@ -106,17 +111,21 @@ describe("a host's old images", () => {
     expect(screen.getByText("ghcr.io/immich-app/immich-server, without a tag")).toBeTruthy();
     expect(screen.getAllByText("cccccccccccc")).toHaveLength(2);
     expect(screen.getByText(/kept for going back to it by hand/)).toBeTruthy();
+    // When it was left unused, not when its publisher built it.
+    expect(screen.getByRole("columnheader", { name: "Unused since" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Built" })).toBeNull();
+    expect(screen.getAllByText("yesterday").length).toBeGreaterThan(0);
+    expect(screen.queryByText("last month")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Remove ghcr.io/lmmendes/attic:2.7.0-autoheal-previous" }));
 
-    expect(confirm).toHaveBeenCalledWith(
+    answer(
       "Remove ghcr.io/lmmendes/attic:2.7.0-autoheal-previous from Alder? Going back to it by hand needs it: a container ran it before its last update.",
+      TEXT.yes,
     );
     await removal(fetch, [KEPT.id]);
   });
 
   it("removes the selected ones, or all of them, only once asked", async () => {
-    const confirm = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirm);
     const fetch = serve({ images: [KEPT, NAMELESS, BUILT_HERE], lastRemoval: null });
     show(<HostImages host={alder(false)} admin />);
 
@@ -125,16 +134,14 @@ describe("a host's old images", () => {
     );
     fireEvent.click(screen.getByRole("checkbox", { name: "Select cccccccccccc" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove selected (2)" }));
-    expect(confirm).toHaveBeenLastCalledWith("Remove 2 images (1.2 GB) from Alder?");
+    answer("Remove 2 images (1.2 GB) from Alder?", TEXT.yes);
     await removal(fetch, [NAMELESS.id, BUILT_HERE.id]);
 
-    confirm.mockReturnValueOnce(false);
     fireEvent.click(screen.getByRole("button", { name: "Remove all" }));
-    expect(confirm).toHaveBeenLastCalledWith(
-      "Remove 3 images (1.7 GB) from Alder? 1 of them is kept from an update, for going back by hand.",
-    );
+    answer("Remove 3 images (1.7 GB) from Alder? 1 of them is kept from an update, for going back by hand.", TEXT.no);
     fireEvent.click(screen.getByRole("checkbox", { name: "Select every image" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove selected (3)" }));
+    answer("Remove 3 images (1.7 GB) from Alder? 1 of them is kept from an update, for going back by hand.", TEXT.yes);
     await removal(fetch, [KEPT.id, NAMELESS.id, BUILT_HERE.id]);
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
   });

@@ -1,0 +1,26 @@
+/* --- The end of every page, and printing. */
+
+/* Room under the end of every page, so the button can never sit on what is last there. */
+.main {
+  padding-bottom: calc(var(--scroll-to-top-size) + 2 * var(--space-5));
+}
+
+.icon-button.scroll-to-top {
+  position: fixed;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: 30;
+  width: var(--scroll-to-top-size);
+  min-height: var(--scroll-to-top-size);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+}
+
+@media print {
+  .icon-button.scroll-to-top {
+    display: none;
+  }
+}

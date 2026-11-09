@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { API_ROUTES, type SessionView, type ContainerView } from "../../src/shared/api.js";
 import { HTTP_STATUS, ROLE_ADMIN } from "../../src/shared/constants.js";
 import { ApiError, api, rememberCsrfToken } from "./api-client.js";
@@ -10,10 +10,17 @@ import {
 } from "../../src/shared/resource-permissions.js";
 import { INVENTORY_REFRESH_MILLISECONDS, PATHS, SESSION_QUERY_KEY } from "./constants.js";
 
-async function loadSession(): Promise<SessionView | null> {
+/** Every query but the session: what one person's sign-in fetched, which nobody signed in after them may see. */
+export const forgetPrivateData = (queryClient: QueryClient) =>
+  queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== SESSION_QUERY_KEY[0] });
+
+async function loadSession({ client }: { client: QueryClient }): Promise<SessionView | null> {
+  const before = client.getQueryData<SessionView | null>(SESSION_QUERY_KEY)?.user.id;
   try {
     const session = await api<SessionView>("GET", API_ROUTES.session);
     rememberCsrfToken(session.csrfToken);
+    // Another person signed in meanwhile, from another tab: what the last one's pages fetched goes before theirs show.
+    if (before !== undefined && before !== session.user.id) forgetPrivateData(client);
     return session;
   } catch (error) {
     if (error instanceof ApiError && error.status === HTTP_STATUS.unauthorized) {

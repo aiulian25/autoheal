@@ -5,7 +5,14 @@ export const ROLLOUT_ROUTES = {
   rolloutPromote: "/api/rollouts/:rolloutId/promote",
   rolloutHold: "/api/rollouts/:rolloutId/hold",
 } as const;
-export const ROLLOUT_LIMITS = { targets: 12, hosts: 8, retained: 64, retention: 30 * 86400_000 } as const;
+export const ROLLOUT_LIMITS = {
+  targets: 12,
+  hosts: 8,
+  retained: 64,
+  retention: 30 * 86400_000,
+  // How long each cohort is watched before it can be promoted, in minutes.
+  observeMinutes: { min: 1, max: 60 },
+} as const;
 // Why a rollout stands where it does, shown with it.
 export const ROLLOUT_REASONS = {
   awaitingReport: "Waiting for a fresh inventory report after the update.",
@@ -71,21 +78,30 @@ export const rolloutCreateSchema = z
       )
       .min(2)
       .max(ROLLOUT_LIMITS.targets),
-    observeMinutes: z.number().int().min(1).max(60),
+    observeMinutes: z.number().int().min(ROLLOUT_LIMITS.observeMinutes.min).max(ROLLOUT_LIMITS.observeMinutes.max),
     externalDataIsolated: z.literal(true),
     serviceVerificationRequired: z.boolean(),
   })
   .strict()
   .refine((value) => new Set(value.targets.map((t) => `${t.hostId}/${t.containerName}`)).size === value.targets.length);
 export type RolloutCreate = z.infer<typeof rolloutCreateSchema>;
+export const ROLLOUT_STATUS = {
+  updating: "updating",
+  observing: "observing",
+  ready: "ready",
+  held: "held",
+  failed: "failed",
+  inconclusive: "inconclusive",
+  completed: "completed",
+} as const;
 export const ROLLOUT_STATUSES = [
-  "updating",
-  "observing",
-  "ready",
-  "held",
-  "failed",
-  "inconclusive",
-  "completed",
+  ROLLOUT_STATUS.updating,
+  ROLLOUT_STATUS.observing,
+  ROLLOUT_STATUS.ready,
+  ROLLOUT_STATUS.held,
+  ROLLOUT_STATUS.failed,
+  ROLLOUT_STATUS.inconclusive,
+  ROLLOUT_STATUS.completed,
 ] as const;
 export type RolloutStatus = (typeof ROLLOUT_STATUSES)[number];
 const timestamp = z.number().int().nonnegative();

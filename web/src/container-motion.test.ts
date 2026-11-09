@@ -21,6 +21,7 @@ const job = (overrides: Partial<JobView> = {}) =>
     action: "update",
     status: "delivered",
     progress: null,
+    stack: null,
     ...overrides,
   }) as JobView;
 
@@ -47,6 +48,16 @@ describe("the jobs working on a host's containers", () => {
       job({ id: "j5", containerName: "paperless", action: "stop", status: "succeeded" }),
     ]);
     expect([...working].map(([name, entry]) => [name, entry.id])).toEqual([["jellyfin", "j3"]]);
+  });
+
+  it("puts a stack job on every container of its Compose project, and on no other", () => {
+    const rows = [
+      container({ name: "immich-server", composeProject: "immich" }),
+      container({ name: "immich-db", composeProject: "immich" }),
+      container({ name: "jellyfin", composeProject: null }),
+    ];
+    const working = workOf([job({ id: "s1", containerName: "", action: "stack_up", stack: "immich" })], rows);
+    expect([...working.keys()]).toEqual(["immich-server", "immich-db"]);
   });
 });
 

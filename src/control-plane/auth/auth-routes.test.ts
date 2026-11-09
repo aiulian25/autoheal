@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestControlPlane } from "../../../test/support/control-plane.js";
 import { currentCode } from "../../../test/support/second-factor.js";
 import { API_ROUTES, type SessionView, type TotpSetupView } from "../../shared/api.js";
-import { SESSION_COOKIE_NAME, SESSION_IDLE_MILLISECONDS } from "../../shared/constants.js";
+import { LOGIN_FREE_FAILURES, SESSION_COOKIE_NAME, SESSION_IDLE_MILLISECONDS } from "../../shared/constants.js";
 import { auditEvents, users } from "../database/schema.js";
 
 const NEW_PASSWORD = "tangerine-orbit-quietly";
@@ -43,6 +43,19 @@ describe("login, sessions and the forced password change", () => {
       sameSite: "Strict",
       path: "/",
     });
+  });
+
+  it("slows wrong guesses at the current password as signing in does", async () => {
+    const client = controlPlane.client();
+    await client.signIn("admin", firstPassword);
+    const change = (currentPassword: string) =>
+      client.post(API_ROUTES.changePassword, { currentPassword, newPassword: NEW_PASSWORD });
+    for (let guess = 0; guess <= LOGIN_FREE_FAILURES; guess += 1) {
+      expect((await change("not-it-at-all")).json()).toEqual({ error: "wrong_password" });
+    }
+    const slowed = await change(firstPassword);
+    expect(slowed.statusCode).toBe(429);
+    expect(slowed.json()).toEqual({ error: "too_many_attempts", retryAfterSeconds: 1 });
   });
 
   it("blocks everything but the password change until the first-run password is replaced, then asks for TOTP", async () => {

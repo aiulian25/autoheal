@@ -8,7 +8,7 @@ import { buffer } from "node:stream/consumers";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ownCertificate } from "../control-plane/tls/certificate.js";
 import { APPLICATION_BACKUPS } from "../shared/application-backups.js";
-import { HTTP_HEADERS, TAR } from "../shared/constants.js";
+import { HTTP_HEADERS, RUNNER_CAPABILITY, TAR } from "../shared/constants.js";
 import { RUNNER_ROUTES } from "../shared/protocol.js";
 import { ControlPlaneClient, ControlPlaneError, PinMismatchError } from "./control-plane-client.js";
 import { singleEntryArchive } from "./tar.js";
@@ -60,7 +60,9 @@ describe("pinned application backup transport", () => {
         );
       });
     });
-    const client = new ControlPlaneClient({ url, token, pin: material.pin });
+    const client = new ControlPlaneClient({ url, token, pin: material.pin }, null, [
+      RUNNER_CAPABILITY.applicationBackups,
+    ]);
     expect(await client.takeApplicationBackupWork()).toEqual([]);
     expect(await client.authorizeApplicationBackup(taskId, 3)).toBe(true);
     await client.uploadApplicationBackup(taskId, artifactId, Readable.from([data.subarray(0, 3), data.subarray(3)]), 3);

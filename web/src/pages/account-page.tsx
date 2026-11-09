@@ -15,6 +15,7 @@ import { api } from "../api-client.js";
 import { asksFirst, chooseAskFirst } from "../ask-first.js";
 import { ChoiceCard, choicesOf } from "../components/choice-card.js";
 import { CurrentCodeForm } from "../components/current-code-form.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { Badge, ErrorNotice, Loading, PasswordInput, TimeAgo } from "../components/common.js";
 import { SettingsSubpage } from "../components/section-tabs.js";
 import { SESSION_QUERY_KEY, SETTINGS_SECTIONS, TEXT, THEMES, type Theme } from "../constants.js";
@@ -330,6 +331,7 @@ function AddPasskey() {
 
 function PasskeyRow({ passkey }: { passkey: PasskeyView }) {
   const refreshPasskeys = useRefreshPasskeys();
+  const asking = useAskInPlace();
   const [renaming, setRenaming] = useState(false);
   const path = apiPath(API_ROUTES.accountPasskey, { passkeyId: passkey.id });
   const rename = useMutation({
@@ -345,9 +347,7 @@ function PasskeyRow({ passkey }: { passkey: PasskeyView }) {
     rename.mutate(valueOf(new FormData(event.currentTarget), "name"));
   };
   const confirmRemove = () => {
-    if (window.confirm(TEXT.passkeys.confirmRemove(passkey.name))) {
-      remove.mutate();
-    }
+    asking.confirm(TEXT.passkeys.confirmRemove(passkey.name), () => remove.mutate());
   };
   return (
     <li className="stack">
@@ -398,6 +398,7 @@ function PasskeyRow({ passkey }: { passkey: PasskeyView }) {
       {passkey.otherAddress !== null && (
         <span className="small muted">{TEXT.passkeys.otherAddress(passkey.otherAddress)}</span>
       )}
+      {asking.question}
       <ErrorNotice error={rename.error ?? remove.error} />
     </li>
   );

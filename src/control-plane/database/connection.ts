@@ -54,6 +54,8 @@ export function openReadOnly(path: string): Database.Database {
 export class DatabaseHandle {
   private connection: Connection;
   readonly restore = new RestoreCoordinator();
+  // What waits for the transaction `atomically` runs to be kept; null outside one.
+  private keptThen: (() => void)[] | null = null;
 
   constructor(readonly path: string) {
     this.connection = open(path);
@@ -71,6 +73,30 @@ export class DatabaseHandle {
 
   close() {
     this.connection.sqlite.close();
+  }
+
+  /**
+   * `work` as one transaction: every write it makes is kept, or, when it throws, none. What it hands `afterCommit`
+   * happens once its writes are kept, and never when they are not. One inside another is part of the outer one.
+   */
+  atomically<Result>(work: () => Result): Result {
+    if (this.keptThen !== null) return work();
+    const waiting: (() => void)[] = [];
+    this.keptThen = waiting;
+    try {
+      const result = this.sqlite.transaction(work)();
+      this.keptThen = null;
+      waiting.forEach((then) => then());
+      return result;
+    } finally {
+      this.keptThen = null;
+    }
+  }
+
+  /** `then` now, or once the transaction `atomically` runs is kept. */
+  afterCommit(then: () => void) {
+    if (this.keptThen === null) then();
+    else this.keptThen.push(then);
   }
 
   /**

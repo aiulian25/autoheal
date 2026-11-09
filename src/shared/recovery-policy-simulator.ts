@@ -8,7 +8,12 @@ import {
   RESTART_CHOICES,
   type RestartChoice,
 } from "./constants.js";
-import { MAINTENANCE_FRESH_MILLISECONDS, maintenanceWindowSchema, type MaintenancePolicy } from "./maintenance.js";
+import {
+  MAINTENANCE_CLOCK_TOLERANCE_MILLISECONDS,
+  MAINTENANCE_FRESH_MILLISECONDS,
+  maintenanceWindowSchema,
+  type MaintenancePolicy,
+} from "./maintenance.js";
 
 export interface RecoveryGuardState {
   lastKill: number | null;
@@ -78,7 +83,7 @@ export function maintenanceGuardReason(
     policy === null ||
     elapsed < 0 ||
     elapsed > MAINTENANCE_FRESH_MILLISECONDS ||
-    Math.abs(wallDrift) > 60_000
+    Math.abs(wallDrift) > MAINTENANCE_CLOCK_TOLERANCE_MILLISECONDS
   )
     return "policy-unavailable";
   const now = policy.observedAt + elapsed;

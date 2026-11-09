@@ -1,0 +1,432 @@
+/* --- Fleet: every host at a glance, what is stopped, and a new host in three steps --------------- */
+
+.fleet {
+  gap: 28px;
+}
+
+/* The cards sit as far under the header as on Attention. */
+.fleet .page-header {
+  margin-bottom: -2px;
+}
+
+/* A header's one action sits a little above the line under the title, as drawn. */
+.page-header > .button,
+.page-header > .header-action {
+  margin-bottom: 2.5px;
+}
+
+.header-action {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.fleet button.primary,
+.fleet .button.primary {
+  padding-inline: 15px;
+}
+
+/* Level with the words' capitals, which sit a little low. */
+.button .icon {
+  width: var(--button-icon-size);
+  height: var(--button-icon-size);
+  translate: 0 -1px;
+}
+
+.badge {
+  gap: 6px;
+}
+
+.badge .status-dot {
+  width: var(--badge-dot-size);
+  height: var(--badge-dot-size);
+  background: currentColor;
+}
+
+.host-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 23.75rem), 1fr));
+  gap: 6px;
+}
+
+.host-card {
+  position: relative;
+  gap: 0;
+  padding: 11px;
+}
+
+.host-card:hover {
+  border-color: var(--control-border);
+}
+
+.host-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.host-card-head h2 {
+  font-size: var(--text-figure);
+}
+
+.host-card-about {
+  margin-top: 2px;
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.host-card-empty {
+  margin-top: 24px;
+}
+
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.gauge {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  text-align: center;
+}
+
+.gauge .dial {
+  width: var(--fleet-dial-width);
+}
+
+.gauge figcaption {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 100%;
+  margin-top: 10px;
+}
+
+.gauge-label {
+  font-size: var(--text-badge);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--gauge-tracking);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.gauge-detail {
+  margin-top: 2px;
+  font-size: var(--text-badge);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* Under a box's dials, what would add the missing one. */
+.box-hint {
+  margin-top: var(--space-4);
+}
+
+.host-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-4);
+  margin-top: 17.5px;
+  padding-top: 15.5px;
+  border-top: var(--border-width) solid var(--border);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+.host-card-foot .push {
+  margin-left: auto;
+  font-size: var(--text-body);
+}
+
+/* The whole card opens its host: the card's one link, Open, reaches over all of it. */
+.host-card-foot .push::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-large);
+}
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-5);
+  padding: 17.5px 20px 14.5px;
+  background: var(--surface-muted);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-medium);
+  color: var(--text-soft);
+}
+
+/* The dashed tile at the end of the host grid, and the dialog it opens to connect a new host. */
+.connect-host-tile {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  min-height: 14rem;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: var(--radius-large);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-small);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.connect-host-tile:hover,
+.connect-host-tile:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.connect-host-plus {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+dialog.connect-host {
+  width: min(36rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 4rem);
+  margin: 4rem auto auto;
+  padding: 0;
+  overflow-y: auto;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 55%);
+}
+
+.impact-review ul {
+  margin: 6px 0;
+}
+
+.impact-review-actions {
+  justify-content: flex-end;
+  padding: 16px 20px 18px;
+}
+
+dialog.connect-host::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+
+dialog.connect-host > h2 {
+  margin: 0;
+  padding: 16px 20px;
+  font-size: 1rem;
+  border-bottom: var(--border-width) solid var(--border);
+}
+
+/* Columns and fields may shrink below their content: a key list with a full fingerprint would widen the form. */
+.connect-host-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  padding: 18px 20px 0;
+}
+
+.connect-host-body label:not(.tick) {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.connect-host-body :is(input:not([type="checkbox"]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.connect-host-body .tick {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.connect-host-body .tick > span {
+  display: grid;
+  gap: 4px;
+}
+
+.connect-host-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.connect-host-row.with-end {
+  grid-template-columns: minmax(0, 1fr) 7rem;
+  align-items: end;
+}
+
+.connect-host-make {
+  white-space: nowrap;
+}
+
+.connect-host-details {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+  font-size: var(--text-small);
+}
+
+.connect-host-details > summary {
+  padding: 8px 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.connect-host-details > .made-key {
+  padding: 8px 11px 11px;
+  border-top: var(--border-width) solid var(--border);
+}
+
+.connect-host-result {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-sunken);
+}
+
+.connect-host-result.good {
+  border-color: color-mix(in srgb, var(--good) 40%, var(--border));
+  background: color-mix(in srgb, var(--good) 10%, transparent);
+}
+
+.connect-host-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 4px -20px 0;
+  padding: 14px 20px;
+  border-top: var(--border-width) solid var(--border);
+}
+
+@media (max-width: 34rem) {
+  .connect-host-row,
+  .connect-host-row.with-end {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.add-host-explanation {
+  margin-top: 7.5px;
+}
+
+.step-cards {
+  list-style: none;
+  margin: 22.5px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 14px;
+}
+
+@media (min-width: 64rem) {
+  .step-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.step-card {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  min-width: 0;
+  padding: 18px;
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+}
+
+.step-card.active {
+  border-color: var(--primary);
+}
+
+.step-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Its words line up with the number's middle. */
+.step-title > span:last-child {
+  margin-top: 2px;
+}
+
+.step-number {
+  display: inline-grid;
+  place-items: center;
+  width: var(--step-number-size);
+  height: var(--step-number-size);
+  border-radius: 50%;
+  background: var(--control);
+  font-size: var(--text-badge);
+}
+
+/* A command to run on a host, beside its copy button: it wraps rather than scroll sideways on a phone. */
+.command-block {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.command-block pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.made-key {
+  margin-top: var(--space-3);
+}
+
+.step-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.step-form label {
+  gap: 6px;
+}
+
+.step-form button {
+  align-self: flex-start;
+}
+
+.hint {
+  margin-top: -1.5px;
+  font-size: var(--text-badge);
+  color: var(--text-faint);
+}
+
+.step-text {
+  color: var(--text-faint);
+}
+
+/* A setting or a command breaks between words, never inside one. */
+.step-card code {
+  white-space: nowrap;
+}

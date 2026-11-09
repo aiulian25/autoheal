@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { incidents } from "../database/schema.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeOllama, MODEL_DIGEST, answer } from "../../../test/fakes/fake-ollama.js";
 import {
   startTestControlPlane,
@@ -24,6 +24,8 @@ import {
   BYTES_PER_GIBIBYTE,
   METRICS_INTERVAL_MILLISECONDS,
   METRICS_HISTORY_MILLISECONDS,
+  PRIORITY_LIVE,
+  PRIORITY_REPLAY,
   THINKING_TRACE_LIMIT,
 } from "../../shared/constants.js";
 import { containerSnapshot, containerUsage, heartbeatWith } from "../../../test/support/inventory.js";
@@ -156,6 +158,33 @@ describe("decisions on the control plane", () => {
       release();
       await response;
     }
+  });
+
+  it("asks about a container set only to tell behind every live incident, so a decision that matters never waits", async () => {
+    const hostId = (await admin.get(API_ROUTES.hosts)).json<HostView[]>()[0]!.id;
+    const reported = await controlPlane.runnerApp.inject({
+      method: "POST",
+      url: RUNNER_ROUTES.heartbeat,
+      payload: heartbeatWith({ containers: [containerSnapshot({ name: "paperless" })] }),
+      headers: { authorization: `Bearer ${runnerToken}` },
+    });
+    expect(reported.statusCode).toBe(200);
+    const choose = async (restart: string) =>
+      expect(
+        (await admin.put(apiPath(API_ROUTES.containerControls, { hostId }), { names: ["paperless"], restart }))
+          .statusCode,
+      ).toBe(204);
+    const asked = vi.spyOn(controlPlane.services.ollamaPool, "askFor");
+    ollama.handler = () => answer({ action: "restart", target: "paperless", diagnosis: "It ran out of memory." });
+
+    await choose("tell");
+    // Ollama still says what it thinks, as the container's page promises: once nothing live waits.
+    expect((await submit()).json<DecisionResponse>().decision.diagnosis).toBe("It ran out of memory.");
+    expect(asked.mock.calls.at(-1)?.[1]).toBe(PRIORITY_REPLAY);
+
+    await choose("restart");
+    await submit();
+    expect(asked.mock.calls.at(-1)?.[1]).toBe(PRIORITY_LIVE);
   });
 
   it("answers with the model's decision and traces every step", async () => {

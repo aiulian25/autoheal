@@ -12,6 +12,7 @@ import {
   type SshKeyView,
 } from "../../../src/shared/api.js";
 import { TEXT } from "../constants.js";
+import { timeOfDay } from "../format.js";
 import { ConnectHostTile } from "./connect-host.js";
 
 const text = TEXT.connectHost;
@@ -40,6 +41,15 @@ const pending: PendingSshHostView = {
 };
 const newHost = (overrides: Partial<HostView> = {}) =>
   ({ id: "h3", label: "DS923", state: "never_seen", ...overrides }) as HostView;
+const AN_HOUR = 3_600_000;
+const enrolledWith = (installCommand: string, joinCodeExpiresAt = Date.now() + AN_HOUR): EnrolledHostView => ({
+  host: newHost(),
+  joinCode: "join-code",
+  joinCodeExpiresAt,
+  imageCopyCommand: null,
+  installCommand,
+  rejoinCommand: "sed -i .env && docker compose up -d",
+});
 
 // jsdom has <dialog> but neither opens nor closes one.
 beforeAll(() => {
@@ -178,12 +188,7 @@ describe("connecting a new host from the tile at the end of the host grid", () =
   });
 
   it("with a runner: makes its install command, waits for it, and is done once it joined", async () => {
-    const enrolled: EnrolledHostView = {
-      host: newHost(),
-      joinCode: "join-code",
-      imageCopyCommand: null,
-      installCommand: "mkdir -p autoheal && cd autoheal && docker compose up -d",
-    };
+    const enrolled = enrolledWith("mkdir -p autoheal && cd autoheal && docker compose up -d");
     const { fetch, rerender } = show({
       [`GET ${API_ROUTES.settings}`]: settings,
       [`POST ${API_ROUTES.hosts}`]: enrolled,
@@ -204,6 +209,8 @@ describe("connecting a new host from the tile at the end of the host grid", () =
       { label: "DS923", address: settings.runnerAddress, nasFolder: "/volume1/docker/autoheal" },
     ]);
     expect(dialog.getByText(TEXT.hosts.add.waiting("DS923"))).toBeTruthy();
+    expect(dialog.getByText(TEXT.hosts.add.worksUntil(timeOfDay(enrolled.joinCodeExpiresAt)))).toBeTruthy();
+    expect(dialog.queryByRole("button", { name: TEXT.hosts.add.makeAgain })).toBeNull();
     // This image can be downloaded, so there is no copying to do.
     expect(dialog.queryByText(TEXT.hosts.add.nasCopyTitle)).toBeNull();
     expect(dialog.getByText(TEXT.hosts.add.nasPaste)).toBeTruthy();
@@ -214,18 +221,42 @@ describe("connecting a new host from the tile at the end of the host grid", () =
 
     rerender([newHost({ state: "online" })]);
     expect(await dialog.findByText(TEXT.hosts.add.connected("DS923"))).toBeTruthy();
+    // Its code is used now: nothing says until when it works.
+    expect(dialog.queryByText(TEXT.hosts.add.worksUntil(timeOfDay(enrolled.joinCodeExpiresAt)))).toBeNull();
     fireEvent.click(dialog.getByRole("button", { name: text.done }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(sent(fetch, "POST", apiPath(API_ROUTES.hostRevoke, { hostId: "h3" }))).toEqual([]);
   });
 
+  it("with a runner: once its code ran out unused, shows no command and makes a new one for the same host", async () => {
+    const expired = enrolledWith("docker compose up -d # the old code", Date.now() - 1);
+    const renewed = enrolledWith("docker compose up -d # the new code");
+    const { fetch } = show({
+      [`GET ${API_ROUTES.settings}`]: settings,
+      [`POST ${API_ROUTES.hosts}`]: expired,
+      [`POST ${apiPath(API_ROUTES.hostJoinCode, { hostId: "h3" })}`]: renewed,
+    });
+    const dialog = await openDialog();
+    fireEvent.change(dialog.getByRole("combobox", { name: new RegExp(`^${text.connection}`) }), {
+      target: { value: "runner" },
+    });
+    fireEvent.click(dialog.getByRole("checkbox", { name: new RegExp(TEXT.hosts.add.nas) }));
+    fireEvent.click(await dialog.findByRole("button", { name: text.makeCommand }));
+
+    expect(await dialog.findByText(TEXT.hosts.add.expired(timeOfDay(expired.joinCodeExpiresAt)))).toBeTruthy();
+    expect(dialog.queryByText(expired.installCommand)).toBeNull();
+    fireEvent.click(dialog.getByRole("button", { name: TEXT.hosts.add.makeAgain }));
+
+    expect(await dialog.findByText(renewed.installCommand)).toBeTruthy();
+    expect(dialog.getByText(TEXT.hosts.add.worksUntil(timeOfDay(renewed.joinCodeExpiresAt)))).toBeTruthy();
+    expect(dialog.queryByRole("button", { name: TEXT.hosts.add.makeAgain })).toBeNull();
+    expect(sent(fetch, "POST", apiPath(API_ROUTES.hostJoinCode, { hostId: "h3" }))).toEqual([
+      { address: settings.runnerAddress, nasFolder: "/volume1/docker/autoheal" },
+    ]);
+  });
+
   it("revokes a runner host that never joined when it is cancelled: its join code opens nothing", async () => {
-    const enrolled: EnrolledHostView = {
-      host: newHost(),
-      joinCode: "join-code",
-      imageCopyCommand: null,
-      installCommand: "docker compose up -d",
-    };
+    const enrolled = enrolledWith("docker compose up -d");
     const { fetch } = show({
       [`GET ${API_ROUTES.settings}`]: settings,
       [`POST ${API_ROUTES.hosts}`]: enrolled,

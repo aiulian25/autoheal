@@ -5,7 +5,9 @@ import {
   HOST_CHANGE_PROMPT,
   INCIDENT_STATUS,
   PRIORITY_LIVE,
+  PRIORITY_REPLAY,
   RAW_ANSWER_TRACE_LIMIT,
+  RESTART_CHOICE,
   THINKING_TRACE_LIMIT,
   TRACE,
 } from "../../shared/constants.js";
@@ -16,6 +18,7 @@ import type { HostRow } from "../hosts/hosts-service.js";
 import type { IncidentsService } from "../incidents/incidents-service.js";
 import type { NetworkWatch } from "../network/network-watch.js";
 import type { HostModels, ModelServer } from "../ollama/ollama-pool.js";
+import type { JobPriority } from "./decision-queue.js";
 import { buildPrompt, composeSystemPrompt } from "../../shared/prompt.js";
 import {
   renderChanges,
@@ -42,7 +45,7 @@ export class DecisionService {
     private readonly runbooks: RunbooksService,
     private readonly network: Pick<NetworkWatch, "evidenceFor">,
     private readonly metrics: Pick<MetricsStore, "containerHistory">,
-    private readonly changes: Pick<InventoryService, "recentChanges" | "hostAddress">,
+    private readonly inventory: Pick<InventoryService, "recentChanges" | "hostAddress" | "containers">,
   ) {}
 
   /**
@@ -58,7 +61,7 @@ export class DecisionService {
     // The failed container's, its compose neighbours' and the host's own: what can explain this failure.
     const concerned = new Set([report.containerName, ...(report.neighbours ?? []).map(({ name }) => name)]);
     const since = incident.createdAt - HOST_CHANGE_PROMPT.windowMilliseconds;
-    const changes = this.changes.recentChanges(host.id, concerned, since, HOST_CHANGE_PROMPT.entries);
+    const changes = this.inventory.recentChanges(host.id, concerned, since, HOST_CHANGE_PROMPT.entries);
     const networkEvidence = this.network.evidenceFor(this.addressOf(host), report.containerName, incident.createdAt);
     const sections = [
       renderEarlierIncidents(earlier),
@@ -91,7 +94,14 @@ export class DecisionService {
     };
     let decision: Decision;
     try {
-      decision = await this.askModel(incident.id, host.id, promptFor, submission, runnerGone);
+      decision = await this.askModel(
+        incident.id,
+        host.id,
+        promptFor,
+        submission,
+        runnerGone,
+        this.priorityOf(host, report.containerName),
+      );
     } catch (error) {
       if (!(error instanceof RunnerGoneError)) {
         throw error;
@@ -119,8 +129,17 @@ export class DecisionService {
     return { incidentId: incident.id, decision };
   }
 
+  /**
+   * A container set only to tell is never restarted, and nobody waits on its answer: Ollama is asked about it behind
+   * every live incident, and is stopped and asked again later should one come meanwhile. Its word still comes.
+   */
+  private priorityOf(host: HostRow, containerName: string): JobPriority {
+    const container = this.inventory.containers({ hostId: host.id }).find(({ name }) => name === containerName);
+    return container?.byItself.restart === RESTART_CHOICE.tell ? PRIORITY_REPLAY : PRIORITY_LIVE;
+  }
+
   private addressOf(host: HostRow): string | null {
-    return this.changes.hostAddress(host.id);
+    return this.inventory.hostAddress(host.id);
   }
 
   // Facts and the owner's words only: the model's own earlier diagnoses never come back to it as facts.
@@ -143,11 +162,12 @@ export class DecisionService {
     promptFor: (server: ModelServer) => { systemPrompt: string; userPrompt: string },
     { report }: IncidentSubmission,
     runnerGone: AbortSignal,
+    priority: JobPriority,
   ): Promise<Decision> {
     try {
       const { content, thinking } = await this.models.askFor(
         hostId,
-        PRIORITY_LIVE,
+        priority,
         (server, signal) => {
           const { systemPrompt, userPrompt } = promptFor(server);
           return server.client.chat(systemPrompt, userPrompt, AbortSignal.any([signal, runnerGone]));

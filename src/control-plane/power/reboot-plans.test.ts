@@ -9,10 +9,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type TaskSummaryView } from "../../shared/api.js";
-import { HOST_KIND, HTTP_HEADERS, JOB_ACTION, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { HOST_KIND, HTTP_HEADERS, JOB_ACTION } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type PackageFacts, type WorkResponse } from "../../shared/protocol.js";
 import type { ProbeView } from "../../shared/probes.js";
 import {
@@ -71,7 +71,7 @@ describe("a plan of reboots across three hosts", () => {
       payload,
       headers: {
         authorization: `Bearer ${world.tokens[index]!}`,
-        [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES,
+        [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY,
       },
     });
   const report = async (index: number) => {
@@ -756,7 +756,10 @@ describe("a plan across a control plane restart", () => {
         }),
         eventStreamConnected: true,
       },
-      headers: { authorization: `Bearer ${tokens[index]!}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: {
+        authorization: `Bearer ${tokens[index]!}`,
+        [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY,
+      },
     });
   const rebootJobs = () =>
     plane.services.databaseHandle.database.select().from(jobs).where(eq(jobs.action, JOB_ACTION.reboot)).all();
@@ -796,7 +799,7 @@ describe("a plan across a control plane restart", () => {
     await plane.runnerApp.inject({
       method: "GET",
       url: RUNNER_ROUTES.work,
-      headers: { authorization: `Bearer ${tokens[0]!}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${tokens[0]!}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
 
     await restart();

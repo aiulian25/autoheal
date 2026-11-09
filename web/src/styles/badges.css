@@ -1,0 +1,95 @@
+/* --- badges and chips ----------------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: var(--badge-height);
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+}
+
+.badge.good {
+  color: var(--good);
+  background: var(--good-surface);
+}
+
+.badge.warning {
+  color: var(--warning);
+  background: var(--warning-surface);
+}
+
+.badge.danger {
+  color: var(--danger);
+  background: var(--danger-surface);
+}
+
+.badge.neutral {
+  color: var(--neutral);
+  background: var(--neutral-surface);
+}
+
+/* A state in words with its dot: "online", "answering". */
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-badge);
+  color: var(--tone, var(--text-muted));
+}
+
+.tone-good {
+  --tone: var(--good);
+}
+
+.tone-warning {
+  --tone: var(--warning);
+}
+
+.tone-danger {
+  --tone: var(--danger);
+}
+
+.tone-neutral {
+  --tone: var(--text-muted);
+}
+
+.tone-blue {
+  --tone: var(--series-blue);
+}
+
+.tone-green {
+  --tone: var(--series-green);
+}
+
+.tone-amber {
+  --tone: var(--series-amber);
+}
+
+.tone-violet {
+  --tone: var(--series-violet);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--chip-height);
+  padding: 0 10px;
+  border-radius: var(--radius-small);
+  background: var(--control);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chip .icon {
+  width: 14px;
+  height: 14px;
+  color: var(--good);
+}

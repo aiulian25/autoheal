@@ -2,8 +2,9 @@ import { createPublicKey, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { API_ERRORS } from "../../shared/api.js";
-import { AUDIT_ACTIONS, IMAGE_PROVENANCE, TARGET_REGISTRY } from "../../shared/constants.js";
+import { AUDIT_ACTIONS, HEX_RADIX, IMAGE_PROVENANCE, TARGET_REGISTRY } from "../../shared/constants.js";
 import type { ImageTrustPolicy, TrustRule, TrustedPublisher } from "../../shared/image-provenance.js";
+import { sha256Hex } from "../../shared/hash.js";
 import { registryHostOf } from "../../shared/registry-credentials.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
@@ -150,12 +151,19 @@ export class ImageTrustService {
   }
 
   /**
-   * What the policy is, as one number: the newest change to it. Every runner caches evidence under this, so a key
-   * or a rule added or taken away makes each one ask its registries again.
+   * Which policy this is, as one number: read from the keys and scopes a runner is given, so any other policy has
+   * another number whatever the clock did or a restore put back, and a key or a rule added or taken away makes every
+   * runner ask its registries again. Nothing set up is 0, as a runner starts with.
    */
   private revision(): number {
-    const times = [...this.publisherRows().map((row) => row.createdAt), ...this.ruleRows().map((row) => row.createdAt)];
-    return times.length === 0 ? 0 : Math.max(...times) + times.length;
+    const entries = [
+      ...this.publisherRows().map(({ name, publicKey }) => JSON.stringify([name, publicKey])),
+      ...this.ruleRows().map(({ registry, repository, publishersJson }) =>
+        JSON.stringify([registry, repository, publishersJson]),
+      ),
+    ].toSorted();
+    if (entries.length === 0) return 0;
+    return Number.parseInt(sha256Hex(JSON.stringify(entries)).slice(0, IMAGE_PROVENANCE.revisionHexDigits), HEX_RADIX);
   }
 
   private publisherRows() {

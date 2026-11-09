@@ -10,6 +10,7 @@ import {
   type HostControlView,
   type HostUpdateSettingsView,
   type HostView,
+  type IgnoredVersionChange,
   type JobView,
 } from "../../shared/api.js";
 import {
@@ -17,6 +18,8 @@ import {
   AUDIT_ACTIONS,
   FALLBACK_TIME_ZONE,
   HOST_STATE,
+  IGNORE_EVERY_VERSION,
+  IMAGE_TAG_PATTERN,
   JOB_ACTION,
   JOB_STATUS,
   MILLISECONDS_PER_SECOND,
@@ -31,7 +34,7 @@ import type { HostControl } from "../../shared/protocol.js";
 import { wallClock } from "../../shared/time-zones.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { containerControls, hosts, jobs } from "../database/schema.js";
+import { containerControls, hosts, ignoredVersions, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import { insideWindow } from "../host-packages/host-packages-service.js";
@@ -199,6 +202,41 @@ export class HostControlService {
       AUDIT_ACTIONS.containerControlSaved,
       { kind: TARGET_HOST, id: hostId },
       { ...change },
+    );
+  }
+
+  /**
+   * The newer versions a person ignores: one version (the next one shows again), every new version of a container,
+   * or none any more. An ignored version gets no task, no badge and nothing on Attention.
+   */
+  ignoreVersions(actor: Actor, hostId: string, changes: readonly IgnoredVersionChange[]) {
+    this.hostRow(hostId);
+    const onHost = new Set(this.dependencies.inventory.containers({ hostId }).map(({ name }) => name));
+    const valid = ({ container, version }: IgnoredVersionChange) =>
+      onHost.has(container) &&
+      (version === null || version === IGNORE_EVERY_VERSION || IMAGE_TAG_PATTERN.test(version));
+    if (!changes.every(valid)) {
+      throw new DomainError(API_ERRORS.containerNotFound);
+    }
+    const ignoredAt = this.clock();
+    for (const { container, version } of changes) {
+      const row = and(eq(ignoredVersions.hostId, hostId), eq(ignoredVersions.containerName, container));
+      if (version === null) {
+        this.database.delete(ignoredVersions).where(row).run();
+        continue;
+      }
+      const values = { hostId, containerName: container, version, ignoredBy: actor.username, ignoredAt };
+      this.database
+        .insert(ignoredVersions)
+        .values(values)
+        .onConflictDoUpdate({ target: [ignoredVersions.hostId, ignoredVersions.containerName], set: values })
+        .run();
+    }
+    this.dependencies.auditLog.recordUserAction(
+      actor,
+      AUDIT_ACTIONS.versionsIgnored,
+      { kind: TARGET_HOST, id: hostId },
+      { changes: changes.map((change) => ({ ...change })) },
     );
   }
 

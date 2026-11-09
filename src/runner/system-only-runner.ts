@@ -31,9 +31,9 @@ const NO_CONTAINERS = { error: CONTAINER_ACCESS_REFUSALS.noDocker };
  */
 export function startSystemOnlyRunner(
   config: RunnerConfig,
-  ports: Pick<RunnerPorts, "hostFiles" | "hostCommand" | "packageUnits" | "hostShell">,
+  ports: Pick<RunnerPorts, "hostFiles" | "hostCommand" | "packageUnits" | "hostShell" | "reconnect">,
 ): () => Promise<void> {
-  const controlPlane = new ControlPlaneClient(config.controlPlane!);
+  const controlPlane = new ControlPlaneClient(config.controlPlane!, ports.reconnect ?? null);
   const gpus = new NvidiaGpus(NVIDIA_SMI.command, ports.hostCommand);
   const kernelGpus = new SysfsGpus(config.hostRoot, ports.hostFiles);
   const metrics = new HostMetricsSampler({
@@ -54,15 +54,18 @@ export function startSystemOnlyRunner(
     void done.finally(() => running.delete(done));
   };
   const heartbeat = async () => {
-    const host = await readHostHealth({
-      hostRoot: config.hostRoot,
-      filesystems: config.hostFilesystems,
-      packages: config.hostPackages,
-      files: ports.hostFiles,
-    }).catch((error: unknown) => {
-      noted(error);
-      return null;
-    });
+    const [host, clockOffset] = await Promise.all([
+      readHostHealth({
+        hostRoot: config.hostRoot,
+        filesystems: config.hostFilesystems,
+        packages: config.hostPackages,
+        files: ports.hostFiles,
+      }).catch((error: unknown) => {
+        noted(error);
+        return null;
+      }),
+      ports.hostFiles.clockOffset(),
+    ]);
     const payload: Heartbeat = {
       runnerVersion: RUNNING_VERSION,
       hostLabel: config.hostLabel,
@@ -75,6 +78,7 @@ export function startSystemOnlyRunner(
       containerAccess: false,
       docker: false,
       hostTerminal: config.hostTerminal,
+      ...(clockOffset === null ? {} : { hostClock: Date.now() + clockOffset }),
     };
     await controlPlane.heartbeat(payload);
   };

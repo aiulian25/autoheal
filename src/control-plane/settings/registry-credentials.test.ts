@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestClient,
+  type TestControlPlane,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type AuditEventView, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, HTTP_STATUS } from "../../shared/constants.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { RUNNER_ROUTES, type HeartbeatResponse } from "../../shared/protocol.js";
 import type { RegistryCredentialTestView, RegistryCredentialView } from "../../shared/registry-credentials.js";
 import { registryCredentials } from "../database/schema.js";
@@ -23,9 +27,9 @@ describe("credentials for private registries", () => {
     const joined: Record<string, string> = {};
     for (const label of labels) {
       const enrolled = (await admin.post(API_ROUTES.hosts, { label })).json<EnrolledHostView>();
-      const details = decodeJoinCode(enrolled.joinCode)!;
-      joined[label] = details.token;
-      await heartbeatOf(details.token, label);
+      const token = runnerTokenOf(enrolled);
+      joined[label] = token;
+      await heartbeatOf(token, label);
     }
     return joined;
   }

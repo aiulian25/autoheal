@@ -18,6 +18,7 @@ import {
 } from "../../shared/api.js";
 import {
   BYTES_PER_GIBIBYTE,
+  AUTOHEAL_ASSESSMENT,
   HEARTBEAT_INTERVAL_MILLISECONDS,
   JOB_ANSWER_MILLISECONDS,
   JOB_EXPIRY_MILLISECONDS,
@@ -180,6 +181,19 @@ describe("container actions", () => {
       expect(await viewOf(other.id)).toMatchObject({ recoveryBackupId: null });
     });
 
+    it("never goes out without what it backs up or restores", () => {
+      const author = {
+        kind: "user" as const,
+        actor: { userId: adminId(), username: "admin", ip: "127.0.0.1", requestId: "r" },
+      };
+      for (const action of ["backup_container", "restore_container"] as const) {
+        expect(
+          () => controlPlane.services.jobsService.request(author, hostId, "paperless", action, null),
+          action,
+        ).toThrow(expect.objectContaining({ code: "invalid_request" }));
+      }
+    });
+
     it("refuses what is not a backup's name", async () => {
       const jobId = restoreJob();
       await takeWork();
@@ -276,6 +290,13 @@ describe("container actions", () => {
     expect((await ask("ghost", { action: "restart" })).json()).toEqual({ error: "container_not_found" });
     expect((await ask("postgres", { action: "update" })).json()).toEqual({ error: "job_unavailable" });
     expect((await ask("paperless", { action: "check_updates" })).statusCode).toBe(400);
+    // What carries details of its own is asked for elsewhere: sent here without them, it would be a job that fails.
+    for (const action of ["backup_container", "restore_container", "change_tag", "edit"]) {
+      const asked = await ask("paperless", { action });
+      expect(asked.statusCode, action).toBe(400);
+      expect(asked.json(), action).toMatchObject({ error: "invalid_request" });
+    }
+    expect((await takeWork()).jobs).toEqual([]);
     await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId }));
     expect((await ask("paperless", { action: "restart" })).json()).toEqual({ error: "host_revoked" });
   });
@@ -326,6 +347,28 @@ describe("container actions", () => {
     await admin.get(`${API_ROUTES.jobs}?${new URLSearchParams({ [JOB_QUERY.hostId]: silent.hostId })}`);
     const failed = (await admin.get(apiPath(API_ROUTES.job, { jobId: silent.id }))).json<JobView>();
     expect(failed).toMatchObject({ status: "failed", outcome: expect.stringContaining("never said how it went") });
+  });
+
+  it("fails a job its runner never answered at the next sweep, with nobody polling or listing, and gives its task back", async () => {
+    await controlPlane.services.detectorService.run();
+    const task = (await openTasks()).find((candidate) => candidate.title === "Update whoami on Alder")!;
+    await admin.request({
+      method: "PATCH",
+      url: apiPath(API_ROUTES.task, { taskId: task.id }),
+      payload: { assignee: { kind: "user", id: (await detail(task.id)).assignee!.id } },
+    });
+    const job = (await ask("whoami", { action: "update", taskId: task.id })).json<JobView>();
+    await takeWork();
+    // Its host goes quiet: no poll comes again, and nobody opens a list of jobs.
+    controlPlane.clock.now += JOB_ANSWER_MILLISECONDS + 1;
+    const viewOf = async () => (await admin.get(apiPath(API_ROUTES.job, { jobId: job.id }))).json<JobView>();
+    expect((await viewOf()).status).toBe("delivered");
+    controlPlane.services.jobsService.expireStale();
+    expect(await viewOf()).toMatchObject({
+      status: "failed",
+      outcome: expect.stringContaining("never said how it went"),
+    });
+    expect((await detail(task.id)).status).toBe("todo");
   });
 
   it("leaves a person's task waiting again when their update fails, and closes it once the update is gone", async () => {
@@ -454,11 +497,64 @@ describe("container actions", () => {
       expect((await takeWork()).jobs).toEqual([]);
     });
 
-    it("goes ahead as the label allows when Ollama cannot be asked", async () => {
+    it("waits for Ollama's word when it cannot be asked, then hands the update to a person, never going ahead alone", async () => {
       const task = await whoamiTask();
-      await controlPlane.services.autohealWorker.run();
-      expect((await detail(task.id)).comments.at(-1)?.body).toContain("Ollama could not be asked");
+      // This control plane has no Ollama to ask.
+      const worker = controlPlane.services.autohealWorker;
+      await worker.run();
+      const waiting = await detail(task.id);
+      expect(waiting).toMatchObject({ checkedOut: false, assignee: { kind: "agent" } });
+      expect(waiting.comments.map((comment) => comment.body)).toEqual([
+        expect.stringContaining("this update waits for its word"),
+      ]);
+      expect((await takeWork()).jobs).toEqual([]);
+
+      // Asked again later, holding nothing: while there is still no word, its page says no more.
+      const activityBefore = waiting.activity.length;
+      controlPlane.clock.now += AUTOHEAL_ASSESSMENT.askAgainMilliseconds;
+      await worker.run();
+      expect((await detail(task.id)).activity).toHaveLength(activityBefore);
+      expect((await takeWork()).jobs).toEqual([]);
+
+      // The wait began at the first run: it is over now.
+      controlPlane.clock.now += AUTOHEAL_ASSESSMENT.handOverMilliseconds - AUTOHEAL_ASSESSMENT.askAgainMilliseconds;
+      await worker.run();
+      const handedOver = await detail(task.id);
+      expect(handedOver.assignee).toMatchObject({ kind: "user", name: "admin" });
+      expect(handedOver.comments.at(-1)?.body).toContain("waits for you");
+      expect((await takeWork()).jobs).toEqual([]);
+
+      // Given back by the person: their go-ahead, as after a hold.
+      await admin.request({
+        method: "PATCH",
+        url: apiPath(API_ROUTES.task, { taskId: task.id }),
+        payload: { assignee: { kind: "agent", id: "autoheal" } },
+      });
+      await worker.run();
       expect((await takeWork()).jobs.map((job) => job.containerName)).toEqual(["whoami"]);
+    });
+
+    it("goes ahead once Ollama answers after a wait, as its answer says", async () => {
+      const task = await whoamiTask();
+      let assessment: Assessment = { decision: null, reason: "connection refused" };
+      const worker = new AutohealWorker({
+        tasks: controlPlane.services.tasksService,
+        jobs: controlPlane.services.jobsService,
+        inventory: controlPlane.services.inventoryService,
+        assessor: { assess: async () => assessment },
+        notifier: controlPlane.services.notifier,
+        clock: () => controlPlane.clock.now,
+      });
+      await worker.run();
+      expect((await takeWork()).jobs).toEqual([]);
+
+      assessment = { decision: "update", reason: "A web demo with no data." };
+      await worker.run();
+      expect((await takeWork()).jobs).toEqual([]);
+      controlPlane.clock.now += AUTOHEAL_ASSESSMENT.askAgainMilliseconds;
+      await worker.run();
+      expect((await takeWork()).jobs.map((job) => job.containerName)).toEqual(["whoami"]);
+      expect((await detail(task.id)).comments.at(-1)?.body).toBe("Going ahead: A web demo with no data.");
     });
   });
 

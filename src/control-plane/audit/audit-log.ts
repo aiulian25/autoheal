@@ -10,6 +10,7 @@ import {
   type ActorKind,
   type AuditAction,
 } from "../../shared/constants.js";
+import { log } from "../../shared/log.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { auditEvents } from "../database/schema.js";
 
@@ -38,16 +39,15 @@ export interface AuditTarget {
   id: string;
 }
 
-function assertNoSecretFields(details: unknown) {
-  if (typeof details !== "object" || details === null) {
-    return;
-  }
-  for (const [key, value] of Object.entries(details)) {
-    if (SECRET_FIELD_PATTERN.test(key)) {
-      throw new Error(AUDIT_MESSAGES.secretField(key));
-    }
-    assertNoSecretFields(value);
-  }
+// The details as written, without any field named like a secret at any depth, and the names of those left out.
+function withoutSecretFields(details: Record<string, unknown>) {
+  const leftOut: string[] = [];
+  const json = JSON.stringify(details, (key, value: unknown) => {
+    if (!SECRET_FIELD_PATTERN.test(key)) return value;
+    leftOut.push(key);
+    return undefined;
+  });
+  return { json, leftOut };
 }
 
 export interface AuditCursor {
@@ -64,11 +64,18 @@ export class AuditLog {
     private readonly databaseHandle: DatabaseHandle,
     private readonly writeLine: (line: string) => void = (line) => process.stdout.write(line),
     private readonly clock: () => number = Date.now,
+    // Tests refuse a field named like a secret, so it is caught before it ships. A running dashboard leaves it out and
+    // says so instead: whatever was recorded is done by now, and must not fail over its record.
+    private readonly options: { refuseSecretFields?: boolean } = {},
   ) {}
 
   record(entry: AuditEntry): string {
-    const details = entry.details ?? {};
-    assertNoSecretFields(details);
+    const { json, leftOut } = withoutSecretFields(entry.details ?? {});
+    if (leftOut.length > 0 && this.options.refuseSecretFields === true) {
+      throw new Error(AUDIT_MESSAGES.secretField(leftOut[0]!));
+    }
+    if (leftOut.length > 0) log(AUDIT_MESSAGES.secretFieldsLeftOut(entry.action, leftOut.join(", ")));
+    const details = JSON.parse(json) as Record<string, unknown>;
     const event = {
       id: randomUUID(),
       occurredAt: this.clock(),
@@ -83,9 +90,11 @@ export class AuditLog {
     };
     this.databaseHandle.database
       .insert(auditEvents)
-      .values({ ...event, detailsJson: JSON.stringify(details) })
+      .values({ ...event, detailsJson: json })
       .run();
-    this.writeLine(`${JSON.stringify({ type: AUDIT_STDOUT_TYPE, ...event, details })}\n`);
+    // A line for the host's logs says only what was kept.
+    const line = `${JSON.stringify({ type: AUDIT_STDOUT_TYPE, ...event, details })}\n`;
+    this.databaseHandle.afterCommit(() => this.writeLine(line));
     return event.id;
   }
 

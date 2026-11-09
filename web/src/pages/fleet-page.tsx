@@ -40,7 +40,7 @@ import { isAdmin, useSignedInSession } from "../session.js";
 import { ConnectHostTile } from "./connect-host.js";
 import { powerBadge } from "./host-power.js";
 import { HomeAssistantFleetCard } from "./home-assistant-system.js";
-import { diskUsedPercent, fullestDisk, networkCeiling, rateDial, shareDial } from "./host-stats.js";
+import { diskUsedPercent, fullestDisk, networkCeiling, rateDial, shareDial } from "./host-dial-values.js";
 
 const hostLink = (hostId: string) => apiPath(PATHS.host, { hostId });
 

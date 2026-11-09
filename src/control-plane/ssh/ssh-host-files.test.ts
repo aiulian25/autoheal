@@ -6,8 +6,8 @@ import { FakeSshServer, type FakeExecAnswer } from "../../../test/fakes/fake-ssh
 import { NvidiaGpus } from "../../runner/gpu-metrics.js";
 import { readHostHealth } from "../../runner/host-health.js";
 import { HostMetricsSampler } from "../../runner/host-metrics.js";
-import { SSH_STATE } from "../../shared/constants.js";
-import { SshHostFiles, parseDiskFree, sshHostCommand } from "./ssh-host-files.js";
+import { SSH_HOST_FILES, SSH_STATE } from "../../shared/constants.js";
+import { SshHostFiles, clockReadingOf, parseDiskFree, sshHostCommand } from "./ssh-host-files.js";
 import { SshSession } from "./ssh-session.js";
 
 const USER = "alex";
@@ -97,6 +97,7 @@ describe("an SSH host's files, read over its session", () => {
     write("etc/timezone", "Europe/Lisbon\n");
     write("usr/bin/apt-get", "");
     directory("run/systemd/system");
+    write("run/systemd/units/invocation:chrony.service", "");
     write("run/reboot-required", "*** System restart required ***\n");
     write("run/reboot-required.pkgs", "linux-image-6.8.0-88-generic\n");
     directory("usr/lib/modules/6.8.0-87-generic");
@@ -185,7 +186,29 @@ describe("an SSH host's files, read over its session", () => {
       driveTemperatures: [{ device: "sda", celsius: 41 }],
       drives: [{ device: "sda", readAt: SMART_READ_AT_SECONDS * 1000 }],
       packages: { manager: "apt", timeZone: "Europe/Lisbon", rebootPackages: ["linux-image-6.8.0-88-generic"] },
+      ntpActive: true,
     });
+  });
+
+  it("reads the host's clock from its date, against this machine's halfway through the asking", async () => {
+    const behind = 95_000;
+    server.exec = (command) => {
+      if (command !== SSH_HOST_FILES.clockCommand) return answer(command);
+      const reading = Date.now() - behind;
+      return { stdout: `${Math.floor(reading / 1000)}.${String(reading % 1000).padStart(3, "0")}000000\n` };
+    };
+    expect(Math.abs((await files.clockOffset())! + behind)).toBeLessThan(1_000);
+    // A date that is not there says nothing of the clock.
+    server.exec = answer;
+    expect(await files.clockOffset()).toBeNull();
+  });
+
+  it("takes a date's nanoseconds where it gives them, and its whole seconds as the middle of the second", () => {
+    expect(clockReadingOf("1793000000.250000000\n")).toBe(1_793_000_000_250);
+    expect(clockReadingOf("1793000000\n")).toBe(1_793_000_000_500);
+    expect(clockReadingOf("1793000000.%N\n")).toBe(1_793_000_000_500);
+    expect(clockReadingOf("date: invalid date\n")).toBeNull();
+    expect(clockReadingOf("")).toBeNull();
   });
 
   it("samples usage as a runner does, in a handful of SFTP requests per tick and no command", async () => {

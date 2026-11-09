@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { API_ROUTES, apiPath, type ContainerView, type JobView } from "../../../src/shared/api.js";
-import { JOB_ACTION, MILLISECONDS_PER_SECOND, sizeText } from "../../../src/shared/constants.js";
+import {
+  DOCKER_OWN_NETWORKS,
+  JOB_ACTION,
+  MILLISECONDS_PER_SECOND,
+  PORT_PROTOCOL,
+  sizeText,
+} from "../../../src/shared/constants.js";
 import type { ContainerDetailsView, SettingsAnswer } from "../../../src/shared/protocol.js";
 import { api } from "../api-client.js";
 import { CONTAINER_DETAILS_REFRESH_MILLISECONDS, SECRET_NAME_PATTERN, TEXT } from "../constants.js";
@@ -234,10 +240,49 @@ function Network({ container, details }: { container: ContainerView; details: Co
           each.aliases.join(TEXT.listComma) || TEXT.none,
         ])}
       />
+      <Ports container={container} details={details} />
+    </div>
+  );
+}
+
+type DetailPorts = NonNullable<ContainerDetailsView["ports"]>;
+
+// From a runner too old to list them all: those it publishes, which its host's report carries.
+function publishedPorts(container: ContainerView): DetailPorts {
+  const byPort = new Map<string, DetailPorts[number]>();
+  for (const { published, target, protocol } of container.ports ?? []) {
+    const name = `${target}/${protocol}`;
+    const entry = byPort.get(name) ?? { port: target, protocol, published: [] };
+    entry.published.push({ address: "", port: published });
+    byPort.set(name, entry);
+  }
+  return [...byPort.values()];
+}
+
+const onTheHost = ({ address, port }: DetailPorts[number]["published"][number]) => {
+  if (address === "") return String(port);
+  return `${address.includes(":") ? `[${address}]` : address}:${port}`;
+};
+
+// What a proxy needs: each port it has in the container, where the host publishes it, and its name on its networks.
+function Ports({ container, details }: { container: ContainerView; details: ContainerDetailsView }) {
+  const ports = details.ports ?? publishedPorts(container);
+  // Docker's own networks give it no name to be reached by.
+  const shared = details.networks.map(({ name }) => name).filter((name) => !DOCKER_OWN_NETWORKS.has(name));
+  const example = ports.find(({ protocol }) => protocol === PORT_PROTOCOL.tcp);
+  return (
+    <div className="stack">
+      <h4>{text.portsTitle}</h4>
       <Rows
-        heads={[text.hostPort, text.containerPort]}
-        rows={(container.ports ?? []).map((port) => [String(port.published), `${port.target}/${port.protocol}`])}
+        heads={[text.containerPort, text.hostPort]}
+        rows={ports.map((each) => [
+          `${each.port}/${each.protocol}`,
+          each.published.length === 0 ? text.notPublished : each.published.map(onTheHost).join(TEXT.listComma),
+        ])}
       />
+      {example !== undefined && shared.length > 0 && (
+        <p className="small muted">{text.proxyAt(shared.join(TEXT.listComma), `${container.name}:${example.port}`)}</p>
+      )}
     </div>
   );
 }

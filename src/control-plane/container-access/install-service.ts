@@ -227,4 +227,8 @@ export class InstallService {
   reset() {
     this.relay.reset();
   }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
+  }
 }

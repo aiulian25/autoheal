@@ -3,8 +3,14 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestClient,
+  type TestControlPlane,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
@@ -15,14 +21,15 @@ import {
   type SettingsView,
 } from "../../shared/api.js";
 import { DEFAULT_AUTOHEAL_IMAGE, RUNNER_COMPOSE, SECRET_FILE_MODE, SETTING_KEYS } from "../../shared/constants.js";
-import { decodeJoinCode, encodeJoinCode } from "../../shared/join-code.js";
+import { decodeEnrolment, decodeJoinCode, encodeJoinCode, newToken } from "../../shared/join-code.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { auditEvents } from "../database/schema.js";
+import { auditEvents, hosts as hostRows } from "../database/schema.js";
 import { HostsService } from "./hosts-service.js";
 
 const FILE_MODE_BITS = 0o777;
 const LOCAL_URL = "https://control-plane:9443";
 const HOST_ROOT_MOUNT = "/:/host/root:ro";
+const AN_HOUR = 60 * 60 * 1000;
 
 describe("joining runners", () => {
   let controlPlane: TestControlPlane;
@@ -37,6 +44,13 @@ describe("joining runners", () => {
       headers: { authorization: `Bearer ${token}` },
     });
   const labels = async () => (await admin.get(API_ROUTES.hosts)).json<HostView[]>().map((host) => host.label);
+  // As a runner trades its code on first contact: no token on the request, the one it made in the body.
+  const redeem = (joinCode: string, token: string) =>
+    controlPlane.runnerApp.inject({
+      method: "POST",
+      url: RUNNER_ROUTES.join,
+      payload: { enrolment: decodeEnrolment(joinCode)!.enrolment, token },
+    });
 
   beforeEach(async () => {
     controlPlane = await startTestControlPlane();
@@ -50,17 +64,25 @@ describe("joining runners", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it("gives a new host one paste: its compose file and a join code with the address, token and key", async () => {
+  it("gives a new host one paste: its compose file and a join code with the address and key, and no token", async () => {
     expect((await admin.get(API_ROUTES.settings)).json<SettingsView>().runnerAddress).toBe("https://localhost:9443");
     const enrolled = (
       await admin.post(API_ROUTES.hosts, { label: "Alder", address: "https://192.168.10.83:9443" })
     ).json<EnrolledHostView>();
-    const details = decodeJoinCode(enrolled.joinCode)!;
+    const details = decodeEnrolment(enrolled.joinCode)!;
     expect(details.url).toBe("https://192.168.10.83:9443");
     expect(details.pin).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(decodeJoinCode(enrolled.joinCode)).toBeNull();
+    expect(Buffer.from(enrolled.joinCode.slice("ahj_".length), "base64url").toString()).not.toContain("ahk_");
+    expect(enrolled.joinCodeExpiresAt).toBe(controlPlane.clock.now + AN_HOUR);
     expect(enrolled.installCommand).toContain(RUNNER_COMPOSE(DEFAULT_AUTOHEAL_IMAGE).trimEnd());
     expect(enrolled.installCommand).toContain(`AUTOHEAL_JOIN=${enrolled.joinCode}\nDOCKER_GID=$(stat -c %g`);
-    expect((await heartbeat(details.token)).statusCode).toBe(200);
+    expect(enrolled.rejoinCommand).toBe(
+      `sed -i 's|^AUTOHEAL_JOIN=.*|AUTOHEAL_JOIN=${enrolled.joinCode}|' .env && docker compose up -d`,
+    );
+    // The code is no token, and nothing opens the new host until its runner trades the code.
+    expect((await heartbeat(details.enrolment)).statusCode).toBe(401);
+    expect((await heartbeat(runnerTokenOf(enrolled))).statusCode).toBe(200);
     // The next host is offered the same address.
     expect((await admin.get(API_ROUTES.settings)).json<SettingsView>().runnerAddress).toBe(
       "https://192.168.10.83:9443",
@@ -133,10 +155,10 @@ describe("joining runners", () => {
     const first = (await admin.post(API_ROUTES.hosts, {})).json<EnrolledHostView>();
     const second = (await admin.post(API_ROUTES.hosts, {})).json<EnrolledHostView>();
     expect(first.host.label).toMatch(/^new-host-[0-9a-f]{6}$/);
-    await heartbeat(decodeJoinCode(first.joinCode)!.token, "Rowan");
-    await heartbeat(decodeJoinCode(second.joinCode)!.token, "Rowan");
+    await heartbeat(runnerTokenOf(first), "Rowan");
+    await heartbeat(runnerTokenOf(second), "Rowan");
     expect((await labels()).sort()).toEqual(["Rowan", "Rowan-2"]);
-    await heartbeat(decodeJoinCode(first.joinCode)!.token, "renamed");
+    await heartbeat(runnerTokenOf(first), "renamed");
     expect((await labels()).sort()).toEqual(["Rowan", "Rowan-2"]);
   });
 
@@ -151,7 +173,7 @@ describe("joining runners", () => {
     expect(renamed.json<HostView>().label).toBe("Alder-NAS");
     // One added without a name keeps the name given before its runner first reports.
     expect((await rename(pending.host.id, "Rowan")).statusCode).toBe(200);
-    await heartbeat(decodeJoinCode(pending.joinCode)!.token, "delta3640");
+    await heartbeat(runnerTokenOf(pending), "rowan-laptop");
     expect((await labels()).sort()).toEqual(["Alder-NAS", "Rowan"]);
 
     expect((await rename(alder.host.id, "Rowan")).json()).toEqual({ error: "host_label_taken" });
@@ -194,6 +216,22 @@ describe("joining runners", () => {
     await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId: host!.id }));
     hosts.ensureLocalRunner(directory);
     expect(readFileSync(file, "utf8")).toBe(written);
+  });
+
+  it("names a renewed certificate's new key in this machine's runner's code and in every code given after", async () => {
+    const hosts = controlPlane.services.hostsService;
+    hosts.ensureLocalRunner(directory);
+    const file = join(directory, "runner.join");
+    const before = decodeJoinCode(readFileSync(file, "utf8"))!;
+    const renewed = "R".repeat(43);
+
+    controlPlane.services.keyChanged(renewed);
+    hosts.ensureLocalRunner(directory);
+    expect(decodeJoinCode(readFileSync(file, "utf8"))).toEqual({ ...before, pin: renewed });
+    const enrolled = (
+      await admin.post(API_ROUTES.hosts, { label: "Alder", address: "https://alder.test:9443" })
+    ).json<EnrolledHostView>();
+    expect(decodeEnrolment(enrolled.joinCode)!.pin).toBe(renewed);
   });
 
   it("gives this machine's runner a new code when the database no longer knows the old one", async () => {
@@ -250,5 +288,116 @@ describe("joining runners", () => {
     const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
     expect((await viewer.get(API_ROUTES.localHost)).statusCode).toBe(200);
     expect((await viewer.post(API_ROUTES.localHostReenroll)).statusCode).toBe(403);
+  });
+
+  describe("a join code that works once, within the hour", () => {
+    it("is traded once for the token its runner made, asked with no token; a second token gets nothing", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+      const token = newToken();
+      const traded = await redeem(enrolled.joinCode, token);
+      expect(traded.statusCode, traded.body).toBe(204);
+      expect((await heartbeat(token)).statusCode).toBe(200);
+      const [host] = (await admin.get(API_ROUTES.hosts)).json<HostView[]>();
+      expect(host).toMatchObject({ label: "Alder", tokenHint: token.slice(-4) });
+
+      // Its runner asking again with the same token, the answer lost on the way, is told the same.
+      expect((await redeem(enrolled.joinCode, token)).statusCode).toBe(204);
+      const other = newToken();
+      const refused = await redeem(enrolled.joinCode, other);
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json()).toEqual({ error: "join_code_refused" });
+      expect((await heartbeat(other)).statusCode).toBe(401);
+      expect((await heartbeat(token)).statusCode).toBe(200);
+    });
+
+    it("opens nothing an hour after it was made, nor for a revoked host", async () => {
+      const late = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+      const revoked = (await admin.post(API_ROUTES.hosts, { label: "Cedar" })).json<EnrolledHostView>();
+      await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId: revoked.host.id }));
+      controlPlane.clock.now += AN_HOUR - 1;
+      const inTime = (await admin.post(API_ROUTES.hosts, { label: "Rowan" })).json<EnrolledHostView>();
+      expect((await redeem(revoked.joinCode, newToken())).statusCode).toBe(401);
+      expect((await redeem(inTime.joinCode, newToken())).statusCode).toBe(204);
+
+      controlPlane.clock.now += 1;
+      const token = newToken();
+      expect((await redeem(late.joinCode, token)).statusCode).toBe(401);
+      expect((await heartbeat(token)).statusCode).toBe(401);
+      const malformed = { enrolment: "ahe_short", token };
+      const asked = await controlPlane.runnerApp.inject({
+        method: "POST",
+        url: RUNNER_ROUTES.join,
+        payload: malformed,
+      });
+      expect(asked.statusCode).toBe(400);
+    });
+
+    it("is made anew for a host that joined: its token works until the new code is traded, the same host after", async () => {
+      const enrolled = (
+        await admin.post(API_ROUTES.hosts, { label: "Alder", address: "https://192.168.10.83:9443" })
+      ).json<EnrolledHostView>();
+      const before = runnerTokenOf(enrolled);
+      expect((await heartbeat(before)).statusCode).toBe(200);
+
+      const made = await admin.post(apiPath(API_ROUTES.hostJoinCode, { hostId: enrolled.host.id }), {});
+      expect(made.statusCode, made.body).toBe(200);
+      const renewed = made.json<EnrolledHostView>();
+      expect(renewed.host.id).toBe(enrolled.host.id);
+      expect(renewed.joinCode).not.toBe(enrolled.joinCode);
+      expect(renewed.joinCodeExpiresAt).toBe(controlPlane.clock.now + AN_HOUR);
+      expect(decodeEnrolment(renewed.joinCode)!.url).toBe("https://192.168.10.83:9443");
+      expect(renewed.rejoinCommand).toContain(`|AUTOHEAL_JOIN=${renewed.joinCode}|' .env && docker compose up -d`);
+      expect((await heartbeat(before)).statusCode).toBe(200);
+
+      const after = newToken();
+      expect((await redeem(renewed.joinCode, after)).statusCode).toBe(204);
+      expect((await heartbeat(before)).statusCode).toBe(401);
+      expect((await heartbeat(after)).statusCode).toBe(200);
+      expect((await redeem(enrolled.joinCode, newToken())).statusCode).toBe(401);
+      expect((await labels()).sort()).toEqual(["Alder"]);
+      const audited = controlPlane.services.databaseHandle.database
+        .select()
+        .from(auditEvents)
+        .all()
+        .filter((event) => event.action === "host.join_code_made");
+      expect(audited).toMatchObject([{ actorLabel: "admin", targetKind: "host", targetId: enrolled.host.id }]);
+    });
+
+    it("replaces a code not traded yet, and is made for a NAS with its folder", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "DS923" })).json<EnrolledHostView>();
+      const renewed = (
+        await admin.post(apiPath(API_ROUTES.hostJoinCode, { hostId: enrolled.host.id }), {
+          nasFolder: "/volume1/docker/autoheal",
+        })
+      ).json<EnrolledHostView>();
+      expect(renewed.installCommand.startsWith("sudo sh")).toBe(true);
+      expect(renewed.installCommand).toContain(`AUTOHEAL_JOIN=${renewed.joinCode}`);
+      expect((await redeem(enrolled.joinCode, newToken())).statusCode).toBe(401);
+      expect((await redeem(renewed.joinCode, newToken())).statusCode).toBe(204);
+    });
+
+    it("is made only by an admin, for an enrolled runner container's host on another machine", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+      const make = (hostId: string, client = admin) => client.post(apiPath(API_ROUTES.hostJoinCode, { hostId }), {});
+      const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
+      expect((await make(enrolled.host.id, viewer)).statusCode).toBe(403);
+      expect((await make(randomUUID())).statusCode).toBe(404);
+
+      // Moved to SSH, its embedded runner's token stays its own: a code left from before opens nothing.
+      const { database } = controlPlane.services.databaseHandle;
+      database.update(hostRows).set({ kind: "ssh" }).where(eq(hostRows.id, enrolled.host.id)).run();
+      expect((await make(enrolled.host.id)).json()).toEqual({ error: "not_runner_host" });
+      expect((await redeem(enrolled.joinCode, newToken())).statusCode).toBe(401);
+      database.update(hostRows).set({ kind: "runner" }).where(eq(hostRows.id, enrolled.host.id)).run();
+      await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId: enrolled.host.id }));
+      expect((await make(enrolled.host.id)).json()).toEqual({ error: "host_revoked" });
+
+      // This machine's runner container joins through the volume, never with a code.
+      const hostsService = controlPlane.services.hostsService;
+      hostsService.ensureLocalRunner(directory);
+      const local = hostsService.localHost(directory).hostId!;
+      const actor = { userId: randomUUID(), username: "admin", ip: "127.0.0.1", requestId: "test" };
+      expect(() => hostsService.newJoinCode(actor, local, LOCAL_URL, null, directory)).toThrow("not_runner_host");
+    });
   });
 });

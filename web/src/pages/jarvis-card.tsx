@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { API_ROUTES } from "../../../src/shared/api.js";
 import type { JarvisConnected, JarvisHostNames, JarvisView } from "../../../src/shared/jarvis.js";
 import { api } from "../api-client.js";
+import { useAskInPlace } from "../components/ask-in-place.js";
 import { CopyButton, ErrorNotice, TimeAgo } from "../components/common.js";
 import { JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
 import { jarvisQuery } from "../queries.js";
@@ -70,6 +71,7 @@ function testLine(view: JarvisView, sent: { delivered: boolean } | null): string
 /** Connecting Jarvis: one button, one block to add to Home Assistant, and a test that proves both ways work. */
 export function JarvisCard() {
   const queryClient = useQueryClient();
+  const asking = useAskInPlace();
   const refresh = () => queryClient.invalidateQueries({ queryKey: jarvisQuery.queryKey });
   const [secret, setSecret] = useState<string | null>(null);
   const [setupShown, setSetupShown] = useState(false);
@@ -114,7 +116,7 @@ export function JarvisCard() {
   if (view === undefined) return <ErrorNotice error={jarvis.error} />;
   const line = testLine(view, sent);
   const confirmDisconnect = () => {
-    if (window.confirm(text.disconnectConfirm)) disconnect.mutate();
+    asking.confirm(text.disconnectConfirm, () => disconnect.mutate());
   };
   return (
     <section className={view.connected ? "card settings-card" : "card settings-card dashed"} aria-labelledby="jarvis">
@@ -202,6 +204,7 @@ export function JarvisCard() {
           )}
         </>
       )}
+      {asking.question}
       <ErrorNotice error={connect.error ?? test.error ?? pause.error ?? disconnect.error} />
     </section>
   );

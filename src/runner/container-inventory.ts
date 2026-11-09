@@ -16,7 +16,9 @@ import {
   HEALTH_IN_STATUS_PATTERN,
   HIGHEST_PORT,
   HOMEPAGE_LINK_LABEL,
+  HOST_HELPER,
   HOST_NETWORK_MODE,
+  HOST_TERMINAL_HELPER,
   MILLISECONDS_PER_SECOND,
   NANOCPUS_PER_CPU,
   PAGE_CACHE_KEYS,
@@ -25,6 +27,7 @@ import {
   RECLAIMABLE_MEMORY_KEYS,
   REPORT_LIMITS,
   RESTART_POLICY_CHARACTERS,
+  SELF_UPDATE,
   SHORT_CONTAINER_ID_LENGTH,
   UPDATE_LABEL,
   UPDATE_POLICIES,
@@ -32,7 +35,7 @@ import {
   type ContainerStateName,
   type UpdatePolicy,
 } from "../shared/constants.js";
-import type { ContainerSnapshot, ContainerUsage, PublishedPort } from "../shared/protocol.js";
+import type { ContainerSnapshot, ContainerUsage, ImageLabels, PublishedPort } from "../shared/protocol.js";
 import type { ContainerStatsSample, ContainerSummary, DockerClient, NetworkStats } from "./docker-client.js";
 import type { ImageUpdateChecker } from "./image-updates.js";
 import { restartPolicyOf, type ContainerDetails } from "./incident-report.js";
@@ -54,7 +57,29 @@ interface UsageReading {
   throttledPeriods: number;
 }
 
-const nameOf = (summary: ContainerSummary) => (summary.Names[0] ?? summary.Id).replace(/^\//, "");
+export const nameOf = (summary: ContainerSummary) => (summary.Names[0] ?? summary.Id).replace(/^\//, "");
+
+/** The health a listing's status gives a container: "healthy", "unhealthy", "health: starting", or "" for none. */
+export const listedHealth = (summary: ContainerSummary) => HEALTH_IN_STATUS_PATTERN.exec(summary.Status)?.[1] ?? "";
+
+/** A container as its listing tells it apart: which one it is, its state and its health. */
+export const listingKey = (summary: ContainerSummary) => `${summary.Id}|${summary.State}|${listedHealth(summary)}`;
+
+// The short-lived containers Autoheal starts for its own work: never one of the host's containers.
+const HELPER_LABELS: readonly string[] = [HOST_HELPER.label, HOST_TERMINAL_HELPER.label, SELF_UPDATE.label];
+const isAutohealHelper = (summary: ContainerSummary) =>
+  HELPER_LABELS.some((label) => summary.Labels?.[label] !== undefined);
+
+/**
+ * The container Compose is replacing, whose name it prefixes with its own short id for the moment it takes to make
+ * the new one: the name it stands for, or null for any other container.
+ */
+function composeCopyOf(summary: ContainerSummary): string | null {
+  const name = nameOf(summary);
+  const prefix = `${summary.Id.slice(0, SHORT_CONTAINER_ID_LENGTH)}_`;
+  const fromCompose = summary.Labels?.[COMPOSE_PROJECT_LABEL] !== undefined;
+  return fromCompose && name.startsWith(prefix) ? name.slice(prefix.length) : null;
+}
 
 const isState = (value: string): value is ContainerStateName => CONTAINER_STATES.some((state) => state === value);
 
@@ -73,11 +98,15 @@ function timestampOf(isoTime: string | undefined): number | null {
 
 const labelOf = (value: string | undefined) => value?.slice(0, REPORT_LIMITS.nameCharacters) ?? null;
 
+// What a running image's labels say that its container's row shows: its version, and where its code lives.
+type RunningImageLabels = Pick<ImageLabels, "version" | "source">;
+const NO_IMAGE_LABELS: RunningImageLabels = { version: null, source: null };
+
 // Only http and https: a label is written by whoever wrote the compose file, and ends up as a link.
 const updatePolicyOf = (value: string | undefined): UpdatePolicy | null =>
   UPDATE_POLICIES.find((policy) => policy === value) ?? null;
 
-const isPort = (value: number | undefined): value is number =>
+export const isPort = (value: number | undefined): value is number =>
   value !== undefined && Number.isInteger(value) && value >= 1 && value <= HIGHEST_PORT;
 
 // What it publishes, once each and lowest first: Docker lists a binding once per address family, and an
@@ -204,8 +233,8 @@ export class ContainerInventory {
   }
   private readonly details = new Map<string, { key: string; details: ContainerDetails }>();
   private readonly readings = new Map<string, UsageReading>();
-  // The version each image's labels name, by image id: an image does not change.
-  private readonly versions = new Map<string, string | null>();
+  // What each image's labels say, by image id: an image does not change.
+  private readonly imageLabels = new Map<string, RunningImageLabels>();
 
   constructor(
     private readonly docker: Pick<DockerClient, "containerSummaries" | "inspect" | "statsOnce" | "inspectImage">,
@@ -216,7 +245,9 @@ export class ContainerInventory {
 
   async snapshot(): Promise<ContainerSnapshot[]> {
     const recoveries = (await this.journal?.pending()) ?? [];
-    const summaries = (await this.docker.containerSummaries()).slice(0, REPORT_LIMITS.containers);
+    const summaries = (await this.docker.containerSummaries())
+      .filter((summary) => !isAutohealHelper(summary))
+      .slice(0, REPORT_LIMITS.containers);
     const present = new Set(summaries.map(nameOf));
     for (const name of this.details.keys()) {
       if (!present.has(name)) {
@@ -227,6 +258,9 @@ export class ContainerInventory {
     const topologyEntries: { name: string; details: ContainerDetails }[] = [];
     const imagesInUse = new Set<string>();
     for (const summary of summaries) {
+      // One row while Compose swaps it: the old one under its own name until the new one has it.
+      const copyOf = composeCopyOf(summary);
+      if (copyOf !== null && present.has(copyOf)) continue;
       const details = await this.detailsOf(summary);
       if (details === null) {
         continue;
@@ -235,7 +269,8 @@ export class ContainerInventory {
       if (imageId !== undefined) {
         imagesInUse.add(imageId);
       }
-      const snapshot = this.snapshotOf(summary, details, await this.versionOf(imageId));
+      const snapshot = this.snapshotOf(summary, details, await this.labelsOf(imageId));
+      if (copyOf !== null) snapshot.name = copyOf;
       for (const operation of recoveries) {
         const member = operation.members.find(
           ({ id, replacementId, name }) => summary.Id === id || summary.Id === replacementId || snapshot.name === name,
@@ -248,9 +283,9 @@ export class ContainerInventory {
       snapshots.push(snapshot);
       topologyEntries.push({ name: snapshot.name, details });
     }
-    for (const imageId of this.versions.keys()) {
+    for (const imageId of this.imageLabels.keys()) {
       if (!imagesInUse.has(imageId)) {
-        this.versions.delete(imageId);
+        this.imageLabels.delete(imageId);
       }
     }
     this.lastTopology = topologyOf(topologyEntries, this.clock());
@@ -286,9 +321,10 @@ export class ContainerInventory {
     return usages.filter((usage) => usage !== null);
   }
 
-  private async detailsOf(summary: ContainerSummary): Promise<ContainerDetails | null> {
+  /** A container's details, from Docker only when its listing changed since they were last read. */
+  async detailsOf(summary: ContainerSummary): Promise<ContainerDetails | null> {
     const name = nameOf(summary);
-    const key = `${summary.Id}|${summary.State}|${HEALTH_IN_STATUS_PATTERN.exec(summary.Status)?.[1] ?? ""}`;
+    const key = listingKey(summary);
     const known = this.details.get(name);
     if (known?.key === key) {
       return known.details;
@@ -301,25 +337,30 @@ export class ContainerInventory {
     return details;
   }
 
-  // Docker not answering leaves it unknown this time, and asked again the next.
-  private async versionOf(imageId: string | undefined): Promise<string | null> {
+  // Docker not answering leaves them unknown this time, and asked again the next.
+  private async labelsOf(imageId: string | undefined): Promise<RunningImageLabels> {
     if (imageId === undefined) {
-      return null;
+      return NO_IMAGE_LABELS;
     }
-    const known = this.versions.get(imageId);
+    const known = this.imageLabels.get(imageId);
     if (known !== undefined) {
       return known;
     }
     const image = await this.docker.inspectImage(imageId).catch(() => undefined);
     if (image === undefined) {
-      return null;
+      return NO_IMAGE_LABELS;
     }
-    const version = image === null ? null : imageLabelsOf(image.Config?.Labels ?? {}).version;
-    this.versions.set(imageId, version);
-    return version;
+    const { version, source } = image === null ? NO_IMAGE_LABELS : imageLabelsOf(image.Config?.Labels ?? {});
+    const labels = { version, source };
+    this.imageLabels.set(imageId, labels);
+    return labels;
   }
 
-  private snapshotOf(summary: ContainerSummary, details: ContainerDetails, version: string | null): ContainerSnapshot {
+  private snapshotOf(
+    summary: ContainerSummary,
+    details: ContainerDetails,
+    { version, source }: RunningImageLabels,
+  ): ContainerSnapshot {
     const state = isState(summary.State) ? summary.State : CONTAINER_STATE_EXITED;
     const running = state === CONTAINER_STATE_RUNNING;
     const labels = summary.Labels ?? {};
@@ -340,6 +381,7 @@ export class ContainerInventory {
       composeService: labelOf(labels[COMPOSE_SERVICE_LABEL]),
       link: webLinkOf(labels[HOMEPAGE_LINK_LABEL]),
       version,
+      source,
       updatePolicy: updatePolicyOf(labels[UPDATE_LABEL]),
       update: this.updates?.resultFor(details.Image ?? summary.ImageID, details.Config.Image) ?? null,
       ports: portsOf(summary),

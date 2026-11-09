@@ -21,7 +21,7 @@ import {
 } from "../../shared/constants.js";
 import { containerProblem } from "../../shared/container-problem.js";
 import { imageRepository } from "../../shared/image-reference.js";
-import type { ContainerSnapshot, RecoveryHold, RestartWait } from "../../shared/protocol.js";
+import type { ContainerSnapshot, RecoveryHold, RestartWait, TrimmableHeartbeatPart } from "../../shared/protocol.js";
 import { controlOf, policyOf, type SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 
@@ -36,7 +36,32 @@ function hostStateOf(host: HostRow, now: number): HostView["state"] {
   return silent ? HOST_STATE.silent : HOST_STATE.online;
 }
 
-const containersOf = (host: HostRow) => JSON.parse(host.containersJson) as ContainerSnapshot[];
+// ponytail: each host's stored reports as last read, by the text they were read from, so an unchanged report is parsed
+// once rather than on every look; one entry per host and field ever read, a few kilobytes each.
+const readBefore = new Map<string, { json: string; value: unknown }>();
+
+// Shared by every view built from it, so nothing may change it: a change would show in the next look.
+function frozen<Value>(value: Value): Value {
+  if (typeof value === "object" && value !== null) {
+    Object.values(value).forEach((inner) => frozen(inner));
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** What this host's `field` holds, parsed once for as long as it holds that same text. */
+function readOnce<Value>(host: HostRow, field: string, json: string): Value {
+  const slot = `${host.id}/${field}`;
+  const known = readBefore.get(slot);
+  if (known !== undefined && known.json === json) return known.value as Value;
+  const value = frozen(JSON.parse(json) as Value);
+  readBefore.set(slot, { json, value });
+  return value;
+}
+
+const containersOf = (host: HostRow) => readOnce<readonly ContainerSnapshot[]>(host, "containers", host.containersJson);
+const protectedNamesOf = (host: HostRow) =>
+  readOnce<readonly string[]>(host, "protectedContainers", host.protectedContainersJson);
 
 // Only a reporting runner's hold is true now: a quiet or revoked host's last one may be over, and one that ends by
 // itself says nothing once its time is up.
@@ -45,7 +70,7 @@ function recoveryHoldOf(host: HostRow, now: number): RecoveryHold | null {
   if (!reporting || host.recoveryHoldJson === null) {
     return null;
   }
-  const hold = JSON.parse(host.recoveryHoldJson) as RecoveryHold;
+  const hold = readOnce<RecoveryHold>(host, "recoveryHold", host.recoveryHoldJson);
   const ended = hold.until !== null && hold.until <= now;
   return ended ? null : hold;
 }
@@ -89,16 +114,27 @@ export function toHostView(
     runnerVersion: host.runnerVersion,
     dryRun: host.dryRun,
     eventStreamConnected: host.eventStreamConnected,
-    protectedContainers: JSON.parse(host.protectedContainersJson) as string[],
-    restartBudget: JSON.parse(host.restartBudgetJson) as Record<string, number>,
+    protectedContainers: [...protectedNamesOf(host)],
+    restartBudget: readOnce<Record<string, number>>(host, "restartBudget", host.restartBudgetJson),
     recoveryHold: recoveryHoldOf(host, now),
+    // Only a reporting runner's is true now.
+    clockSkewSeconds: hostStateOf(host, now) === HOST_STATE.online ? host.clockSkewSeconds : null,
+    clockOffsetSeconds: hostStateOf(host, now) === HOST_STATE.online ? host.clockOffsetSeconds : null,
+    containersStaleSince: hostStateOf(host, now) === HOST_STATE.online ? host.containersStaleSince : null,
+    reportTrimmed:
+      hostStateOf(host, now) === HOST_STATE.online && host.reportTrimmedJson !== null
+        ? readOnce<TrimmableHeartbeatPart[]>(host, "reportTrimmed", host.reportTrimmedJson)
+        : null,
     restartWait:
-      host.restartWaitJson === null ? null : (JSON.parse(host.restartWaitJson) as Record<string, RestartWait>),
-    restartResets: JSON.parse(host.restartResetsJson) as Record<string, number>,
+      host.restartWaitJson === null
+        ? null
+        : readOnce<Record<string, RestartWait>>(host, "restartWait", host.restartWaitJson),
+    restartResets: readOnce<Record<string, number>>(host, "restartResets", host.restartResetsJson),
     containerAccess: host.containerAccess,
     hostTerminal: host.hostTerminal,
     hostDeploy: host.hostDeploy,
-    health: host.healthJson === null ? null : (JSON.parse(host.healthJson) as HostHealthView),
+    tagChanges: host.tagChanges,
+    health: host.healthJson === null ? null : readOnce<HostHealthView>(host, "health", host.healthJson),
     metrics,
     containerCount: containers.length,
     runningCount: containers.filter((container) => container.state === CONTAINER_STATE_RUNNING).length,
@@ -124,8 +160,10 @@ export function containerViewsOf(
   now: number,
   usage: ReadonlyMap<string, ContainerUsageView>,
   saved: ReadonlyMap<string, SavedControl>,
+  // The newer version a person ignores for each container, by its name.
+  ignored: ReadonlyMap<string, string> = new Map(),
 ): ContainerView[] {
-  const protectedNames = new Set(JSON.parse(host.protectedContainersJson) as string[]);
+  const protectedNames = new Set(protectedNamesOf(host));
   const hostState = hostStateOf(host, now);
   return containersOf(host).map(({ update, updatePolicy, ports, hostNetwork, ...container }) => {
     const isProtected = protectedNames.has(container.name);
@@ -142,6 +180,7 @@ export function containerViewsOf(
       hostLabel: host.label,
       hostState,
       version: container.version ?? null,
+      source: container.source ?? null,
       ports: ports ?? null,
       hostNetwork: hostNetwork ?? false,
       update: {
@@ -152,6 +191,7 @@ export function containerViewsOf(
         reason: update?.reason ?? null,
         provenance: update?.provenance ?? null,
         newerTag: update?.newerTag ?? null,
+        ignored: ignored.get(container.name) ?? null,
       },
       // The inventory is newer than the stats when a container has just stopped.
       usage: container.state === CONTAINER_STATE_RUNNING ? (usage.get(container.name) ?? null) : null,

@@ -203,6 +203,9 @@ export const hosts = sqliteTable("hosts", {
   label: text("label").notNull().unique(),
   tokenHash: text("token_hash").notNull().unique(),
   tokenHint: text("token_hint").notNull(),
+  // Its join code while it waits to be traded for its runner's token: its hash, and when it stops working.
+  joinCodeHash: text("join_code_hash"),
+  joinCodeExpiresAt: integer("join_code_expires_at"),
   status: text("status", { enum: HOST_STATUSES }).notNull().default(HOST_STATUS_ACTIVE),
   enrolledBy: text("enrolled_by").references(() => users.id, { onDelete: "set null" }),
   enrolledAt: integer("enrolled_at").notNull(),
@@ -215,12 +218,21 @@ export const hosts = sqliteTable("hosts", {
   eventStreamConnected: integer("event_stream_connected", { mode: "boolean" }).notNull().default(false),
   protectedContainersJson: text("protected_containers_json").notNull().default("[]"),
   maintenanceGeneration: integer("maintenance_generation"),
+  // How far its clock is from the control plane's, in seconds, while that pauses its runner; null otherwise.
+  clockSkewSeconds: integer("clock_skew_seconds"),
+  // How far its clock is from the control plane's, in seconds, as its last full report found it; null when unknown.
+  clockOffsetSeconds: integer("clock_offset_seconds"),
+  // When its kept containers were reported, while its runner says Docker could not list them since; null otherwise.
+  containersStaleSince: integer("containers_stale_since"),
+  // What its latest report left out to fit, as a JSON list; null when it left out nothing.
+  reportTrimmedJson: text("report_trimmed_json"),
   resourcePermissions: integer("resource_permissions", { mode: "boolean" }).notNull().default(false),
   topologyJson: text("topology_json"),
   operationPreviews: integer("operation_previews", { mode: "boolean" }).notNull().default(false),
   // Whether its runner can make service checks from its own host.
   serviceProbes: integer("service_probes", { mode: "boolean" }).notNull().default(false),
   rollouts: integer("rollouts", { mode: "boolean" }).notNull().default(false),
+  tagChanges: integer("tag_changes", { mode: "boolean" }).notNull().default(false),
   applicationBackups: integer("application_backups", { mode: "boolean" }).notNull().default(false),
   restartBudgetJson: text("restart_budget_json").notNull().default("{}"),
   // Why its runner restarts nothing on its own, as its latest report said; null while it may.
@@ -310,6 +322,21 @@ export const containerControls = sqliteTable(
     changedAt: integer("changed_at").notNull(),
   },
   (table) => [unique().on(table.hostId, table.containerName)],
+);
+
+// The newer version a person ignores for one container: one tag, or IGNORE_EVERY_VERSION for every new one.
+export const ignoredVersions = sqliteTable(
+  "ignored_versions",
+  {
+    hostId: text("host_id")
+      .notNull()
+      .references(() => hosts.id, { onDelete: "cascade" }),
+    containerName: text("container_name").notNull(),
+    version: text("version").notNull(),
+    ignoredBy: text("ignored_by").notNull(),
+    ignoredAt: integer("ignored_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.hostId, table.containerName] })],
 );
 
 export const incidents = sqliteTable("incidents", {
@@ -551,6 +578,7 @@ export const jobs = sqliteTable("jobs", {
   recoveryBackupId: text("recovery_backup_id"),
   installPayload: text("install_payload"),
   installRetry: text("install_retry"),
+  editSettings: text("edit_settings"),
   // The packages a host upgrade names, and the images a removal names; null for every other job.
   packagesJson: text("packages_json"),
   imagesJson: text("images_json"),
@@ -563,6 +591,8 @@ export const jobs = sqliteTable("jobs", {
   deliveredBootId: text("delivered_boot_id"),
   // An update its runner puts back at once when the new container does not come back healthy.
   undoIfUnhealthy: integer("undo_if_unhealthy", { mode: "boolean" }).notNull().default(false),
+  // The tag a change-tag job moves its container to.
+  targetTag: text("target_tag"),
 });
 
 // Several containers' new images on one host, one at a time: see the update-runs migration.

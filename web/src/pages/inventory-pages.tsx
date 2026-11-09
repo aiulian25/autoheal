@@ -27,8 +27,8 @@ import {
 import { bytes, decimal, precisePercent, rate } from "../format.js";
 import { enrolledHostsQuery } from "../queries.js";
 import { isAdmin, useSignedInSession } from "../session.js";
-import { stateOf, stateTone } from "./host-control.js";
-import { ContainerInspector } from "./host-stats.js";
+import { stateOf, stateTone } from "../components/container-cells.js";
+import { ContainerInspector } from "./container-inspector.js";
 
 const hostLink = (hostId: string) => apiPath(PATHS.host, { hostId });
 

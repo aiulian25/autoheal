@@ -66,6 +66,14 @@ describe("the UniFi adapter", () => {
     expect((await reader.devices()).map(({ kind }) => kind)).toEqual(["switch", "router"]);
   });
 
+  it("says what the router calls itself and the version it runs, when trying every read", async () => {
+    router.devices = [
+      { mac: SWITCH_MAC, type: "usw", name: "Switch", version: "7.1" },
+      { mac: "00:00:5E:00:53:0B", type: "udr", name: "Gateway", version: "1.2.3" },
+    ];
+    expect(await adapter().capabilities()).toMatchObject({ name: "Gateway", version: "1.2.3" });
+  });
+
   it("refuses every write but signing in and a speed test, before it reaches the router", async () => {
     const send = adapter() as unknown as { send(method: string, path: string, body?: object): Promise<unknown> };
     await expect(send.send("POST", "/proxy/network/api/s/default/rest/firewallrule", {})).rejects.toThrow(/only reads/);

@@ -16,6 +16,7 @@ import {
 import type { ContainerSettings, SettingsAnswer } from "../../../src/shared/protocol.js";
 import { ReadableError, api } from "../api-client.js";
 import { JOB_REFRESH_MILLISECONDS, NEW_PORT_DEFAULTS, TEXT } from "../constants.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { LatestJob, isWaiting } from "./container-actions.js";
 import { Icon } from "./icons.js";
@@ -293,6 +294,7 @@ export function ContainerSettingsEditor({
   containerName: string;
   onClose: () => void;
 }) {
+  const asking = useAskInPlace();
   const path = apiPath(API_ROUTES.containerSettings, { hostId, containerName });
   const read = useQuery({
     queryKey: ["container-settings", hostId, containerName],
@@ -329,9 +331,7 @@ export function ContainerSettingsEditor({
   const change = (part: Partial<ContainerSettings>) => setDraft({ ...settings, ...part });
   const changed = draft !== null && JSON.stringify(draft) !== JSON.stringify(read.data);
   const confirmApply = () => {
-    if (window.confirm(text.confirm(containerName))) {
-      apply.mutate(settings);
-    }
+    asking.confirm(text.confirm(containerName), () => apply.mutate(settings));
   };
   return (
     <section className="settings-panel stack" aria-label={text.title(containerName)}>
@@ -359,6 +359,7 @@ export function ContainerSettingsEditor({
         </button>
         {!changed && <span className="muted small">{text.unchanged}</span>}
       </div>
+      {asking.question}
       <ErrorNotice error={apply.error} />
       {job.data !== undefined && <LatestJob job={job.data} />}
     </section>

@@ -172,17 +172,31 @@ export class IncidentsService {
    * decision made meanwhile stands; null when it no longer waited.
    */
   settleUnneeded(incidentId: string, outcome: string): IncidentRow | null {
-    const settled = this.databaseHandle.database
-      .update(incidents)
-      .set({ status: INCIDENT_STATUS.resolved, verdict: VERDICT_SKIPPED, outcome, updatedAt: this.clock() })
-      .where(and(eq(incidents.id, incidentId), eq(incidents.status, INCIDENT_STATUS.awaitingApproval)))
-      .returning()
-      .get();
-    if (settled === undefined) {
+    const settled = this.updateIf(incidentId, INCIDENT_STATUS.awaitingApproval, {
+      status: INCIDENT_STATUS.resolved,
+      verdict: VERDICT_SKIPPED,
+      outcome,
+    });
+    if (settled === null) {
       return null;
     }
     this.addEvent(incidentId, TRACE.noLongerNeeded);
     return settled;
+  }
+
+  /**
+   * The change, made only while the incident is still as it was when it was looked at: whoever moved it meanwhile (a
+   * person on the board, say) is not overruled. Null when it had moved on.
+   */
+  updateIf(incidentId: string, expected: IncidentStatus, change: IncidentChange): IncidentRow | null {
+    return (
+      this.databaseHandle.database
+        .update(incidents)
+        .set({ ...change, updatedAt: this.clock() })
+        .where(and(eq(incidents.id, incidentId), eq(incidents.status, expected)))
+        .returning()
+        .get() ?? null
+    );
   }
 
   /** What the latest step of this kind in the incident's trace carried; null when it has none. */

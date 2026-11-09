@@ -3,10 +3,14 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { API_ROUTES, apiPath, type EnrolledHostView, type HostControlView } from "../../shared/api.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import type { PolicyRehearsalContext, PolicyRehearsalResult } from "../../shared/recovery-policy-simulator.js";
 import { incidents, jobs, workItems, containerControls, hosts } from "../database/schema.js";
-import { startTestControlPlane, type TestControlPlane, type TestClient } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestControlPlane,
+  type TestClient,
+} from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 
@@ -31,7 +35,7 @@ describe("deterministic recovery policy rehearsal API", () => {
     await plane.runnerApp.inject({
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,
-      headers: { authorization: `Bearer ${decodeJoinCode(enrolled.joinCode)!.token}` },
+      headers: { authorization: `Bearer ${runnerTokenOf(enrolled)}` },
       payload: {
         ...heartbeatWith({
           dryRun: false,

@@ -6,7 +6,7 @@ import { GaugeFigure, type Gauge } from "../components/charts.js";
 import { TimeAgo } from "../components/common.js";
 import { PATHS, TEXT } from "../constants.js";
 import { bytesOf, celsius, duration, loadAverage, shortTimeAgo, wholeNumber } from "../format.js";
-import { rateDial, shareDial } from "./host-stats.js";
+import { rateDial, shareDial } from "./host-dial-values.js";
 import { FactList, LoadAverages, type Fact } from "./host-system.js";
 
 const text = TEXT.homeAssistant.box;

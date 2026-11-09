@@ -397,14 +397,20 @@ export class RegistryClient {
       return { response: first, token: null };
     }
     await first.body?.cancel();
+    const answeredAt = first.url || url;
+    // Asked again there, a credential would go along: fetch keeps it from a hop it takes, not from where it is sent.
+    const sentOn = new URL(answeredAt).origin;
+    if (access !== null && sentOn !== new URL(url).origin) {
+      throw new RegistryError(REGISTRY_MESSAGES.refusedCredentialRedirect(sentOn));
+    }
     const challenge = challengeOf(first.headers.get(REGISTRY.challengeHeader));
     if (challenge === null) {
       if (access === null)
         throw new RegistryError(REGISTRY_MESSAGES.wantsCredentials(registryName(reference.registry)));
-      return { response: await this.request(first.url || url, method, null, access), token: null };
+      return { response: await this.request(answeredAt, method, null, access), token: null };
     }
     const token = await this.token(tokenUrlOf(challenge, reference.registry), reference.registry, access);
-    return { response: await this.request(first.url || url, method, token), token };
+    return { response: await this.request(answeredAt, method, token), token };
   }
 
   // A blob's GET may be redirected to a storage service; fetch drops the token on a hop to another origin.

@@ -50,6 +50,14 @@ export const installCommand = (image: string, joinCode: string) =>
     `docker compose up -d || { [ -n "$${GIVEN}" ] && rm ${RUNNER_GPU_OVERRIDE_FILE} && docker compose up -d; }`,
   ].join("\n");
 
+/**
+ * A new join code for a runner already installed, run in its folder: it takes the old code's place in the .env, which
+ * keeps the rest as it was, and Compose starts the runner again with it. A join code has no character sed treats as
+ * special, nor the quote.
+ */
+export const rejoinCommand = (joinCode: string) =>
+  `sed -i 's|^${ENV_JOIN_CODE}=.*|${ENV_JOIN_CODE}=${joinCode}|' .env && docker compose up -d`;
+
 const NAS_SCRIPT_END = "AUTOHEAL_INSTALL";
 // Where a NAS keeps its tools, which sudo's own path often leaves out.
 const NAS_PATH_LINE = 'PATH="$PATH:/usr/local/bin:/usr/syno/bin:/opt/bin"; export PATH';

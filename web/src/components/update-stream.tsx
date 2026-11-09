@@ -1,12 +1,14 @@
 import { useState } from "react";
 import {
   BYTES_PER_KILOBYTE,
+  JOB_STATUS,
   LAYER_STATE,
   PERCENT,
   UPDATE_PHASE,
   type LayerState,
 } from "../../../src/shared/constants.js";
 import type { UpdateProgress } from "../../../src/shared/protocol.js";
+import type { LineJob } from "../container-motion.js";
 import { TEXT } from "../constants.js";
 import { bytes, duration, percent, percentOf } from "../format.js";
 import { Bar } from "./common.js";
@@ -152,6 +154,22 @@ export function UpdateStream({ name, image, progress }: { name: string; image: s
           ))}
         </ol>
       )}
+    </section>
+  );
+}
+
+/** How an update or a recreate went, said for a few seconds where its line was: green, or amber with the reason. */
+export function FinishedLine({ job, image }: { job: LineJob; image: string }) {
+  const succeeded = job.status === JOB_STATUS.succeeded;
+  return (
+    <section className={succeeded ? "update-stream ended finished" : "update-stream ended undoing"}>
+      <header className="update-stream-head">
+        <Icon name={succeeded ? "check" : "alert"} />
+        <strong role="status">{succeeded ? STREAM_TEXT.finished[job.action] : STREAM_TEXT.didNotFinish}</strong>
+        <span className="mono">{image}</span>
+        <span className="update-stream-bar" />
+        {job.outcome !== null && <span className="muted">{job.outcome}</span>}
+      </header>
     </section>
   );
 }

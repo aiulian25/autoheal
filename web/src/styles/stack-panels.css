@@ -1,0 +1,222 @@
+/* A stack's own panels, opened from its row, and a container's Compose file under its. */
+.stack-panel {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--text);
+  padding: var(--space-3) 0;
+  font-size: var(--text-small);
+  font-weight: var(--weight-normal);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.compose-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-muted);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+}
+
+.compose-panel p {
+  margin: 0;
+}
+
+.compose-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--space-4);
+}
+
+.compose-pane.wide {
+  grid-column: span 2;
+}
+
+@media (max-width: 48rem) {
+  .compose-pane.wide {
+    grid-column: auto;
+  }
+}
+
+.compose-pane-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px var(--space-3);
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.compose-text {
+  display: block;
+  width: 100%;
+  /* Both files fill what the list's box leaves, so the file scrolls, not the page. */
+  height: max(22rem, calc(100vh - 30rem));
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  font-size: var(--text-mono-fact);
+  line-height: 1.55;
+  white-space: pre;
+  resize: vertical;
+}
+
+.compose-env {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+
+.compose-masked {
+  cursor: pointer;
+}
+
+.compose-absent {
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.compose-problem,
+.compose-logs {
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--text-mono-fact);
+  white-space: pre-wrap;
+}
+
+.compose-logs {
+  max-height: 24rem;
+  white-space: pre;
+}
+
+.compose-changes {
+  padding: var(--space-2) var(--space-3);
+  background: var(--action-bar-surface);
+  border: var(--border-width) solid var(--action-bar-border);
+  border-radius: var(--radius);
+}
+
+/* What the files would do and the buttons for it stay in view while the files scroll. */
+.compose-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  background: var(--surface-muted);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.compose-actions .compose-problem {
+  max-height: 10rem;
+}
+
+.compose-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.compose-grow {
+  flex: 1;
+}
+
+.stack-remove-row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 30px;
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.stack-remove-row .install-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stack-remove-row .install-choice {
+  width: auto;
+}
+
+.stack-remove-path {
+  display: block;
+}
+
+.home-review-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  border-bottom: var(--border-width) solid var(--divider);
+}
+
+.home-suggestion {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--surface-muted);
+  border-radius: var(--radius);
+}
+
+.home-suggestion p {
+  margin: 0;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settings-field h4 {
+  margin: 0;
+}
+
+.model-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+label.model-choice {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.model-choice .mono {
+  color: var(--text);
+}
+
+label.model-choice.chosen {
+  border-color: var(--accent);
+}

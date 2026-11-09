@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { COMPOSE_PROJECT_LABEL, CONTAINER_ACCESS_REFUSALS, HOST_HELPER, HOST_PROFILE } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
 import type { HostProfile, HostProfileAnswer } from "../shared/protocol.js";
-import type { DockerClient } from "./docker-client.js";
+import type { ContainerSummary, DockerClient } from "./docker-client.js";
 import type { HostFiles } from "./host-files.js";
 import { containerNameOf, restartPolicyOf, type ContainerDetails } from "./incident-report.js";
 
@@ -132,6 +132,8 @@ export function profileOf(all: readonly ContainerDetails[]): HostProfile {
 
 export interface HostProfileDependencies {
   docker: Pick<DockerClient, "containerSummaries" | "inspect">;
+  // What the runner's inventory already read of each, rather than asking Docker about every container again.
+  details?: (summary: ContainerSummary) => Promise<ContainerDetails | null>;
   files: Pick<HostFiles, "filesystem">;
   hostRoot: string;
   containerAccess: boolean;
@@ -140,6 +142,7 @@ export interface HostProfileDependencies {
 /** A host's profile, as its runner works it out when someone looks. Reads only, and only where people may reach in. */
 export async function answerHostProfile({
   docker,
+  details = (summary) => docker.inspect(summary.Id),
   files,
   hostRoot,
   containerAccess,
@@ -147,7 +150,7 @@ export async function answerHostProfile({
   if (!containerAccess) return { error: CONTAINER_ACCESS_REFUSALS.off, profile: null };
   try {
     const summaries = await docker.containerSummaries();
-    const inspected = await Promise.all(summaries.map((summary) => docker.inspect(summary.Id)));
+    const inspected = await Promise.all(summaries.map(details));
     const profile = profileOf(inspected.filter((container) => container !== null));
     const places = await Promise.all(
       profile.places.map(async (place) => ({

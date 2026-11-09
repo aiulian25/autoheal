@@ -1,11 +1,19 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FakeDockerEngine } from "../../../test/fakes/fake-docker-engine.js";
 import type { FakeSshServer } from "../../../test/fakes/fake-ssh-server.js";
 import type { TestClient, TestControlPlane } from "../../../test/support/control-plane.js";
-import { startEmbeddedSshHost, until, type EmbeddedSshHost } from "../../../test/support/embedded-ssh-host.js";
+import {
+  RENEWED_PIN,
+  renewRunnerCertificate,
+  startEmbeddedSshHost,
+  startedAndReported,
+  until,
+  type EmbeddedSshHost,
+} from "../../../test/support/embedded-ssh-host.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import {
   API_ROUTES,
@@ -21,6 +29,7 @@ import {
   HOST_STATE,
   JOB_STATUS,
   ROOT_METHOD,
+  SSH_HOST_FILES,
   SSH_READINESS,
   SSH_STATE,
 } from "../../shared/constants.js";
@@ -39,13 +48,16 @@ describe("an SSH host's runner inside the control plane", () => {
   let engine: FakeDockerEngine;
   let server: FakeSshServer;
   let controlPlane: TestControlPlane;
+  let runnerServer: FastifyInstance;
   let admin: TestClient;
   let actor: Actor;
   let hostId: string;
+  let hostFiles: string;
   let stop: () => Promise<void>;
 
   beforeEach(async () => {
-    ({ engine, server, controlPlane, admin, actor, hostId, stop } = await startEmbeddedSshHost());
+    ({ engine, server, controlPlane, runnerServer, admin, actor, hostId, hostFiles, stop } =
+      await startEmbeddedSshHost());
   });
 
   afterEach(() => stop());
@@ -96,6 +108,16 @@ describe("an SSH host's runner inside the control plane", () => {
     // Its live stats after two samples, five seconds apart.
     const sampled = await until(host, (latest) => latest.metrics !== null);
     expect(sampled.metrics).toMatchObject({ memory: { totalBytes: 8_000_000 * 1024 } });
+  });
+
+  it("carries on with the runner API's new key, which a renewed certificate brings", async () => {
+    controlPlane.services.embeddedRunners.begin();
+    await online();
+    renewRunnerCertificate(runnerServer);
+    controlPlane.services.keyChanged(RENEWED_PIN);
+    expect((await startedAndReported(engine, "notes", host, (view) => view.containerCount === 3)).ssh).toMatchObject({
+      state: SSH_STATE.connected,
+    });
   });
 
   it("hears nothing of the host from a beat while its session is down: its runner here would beat on regardless", async () => {
@@ -156,6 +178,35 @@ describe("an SSH host's runner inside the control plane", () => {
     controlPlane.clock.now += 1_000;
     engine.emit({ Type: "container", Action: "die", Actor: { Attributes: { name: "tika" } } });
     await until(host, (latest) => latest.lastHeartbeatAt !== lastHeartbeat);
+  });
+
+  // The host's date, as far from the control plane's clock as given, and systemd's list of what runs there.
+  const hostClockOff = (milliseconds: number, runningUnits: readonly string[]) => {
+    const reading = controlPlane.clock.now + milliseconds;
+    const answered = server.exec;
+    server.exec = (command) =>
+      command === SSH_HOST_FILES.clockCommand
+        ? { stdout: `${Math.floor(reading / 1000)}.${String(reading % 1000).padStart(3, "0")}000000\n` }
+        : answered(command);
+    mkdirSync(join(hostFiles, "run/systemd/units"), { recursive: true });
+    runningUnits.forEach((unit) => writeFileSync(join(hostFiles, "run/systemd/units", `invocation:${unit}`), ""));
+  };
+
+  it("reads an SSH host's own clock over its session, and whether a time service keeps it", async () => {
+    hostClockOff(-95_000, ["cron.service"]);
+    controlPlane.services.embeddedRunners.begin();
+    const view = await until(host, (latest) => latest.clockOffsetSeconds !== null && latest.health !== null);
+    expect(view.clockOffsetSeconds).toBe(-95);
+    expect(view.health?.ntpActive).toBe(false);
+  });
+
+  it("reads the clock of an SSH host without Docker too", async () => {
+    server.readiness = "";
+    hostClockOff(3 * 60_000, ["systemd-timesyncd.service"]);
+    controlPlane.services.embeddedRunners.begin();
+    const view = await until(host, (latest) => latest.docker === false && latest.clockOffsetSeconds !== null);
+    expect(view.clockOffsetSeconds).toBe(180);
+    expect(view.health?.ntpActive).toBe(true);
   });
 
   it("watches a host without Docker for its system alone, and looks after its containers once Docker is there", async () => {
@@ -225,6 +276,19 @@ describe("an SSH host's runner inside the control plane", () => {
     );
     expect(stream.body).toContain(`data: ${Buffer.from("exit\rlogout\r\n").toString("base64")}`);
     expect(stream.body).toContain('event: ended\ndata: {"exitCode":0,"reason":null}');
+  });
+
+  it("keeps the host's own shell and its installs closed when its settings say so, as a runner's .env does", async () => {
+    const { sshHostsService } = controlPlane.services;
+    const closed = { ...sshHostsService.settingsOf(hostId), dryRun: false, hostTerminal: false, hostDeploy: false };
+    sshHostsService.updateSettings(actor, hostId, closed);
+    controlPlane.services.embeddedRunners.begin();
+    await until(host, (view) => view.lastHeartbeatAt !== null && view.hostTerminal === false && !view.hostDeploy);
+    const shell = await admin.post(apiPath(API_ROUTES.hostTerminals, { hostId }), { columns: 100, rows: 30 });
+    expect(shell.json()).toEqual({ error: "host_terminal_off" });
+    const draft = await admin.post(apiPath(API_ROUTES.hostInstallDraft, { hostId }), { image: "example/app:1" });
+    expect(draft.json()).toEqual({ error: "host_deploy_off" });
+    expect(server.shells).toEqual([]);
   });
 
   it("checks a root password on the host before keeping it sealed, and refuses one that makes no root", async () => {

@@ -1,3 +1,4 @@
+import { RUNNER_CAPABILITY } from "../../src/shared/constants.js";
 import type {
   ContainerSnapshot,
   ContainerUsage,
@@ -5,6 +6,9 @@ import type {
   HostHealth,
   HostMetrics,
 } from "../../src/shared/protocol.js";
+
+// What a runner that can do everything a runner can names on each request.
+export const EVERY_RUNNER_CAPABILITY = Object.values(RUNNER_CAPABILITY).join(",");
 
 const MEBIBYTE = 1024 ** 2;
 const GIBIBYTE = 1024 ** 3;

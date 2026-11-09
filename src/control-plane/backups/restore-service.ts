@@ -3,8 +3,9 @@ import { settleDispatchedWork } from "./settle-dispatched-work.js";
 import { describeError } from "../../shared/errors.js";
 import { log } from "../../shared/log.js";
 import { randomUUID } from "node:crypto";
+import { readdirSync, rmSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import { eq } from "drizzle-orm";
 import { API_ERRORS, type RestorePreviewView, type RestoreResultView } from "../../shared/api.js";
@@ -13,6 +14,7 @@ import {
   AUDIT_ACTIONS,
   BACKUP_ORIGIN,
   HOST_STATUS_ACTIVE,
+  IN_MEMORY_DATABASE,
   INTEGRITY_OK,
   JOB_CANCELLED_BY_RESTORE,
   JOB_STATUS,
@@ -368,6 +370,41 @@ export class RestoreService {
   }
 }
 
+// What an offline restore names the database it set aside, before the time it did so.
+const setAsidePrefix = (database: string) => `${database}${ROLLBACK_SUFFIX}-`;
+const DIGITS = /^\d+$/;
+
+/** When an offline restore set this file aside, the database or one of its side files, or null if it did not. */
+function setAsideAt(name: string, prefix: string): number | null {
+  if (!name.startsWith(prefix)) return null;
+  const rest = name.slice(prefix.length);
+  const sideFile = SQLITE_SIDE_FILES.find((suffix) => rest.endsWith(suffix)) ?? "";
+  const time = rest.slice(0, rest.length - sideFile.length);
+  return DIGITS.test(time) ? Number(time) : null;
+}
+
+/**
+ * Deletes the databases offline restores set aside before the cutoff, side files and all, and says how many. An online
+ * restore's own copy has no time in its name: its journal looks after it.
+ */
+export function forgetSetAsideDatabases(databasePath: string, cutoff: number): number {
+  if (databasePath === IN_MEMORY_DATABASE) return 0;
+  const folder = dirname(databasePath);
+  const prefix = setAsidePrefix(basename(databasePath));
+  const forgotten = new Set<number>();
+  try {
+    for (const name of readdirSync(folder)) {
+      const at = setAsideAt(name, prefix);
+      if (at === null || at >= cutoff) continue;
+      rmSync(join(folder, name), { force: true });
+      forgotten.add(at);
+    }
+  } catch (error) {
+    log(RESTORE_MESSAGES.setAsideCleanupFailed(describeError(error)));
+  }
+  return forgotten.size;
+}
+
 /** The command-line path, for when the dashboard cannot start: no live database is needed. */
 export async function restoreOffline(
   databaseHandleFactory: () => DatabaseHandle,
@@ -385,7 +422,7 @@ export async function restoreOffline(
     secretBox,
     snapshotPath,
   );
-  const previousKeptAt = `${settings.databasePath}${ROLLBACK_SUFFIX}-${now}`;
+  const previousKeptAt = `${setAsidePrefix(settings.databasePath)}${now}`;
   // The old file's write-ahead log goes with it, or SQLite would replay it into the restored file.
   const moveAside = (from: string, to: string) =>
     Promise.all(

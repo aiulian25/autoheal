@@ -59,6 +59,8 @@ export const DEFAULT_DOCKER_SOCKET_PATH = "/var/run/docker.sock";
 export const DEFAULT_HOST_ROOT = "/host/root";
 export const DEFAULT_HOST_DBUS_DIRECTORY = "/run/dbus";
 export const DEFAULT_UPDATE_CHECKPOINT_LIMIT_GB = 2;
+// How many disks an SSH host's settings may name to report, as a runner's HOST_FILESYSTEMS lists them, and how long each.
+export const SSH_HOST_FILESYSTEM_LIMITS = { paths: 64, pathCharacters: 1024 } as const;
 export const DEFAULT_DATA_DIRECTORY = "/data";
 // A runner names itself after its host: the hostname file under the host's root, else this.
 export const HOST_NAME_FILE = "etc/hostname";
@@ -85,6 +87,8 @@ export const CONFIG_MESSAGES = {
   httpsUrl: "must be an https:// URL",
   serviceUrl: "must be an http:// or https:// URL",
   joinCode: "is not a join code; copy the install command from the dashboard (Hosts > Add a host)",
+  joinCodeRefused:
+    "works once, within an hour of being made, and the control plane refused this one: it was used already, or it expired. Make a new one on the host's page in the dashboard (Join code), put it in this runner's .env, and start the runner again",
   runnerNeedsOllama: `set ${ENV_JOIN_CODE} (from the dashboard: Hosts > Add a host), or ${ENV_OLLAMA_URL} for a runner on its own`,
   hostLabel: "may only use letters, digits, dots, dashes and underscores (64 at most)",
   runnerToken: "is not a runner token",
@@ -118,6 +122,8 @@ export const EVENT_TYPE_CONTAINER = "container";
 export const EVENT_DIE = "die";
 export const EVENT_OOM = "oom";
 export const EVENT_UNHEALTHY = "health_status: unhealthy";
+export const EVENT_HEALTHY = "health_status: healthy";
+export const EVENT_START = "start";
 export const EVENT_KILL = "kill";
 export const HEALTH_STARTING = "starting";
 // How Docker writes a health check's command: as arguments, or as one line for the container's shell.
@@ -491,6 +497,9 @@ export const RESTART_POLICY_NONE = "no";
 export const EXIT_CODE_SUCCESS = 0;
 export const RESTART_GRACE_SECONDS = 10;
 export const EVENT_STREAM_RETRY_MILLISECONDS = 15 * 1000;
+// How often the container listing is looked at for what an event stream that fell silent missed: one look finds a
+// break the stream did not tell of, the next one confirms it.
+export const EVENT_STREAM_CHECK_MILLISECONDS = 30 * 1000;
 // The control plane may be busy with one other live incident before ours.
 export const DECISION_DEADLINE_MILLISECONDS = OLLAMA_TIMEOUT_MILLISECONDS + 60 * 1000;
 export const CONTROL_PLANE_TIMEOUT_MILLISECONDS = 15 * 1000;
@@ -604,6 +613,10 @@ export const RUNNER_MESSAGES = {
   standalone: "none (asking Ollama directly)",
   modelFromControlPlane: "the control plane's",
   reachedControlPlane: (url: string) => `reporting to the control plane at ${url}`,
+  joinCodeRetry: (problem: string, seconds: number) =>
+    `could not trade this runner's join code for its token yet (${problem}); trying again in ${seconds}s`,
+  tokenNotKept: (problem: string) =>
+    `could not keep this runner's token in Docker (${problem}): it reports until it restarts, then needs a new join code from its host's page`,
   lookingAgain: (name: string, action: string) => `${name}: ${action}, looking again in ${SETTLE_SECONDS}s`,
   recovered: (name: string) => `${name} recovered on its own`,
   standingAside: (name: string) => `${name}: an action from the dashboard is working on it; healing stands aside`,
@@ -613,6 +626,13 @@ export const RUNNER_MESSAGES = {
   couldNotHandle: (name: string, error: string) => `could not handle ${name}: ${error}`,
   couldNotWatch: (name: string, error: string) => `could not watch ${name} after the restart: ${error}`,
   eventStreamLost: (error: string) => `event stream lost: ${error}`,
+  // Docker not answering (not up yet, after a reboot) says nothing of what the runner kept: it starts once it does.
+  guardStateUnread: (problem: string) =>
+    `Could not read the runner's safety state from Docker (${problem}); nothing says it is damaged, and the runner starts once Docker answers.`,
+  resultJournalUnread: (problem: string) =>
+    `Could not read the runner's result journal from Docker (${problem}); nothing says it is damaged, and the runner starts once Docker answers.`,
+  eventStreamSilent: (name: string) =>
+    `event stream silent: it said nothing of ${name} going down or unhealthy; connecting again`,
   catchingUp: (count: number) =>
     `event stream connected: ${count} container(s) broke while it was not, handling them now`,
   catchUpFailed: (error: string) => `could not look for containers that broke meanwhile: ${error}`,
@@ -663,6 +683,8 @@ export type ReplayStatus = (typeof REPLAY_STATUSES)[number];
 export const REPLAY_MAXIMUM_INCIDENTS = 50;
 export const REPLAY_DEFAULT_INCIDENTS = 20;
 export const REPLAY_LIST_LIMIT = 20;
+// Between the models of a replay whose hosts are watched by servers running different ones.
+export const REPLAY_MODEL_SEPARATOR = ", ";
 
 // --- backups -------------------------------------------------------------------------------------
 
@@ -714,13 +736,17 @@ export const RESTORE_SOURCE = { stored: "stored", uploaded: "uploaded", commandL
 export type RestoreSource = (typeof RESTORE_SOURCE)[keyof typeof RESTORE_SOURCE];
 export const RESTORE_SUFFIX = ".restore";
 export const ROLLBACK_SUFFIX = ".before-restore";
+// The database an offline restore replaced stays beside it as long as the local backups reach back, then goes.
+export const SET_ASIDE_KEPT_MILLISECONDS = BACKUP_RETENTION_COUNT * BACKUP_INTERVAL_MILLISECONDS;
 // A restore under way, so a restart can finish or undo it.
 export const RESTORE_JOURNAL_FILE = "restore-operation.json";
 export const SQLITE_SIDE_FILES = ["-wal", "-shm"] as const;
 export const RESTORE_MESSAGES = {
-  done: (file: string, version: number) => `Restored ${file} (schema version ${version}). Every session was ended.`,
+  done: (file: string, version: number, previous: string) =>
+    `Restored ${file} (schema version ${version}). Every session was ended. The database it replaced is kept as ${previous} for ${SET_ASIDE_KEPT_MILLISECONDS / MILLISECONDS_PER_DAY} days, then deleted.`,
   usage: "Usage: main.js restore <path to a .sqlite.age backup>",
   integrityFailed: "Restored database did not pass its integrity check.",
+  setAsideCleanupFailed: (error: string) => `Set-aside database cleanup: ${error}`,
 } as const;
 export const BACKUP_MESSAGES = {
   offboxFailed: (error: string) => `off-box backup copy failed: ${error}`,
@@ -908,6 +934,13 @@ export const MEMINFO_KEYS = {
   swapTotal: "SwapTotal",
   swapFree: "SwapFree",
 } as const;
+// A time service (NTP) among the units systemd runs: systemd-timesyncd, chrony, ntpd, ntpsec or OpenNTPD, whatever a
+// distribution or a NAS calls its unit. With no running unit listed at all, systemd's list says nothing either way.
+export const TIME_SERVICE_UNITS = {
+  runningPrefix: "invocation:",
+  timeService: /^invocation:.*(?:timesyncd|chrony|ntp).*\.service$/,
+} as const;
+
 // Relative to the mounted host root. /var/run is an absolute symlink to /run, which would resolve
 // inside the runner's own container, so the real paths are used.
 export const HOST_FILES = {
@@ -923,6 +956,8 @@ export const HOST_FILES = {
   dnfAutomaticConfiguration: "etc/dnf/automatic.conf",
   // Made by systemd when it booted the host.
   systemdBooted: "run/systemd/system",
+  // An entry for each unit systemd runs now ("invocation:chrony.service"), gone once the unit stops.
+  runningUnits: "run/systemd/units",
   dbusSocket: "run/dbus/system_bus_socket",
   hostname: "etc/hostname",
   // The host's processes and its own mounts: the runner's own /proc shows only its container's.
@@ -1265,6 +1300,7 @@ export const LOCAL_FILESYSTEM = {
 export const MOUNT_ESCAPE_PATTERN = /\\([0-7]{3})/g;
 export const MOUNT_FIELD_SEPARATOR = " ";
 export const OCTAL_RADIX = 8;
+export const HEX_RADIX = 16;
 export const NETWORK_COUNTER_FILES = {
   received: "statistics/rx_bytes",
   transmitted: "statistics/tx_bytes",
@@ -1583,6 +1619,22 @@ export const DETECTOR_INTERVAL_MILLISECONDS = 30 * 1000;
 // After a restart, runners need a heartbeat to show they are alive before silence means anything.
 export const DETECTOR_FIRST_RUN_MILLISECONDS = 60 * 1000;
 export const BYTES_PER_GIBIBYTE = 1024 ** 3;
+// A clock's difference from the control plane's, in the largest whole unit it reaches: -754 s is "12 minutes behind".
+export function clockDifference(seconds: number): string {
+  const units: readonly [string, number][] = [
+    ["day", MILLISECONDS_PER_DAY / MILLISECONDS_PER_SECOND],
+    ["hour", MILLISECONDS_PER_HOUR / MILLISECONDS_PER_SECOND],
+    ["minute", MILLISECONDS_PER_MINUTE / MILLISECONDS_PER_SECOND],
+    ["second", 1],
+  ];
+  const size = Math.abs(seconds);
+  const [unit, unitSeconds] = units.find(([, length]) => size >= length) ?? units.at(-1)!;
+  const count = Math.floor(size / unitSeconds);
+  const plural = count === 1 ? "" : "s";
+  const side = seconds > 0 ? "ahead of" : "behind";
+  return `${count} ${unit}${plural} ${side}`;
+}
+
 // A disk's free space as `df -h` counts it: whole gigabytes, or megabytes below one, as on a nearly full /boot.
 const freeSpaceText = (freeBytes: number) =>
   freeBytes >= BYTES_PER_GIBIBYTE
@@ -1604,6 +1656,8 @@ export const DETECTOR_GRACE_MILLISECONDS = {
   temperature: 5 * 60 * 1000,
   // Docker restarting drops the runner's event stream for seconds; only one that stays down is news.
   healingPaused: 2 * 60 * 1000,
+  // A clock that time sync sets right moments after a boot is no news.
+  clockOff: 2 * 60 * 1000,
   driveHeat: 10 * 60 * 1000,
 } as const;
 export const DETECTOR_THRESHOLDS = {
@@ -1620,6 +1674,9 @@ export const DETECTOR_THRESHOLDS = {
   gpuCelsius: 85,
 } as const;
 // Each detector's part of a task key; the rest names what it watches.
+// Alerts the notification outbox could not take: their task stays this long after the last one, then closes by itself.
+export const NOTIFICATIONS_LOST_WINDOW_MILLISECONDS = 10 * 60 * 1000;
+
 export const DETECTOR_KEYS = {
   container: "container",
   probe: "probe-",
@@ -1627,6 +1684,8 @@ export const DETECTOR_KEYS = {
   rebootPlan: "reboot-plan-",
   hostSilent: "host-silent",
   healingPaused: "healing-paused",
+  clockOff: "clock-off",
+  notificationsLost: "notifications-lost",
   recoveryHeld: "recovery-held",
   disk: "disk",
   drive: "drive",
@@ -1728,6 +1787,13 @@ export const TASK_TEXT = {
   hostSilentDetails: (minutes: number) =>
     `No heartbeat for ${minutes} minutes. Healing on that host may be down; check its autoheal container.`,
   healingPaused: (host: string) => `Healing is paused on ${host}`,
+  notificationsLost: "Alerts are not being sent: the notification outbox is full",
+  notificationsLostDetails:
+    "Alerts that did not fit in the outbox were dropped, so no notification channel heard of them, usually because a channel keeps failing and its alerts pile up. Settings → Notifications shows which, under Deliveries: fix that channel or turn it off. This closes by itself once alerts fit again.",
+  clockOff: (host: string, seconds: number) =>
+    `${host}'s clock is ${clockDifference(seconds)} the control plane's: automatic recovery is paused`,
+  clockOffDetails:
+    "Its runner takes no maintenance policy from a control plane whose clock is more than a minute from its own, so it heals nothing on its own; its other settings still reach it, and its containers' problems still show here. Turn on time sync (NTP) on that host: this closes by itself once the clocks agree.",
   driveHealth: (device: string, host: string) => `Drive ${device} on ${host} shows signs of wear or failure`,
   driveHealthDetails: (problems: readonly string[], readAt: string) =>
     `${problems.join("; ")}. As smartd last read it, on ${readAt}. Back up what is on it and plan its replacement.`,
@@ -1859,6 +1925,9 @@ export const JOB_ACTION = {
   uninstallWithData: "uninstall_with_data",
   // A fresh container from the image it runs, with its own settings, the old one kept aside meanwhile.
   recreate: "recreate",
+  // A newer version a person handed to the Ollama agent: its tag changed where its Compose file or .env writes it,
+  // its data copied aside first, and everything put back if it does not come back well.
+  changeTag: "change_tag",
   // About the host's Docker as a whole: the images no container uses, and the build cache if the host says so.
   pruneImages: "prune_images",
   // The unused images a person ticked on the host's page.
@@ -1905,7 +1974,17 @@ export const AUTOHEAL_LABEL_PREFIX = "autoheal.";
 // Labels Autoheal itself sets and trusts, such as the one saying it installed a container.
 export const AUTOHEAL_OWN_LABEL_PREFIX = "com.autoheal.";
 export const COMPOSE_LABEL_PREFIX = "com.docker.compose.";
-export const AUTOHEAL_VOLUME_PREFIXES: readonly string[] = ["autoheal-guard-", "autoheal-results-"];
+// Where a runner keeps the token its join code was traded for: the label of a volume named after that code.
+export const RUNNER_TOKEN_VOLUME = {
+  prefix: "autoheal-runner-",
+  label: "autoheal.runner.token",
+  codeHashCharacters: 16,
+} as const;
+export const AUTOHEAL_VOLUME_PREFIXES: readonly string[] = [
+  "autoheal-guard-",
+  "autoheal-results-",
+  RUNNER_TOKEN_VOLUME.prefix,
+];
 export const OTHER_TOOL_LABEL_SUFFIX = ".internal.resource";
 export const VOLUME_SIZES_REFRESH_MILLISECONDS = 10 * 60 * 1000;
 export const VOLUME_LOOK = {
@@ -1999,6 +2078,11 @@ export const COMPOSE_EDIT_PROBLEMS = {
   portNotFound: (port: number) => `port ${port} is not written in the short form, such as "8080:80"`,
   mountNotFound: (target: string) => `${target} is not written in the short form, such as "./data:/data"`,
   disagrees: "Compose read the edited file differently from what was asked, so it was put back",
+  imageMissing: (service: string) => `${service} has no image line: it is built here, so it has no tag to change`,
+  tagByDigest: (service: string) => `${service}'s image is pinned by its digest, not by a tag`,
+  tagNotEditable: (service: string) =>
+    `${service}'s tag is not written as a plain tag or as one variable, so it was left alone`,
+  variableUnset: (name: string) => `${name} has no value in the .env, so the image it names could not be read`,
 } as const;
 export const STACK_OUTCOMES = {
   accessOff: "Reaching inside containers and their files is off in this host's .env.",
@@ -2012,6 +2096,9 @@ export const STACK_OUTCOMES = {
   tooBig: (project: string) => `The Compose file of ${project} is too big to edit here.`,
   unreadable: "Compose could not read this file.",
   notItsFile: (path: string) => `${path} is not one of this stack's files.`,
+  filesOff: "Opening a stack's files needs HOST_DEPLOY=true in this host's .env, as changing them does.",
+  outsideFolder: (path: string, folder: string) =>
+    `${path} lies outside ${folder}, the folder Compose says this stack runs from, so Autoheal does not open it.`,
   changedMeanwhile: (path: string) =>
     `${path} changed on the host since it was opened, so it was not saved. Reload it first.`,
   notSaved: (problem: string) => `Not saved. The file on the host has not changed. ${problem}`,
@@ -2044,6 +2131,21 @@ export const STACK_OUTCOMES = {
     `${name} did not come back with the new settings (${problem}). Its files were put back as they were.`,
   fileNotChanged: (reason: string) =>
     `Its Compose file was not changed, so recreating from that file undoes this: ${reason}.`,
+  tagLine: (file: string) => `the image line in ${file}`,
+  tagVariable: (name: string, file: string) => `${name} in ${file}`,
+  tagChanged: (names: readonly string[], tag: string, where: string) =>
+    `Moved ${names.join(", ")} to ${tag} by changing ${where}, and ${names.length === 1 ? "it" : "they"} came back well.`,
+  tagChangedStopped: (names: readonly string[], tag: string, where: string) =>
+    `Changed ${where} to ${tag}; ${names.join(", ")} ${names.length === 1 ? "stays" : "stay"} stopped, as before.`,
+  tagNotChanged: (reason: string) => `The tag was not changed: ${reason}.`,
+  tagMoreThanTag: "Compose read the edited files as changing more than the tag, so they were put back",
+  tagNoCopy: (outcome: string) => `Its data could not be copied aside first, so nothing was changed.${outcome}`,
+  tagPutBack: (names: readonly string[], tag: string, problem: string) =>
+    `${names.join(", ")} did not come back well on the new version (${problem}). The files, the data and the containers were put back on ${tag}.`,
+  tagPutBackDataKept: (names: readonly string[], tag: string, problem: string) =>
+    `${names.join(", ")} did not come back well on the new version (${problem}). The files and the containers were put back on ${tag}; the data was too big to copy first, so it stays as the new version left it.`,
+  tagNotPutBack: (problem: string, undo: string) =>
+    `It did not come back well on the new version (${problem}), and putting it back failed too (${undo}). Look at it now.`,
   stopped: (project: string) => `Stopped ${project}.`,
   started: (project: string) => `Started ${project}.`,
   removed: (project: string) => `Removed ${project}. Its files and data are still on the host.`,
@@ -2194,12 +2296,15 @@ export const JOB_OUTCOMES = {
     `Checked ${images} images: ${available} with an update, ${unknown} that could not be checked.`,
   alreadyCurrent: (name: string) => `${name} already runs the newest image behind its tag.`,
   pullFailed: (reference: string, error: string) => `Could not pull ${reference}: ${error}`,
+  notThereAfterPull: "the image was not there after the pull",
   updated: (name: string, reference: string) => `Updated ${name} to the newest ${reference}, and it is running.`,
   updatedHealthy: (name: string, reference: string) =>
     `Updated ${name} to the newest ${reference}, and it is running and healthy.`,
   updatedStopped: (name: string, reference: string) =>
     `Updated ${name} to the newest ${reference}; it stays stopped, as it was.`,
   keptImage: (kept: string) => ` The image it ran before is kept as ${kept}.`,
+  tagMovedMeanwhile: (reference: string) =>
+    `${reference} moved to another image after it was checked, so the new container was not started`,
   restoredAfterFailure: (name: string, error: string) =>
     `Could not update ${name} (${error}). The old container is back as it was.`,
   restoreFailed: (name: string, error: string, parked: string) =>
@@ -2528,6 +2633,8 @@ export const IMAGE_PROVENANCE = {
   publisherKeyLength: 4096,
   publishersLimit: 32,
   rulesLimit: 64,
+  // How much of the policy's SHA-256 its revision is: 12 hex digits, 48 bits, a whole number JSON carries exactly.
+  revisionHexDigits: 12,
   problemLength: 300,
   // A signature document is a few hundred bytes; anything near this is not one.
   payloadBytesLimit: 64 * 1024,
@@ -2627,6 +2734,8 @@ export const REGISTRY_MESSAGES = {
   refusedCredential: (registry: string, username: string) =>
     `${registry} refused the stored credential for ${username}`,
   refusedCredentialRealm: (origin: string) => `would not send the credential to a token address at ${origin}`,
+  refusedCredentialRedirect: (origin: string) =>
+    `would not send the credential on to ${origin}, where the registry sent the request`,
 } as const;
 export const DIGEST_SEPARATOR = "@";
 export const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -2677,6 +2786,8 @@ export const TAG_VERSION = {
   placeholder: "#",
   commitLike: /(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}/i,
 } as const;
+// What a container's ignored version says when every new version of it is ignored: no tag is written so.
+export const IGNORE_EVERY_VERSION = "*";
 export const URL_PROTOCOL_SUFFIX = ":";
 export const ANONYMOUS_VOLUME_PATTERN = /^[0-9a-f]{64}$/;
 export const UPDATE_ASSESSMENT = { update: "update", hold: "hold" } as const;
@@ -2712,14 +2823,27 @@ export const ASSESSMENT_TEXT = {
     `${description} The newer image is ${version} again, a rebuild of the same release.`,
   unusableAnswer: "an answer that was not a kind of app",
 } as const;
+// An update whose container takes new images Ollama calls safe never goes ahead without its word: while Ollama cannot
+// be asked it is asked again this often, and after this long the update goes to a person.
+export const AUTOHEAL_ASSESSMENT = {
+  askAgainMilliseconds: 5 * MILLISECONDS_PER_MINUTE,
+  handOverMilliseconds: 60 * MILLISECONDS_PER_MINUTE,
+} as const;
+
 export const AUTOHEAL_TEXT = {
   assessedUpdate: (reason: string) => `Going ahead: ${reason}`,
   assessedHold: (reason: string) => `Holding this update for you: ${reason}`,
-  noAssessment: (reason: string) => `Ollama could not be asked (${reason}); updating as the label allows.`,
+  awaitingAssessment: (reason: string) =>
+    `Ollama could not be asked (${reason}), so this update waits for its word, and comes to you if there is none within ${AUTOHEAL_ASSESSMENT.handOverMilliseconds / MILLISECONDS_PER_MINUTE} minutes.`,
+  noAssessment: (reason: string) =>
+    `Ollama could not be asked for ${AUTOHEAL_ASSESSMENT.handOverMilliseconds / MILLISECONDS_PER_MINUTE} minutes (${reason}), so this update waits for you: give it back to Autoheal to apply it.`,
   overridden: "Updating as asked: a person gave this to Autoheal after Ollama had its say.",
   alwaysApplied: "Applying it: this container takes each new image, undone at once if it does not come back healthy.",
   dispatched: (person: string) =>
     `${person} handed this to Ollama: applying it whatever held it, undone at once if it does not come back healthy.`,
+  tagDispatched: (person: string, name: string, from: string, to: string) =>
+    `${person} handed this to Ollama: moving ${name} from ${from} to ${to} where its files write the tag, its data copied aside first, and everything put back if it does not come back well.`,
+  notAsked: (reason: string) => `Could not ask the host's runner for it (${reason}). Giving this back.`,
   packagesDispatched: (person: string, names: readonly string[]) =>
     `${person} handed these to Ollama: installing ${names.join(", ")} now, whatever held them. A reboot they need stays yours.`,
   advised: (decision: UpdateAssessment, reason: string) =>
@@ -3192,6 +3316,7 @@ export const AUDIT_ACTIONS = {
   userTotpReset: "user.totp_reset",
   userDeleted: "user.deleted",
   hostEnrolled: "host.enrolled",
+  hostJoinCodeMade: "host.join_code_made",
   hostRenamed: "host.renamed",
   hostRevoked: "host.revoked",
   hostSshAdded: "host.ssh_added",
@@ -3241,6 +3366,7 @@ export const AUDIT_ACTIONS = {
   settingsChanged: "container.settings_changed",
   hostControlSaved: "host.control_saved",
   containerControlSaved: "container.control_saved",
+  versionsIgnored: "container.versions_ignored",
   restartsReset: "container.restarts_reset",
   widgetKeyCreated: "widget_key.created",
   widgetKeyRevoked: "widget_key.revoked",
@@ -3284,6 +3410,8 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 
 export const AUDIT_MESSAGES = {
   secretField: (key: string) => `audit details may not carry secrets (field "${key}")`,
+  secretFieldsLeftOut: (action: string, keys: string) =>
+    `audit event ${action} was recorded without fields named like secrets: ${keys}`,
 } as const;
 
 // --- accounts and passwords ----------------------------------------------------------------------
@@ -3415,6 +3543,8 @@ export const SIGN_IN_METHOD = { password: "password", passkey: "passkey" } as co
 export const PASSKEY_CEREMONY_MILLISECONDS = 5 * 60 * 1000;
 // Challenges waiting at most: each is only a few bytes, but a flood of requests must not grow memory.
 export const PASSKEY_CEREMONY_LIMIT = 1_000;
+// From one address at once: past this its own oldest goes, so a flood from one place ends nobody else's sign-in.
+export const PASSKEY_CEREMONIES_PER_ADDRESS = 10;
 export const PASSKEYS_PER_USER = 20;
 export const PASSKEY_NAME_CHARACTERS = 64;
 // Each base64url field of what the browser sends back; real ones are a few hundred characters.
@@ -3460,6 +3590,9 @@ export const AUDIT_LIST_LIMIT = 200;
 export const SEARCH_TEXT_LIMIT = 255;
 export const INDEX_HTML = "index.html";
 export const ASSETS_PATH_PREFIX = "/assets/";
+// A browser opening a page asks for HTML; a script, style or image it loads does not.
+export const HTML_MEDIA_TYPE = "text/html";
+export const URL_QUERY_START = "?";
 export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 export const NO_CACHE = "no-cache";
 export const NO_STORE = "no-store";
@@ -3629,6 +3762,11 @@ export const DER = {
 export const TLS_MESSAGES = {
   created: "Made a TLS certificate for the dashboard and the runner API; runners know it from their join code",
   renewed: "Signed Autoheal's TLS certificate again; runners keep trusting it, browsers see a new one",
+  reread: "Read your own TLS certificate again; both listeners serve the renewed one",
+  newKey:
+    "Took up a TLS certificate with a new key; both listeners serve it, and the runners Autoheal runs itself, this machine's runner container and new join codes trust it by that key. A runner elsewhere that trusts the control plane by its old key alone, not by your CA, needs a new join code: Join code on its host's page",
+  renewFailed: (problem: string) =>
+    `Could not finish taking up a new TLS certificate; all of it is tried again in a day: ${problem}`,
   pinMismatch: "the control plane's certificate is neither trusted here nor the one this runner's join code names",
 } as const;
 
@@ -3640,9 +3778,14 @@ export const PLAIN_HTTP_MESSAGES = {
 
 // --- joining a runner to the control plane ------------------------------------------------------
 
-// "ahj_" and the base64url of {url, token, pin}: one line to copy, nothing else to set.
+// "ahj_" and the base64url of {url, enrolment, pin}: one line to copy, nothing else to set. One made before codes
+// worked once carries the runner's token in place of the enrolment, and still joins; so does this machine's runner's.
 export const JOIN_CODE_PREFIX = "ahj_";
 export const JOIN_CODE_ENCODING = "base64url";
+// What a join code carries in place of a token: it works once, within the hour, traded for the token its runner made.
+export const ENROLMENT_PREFIX = "ahe_";
+export const ENROLMENT_PATTERN = /^ahe_[A-Za-z0-9_-]{43}$/;
+export const JOIN_CODE_LIFETIME_MILLISECONDS = MILLISECONDS_PER_HOUR;
 // The main host's runner joins by itself: the control plane writes its join code into a volume
 // both containers mount, and the runner reaches the control plane by its compose service name.
 export const JOIN_DIRECTORY = "/join";
@@ -3668,7 +3811,8 @@ export const RUNNER_COMPOSE = (
 ) => `# Autoheal's runner for one more host. The dashboard's Hosts > Add a host writes this file, and an
 # .env next to it with AUTOHEAL_JOIN (from there) and DOCKER_GID (stat -c %g /var/run/docker.sock).
 # Optional settings go in that .env too: see the README.
-# Runner safety budgets use runtime-managed autoheal-guard-* Docker volumes; retain them across upgrades.
+# Runner safety budgets and its token use runtime-managed autoheal-guard-* and autoheal-runner-* Docker volumes;
+# retain them across upgrades.
 services:
   runner:
     image: ${image}
@@ -3854,6 +3998,7 @@ export const TERMINAL_ENDINGS = {
   sessionEnded: "The owning session ended or no longer has administrator access, so the shell was closed.",
   notStarted: "The host's runner did not start the shell.",
   runnerSilent: "The host's runner stopped answering, so the shell was closed.",
+  hostRevoked: "The host was revoked, so the shell was closed.",
   idle: `Nobody typed for ${TERMINAL_IDLE_MILLISECONDS / MILLISECONDS_PER_MINUTE} minutes, so the shell was closed.`,
 } as const;
 export const TERMINAL_STATE = { waiting: "waiting", open: "open", ended: "ended" } as const;
@@ -3991,6 +4136,10 @@ export const INSTALL_OUTCOMES = {
   startedBadly: (name: string, problem: string) => `${name} started, but ${problem}.`,
   gone: "This host's runner could not get the install's details from the dashboard, so nothing was installed. Try again.",
   notOurs: (name: string) => `Autoheal did not install ${name}, so it will not take it away.`,
+  notItsFolder: (name: string, folder: string) =>
+    `The Compose file in ${folder} does not name ${name}, so Autoheal will not take it away.`,
+  notTakenDown: (name: string, why: string) =>
+    `Compose could not take ${name} down, so its folder is kept as it was. ${why}`,
   notRemoved: (name: string, why: string) => `Could not take ${name} away. ${why}`,
   removed: (name: string, folder: string) => `Took ${name} away. Its data is still in ${folder}.`,
   removedWithData: (name: string) => `Took ${name} and its data away.`,
@@ -4008,8 +4157,8 @@ export const HOST_TERMINAL_REFUSALS = {
 } as const;
 // Where Docker is there: a privileged container of Autoheal's own image in the host's process namespace, holding
 // still while nsenter, run in it, enters every namespace of the host's first process and starts root's login shell
-// there, as `docker run --privileged --pid=host … nsenter -t 1 -a` does. It is removed when the shell ends, and
-// removes itself after a while should the runner that started it be gone.
+// there, as `docker run --privileged --pid=host … nsenter -t 1 -a` does. It is removed when the shell ends, or when a
+// runner starts after the one that started it stopped, and removes itself after a while should neither happen.
 export const HOST_TERMINAL_HELPER = {
   containerPrefix: "autoheal-terminal-",
   label: "com.autoheal.terminal",
@@ -4103,6 +4252,9 @@ export const FILE_PATH_CHARACTERS = 4096;
 export const FILE_FIELD_CHARACTERS = 255;
 // A person's request for files or settings waits this long for its runner's answer.
 export const RUNNER_ANSWER_WAIT_MILLISECONDS = 30 * 1000;
+// A read its runner took but has not answered after this goes out once more: the poll that took it may never have
+// reached the runner.
+export const RUNNER_REHAND_MILLISECONDS = 5 * 1000;
 // Commands as every image has them, given as arguments (never through a shell), in C's words.
 // The second listing follows links, to say what each leads to: a folder to walk into, or a file.
 export const FILE_COMMANDS = {
@@ -4851,6 +5003,8 @@ export const REPAIR_TEXT = {
   reported: "Ollama looked into it and found no repair it may make: its report says how to fix it.",
   unavailable: (repair: string) => `Ollama chose ${wordsOf(repair)}, which was not on offer, so this is its report.`,
   unusableAnswer: (reason: string) => `Ollama gave no repair (${reason}): this waits for you.`,
+  // The incident was decided on, or ended, while Ollama looked into it: what was done meanwhile stands.
+  changedMeanwhile: "This changed while Ollama looked into it, so its answer is set aside.",
   tooMany: (container: string, count: number) =>
     `${container} was given ${count} repairs in the last day: this one waits for you.`,
   // What Ollama found, worded for a person: in the notification and on the incident's page.
@@ -4915,6 +5069,8 @@ export const UPDATE_PHASE = {
   checking: "checking",
   finishing: "finishing",
   undoing: "undoing",
+  // A Compose stack brought up from its files: Compose pulls and replaces in one step.
+  recreating: "recreating",
   // A backup or a restore, on the same row.
   copying: "copying",
   verifyingCopy: "verifying_copy",
@@ -4954,7 +5110,9 @@ export const PULL_PROGRESS_LIMITS = {
   rateWindowMilliseconds: 3_000,
 } as const;
 // What the dashboard's live stream says changed: a host's containers, a job, or an update's progress.
-export const LIVE_EVENT = { inventory: "inventory", job: "job", progress: "progress" } as const;
+export const LIVE_EVENT = { inventory: "inventory", job: "job", progress: "progress", board: "board" } as const;
+// How soon a change to the tasks or incidents reaches the dashboards open: one look at them this often.
+export const BOARD_CHANGE_CHECK_MILLISECONDS = 1000;
 export type LiveEventKind = (typeof LIVE_EVENT)[keyof typeof LIVE_EVENT];
 export const LIVE_KEEPALIVE_MILLISECONDS = 15 * 1000;
 // Application-side SSE buffers per browser, including pending HTTP output. Slow readers reconnect.
@@ -4969,8 +5127,18 @@ export const NOTIFICATION_DELIVERY_INTERVAL_MILLISECONDS = 10_000;
 // How often canary rollouts check their observations and move on.
 export const ROLLOUT_TICK_INTERVAL_MILLISECONDS = 10 * MILLISECONDS_PER_SECOND;
 
-export const RUNNER_CAPABILITIES =
-  "resource-permissions,operation-previews,rollouts,application-backups,application-boot-drills";
+// What a runner can do: the one list it names in a header on every request, and its heartbeat says field by field.
+// The dashboard hands a runner only what its list names. Older dashboards read these very names.
+export const RUNNER_CAPABILITY = {
+  resourcePermissions: "resource-permissions",
+  operationPreviews: "operation-previews",
+  rollouts: "rollouts",
+  applicationBackups: "application-backups",
+  applicationBootDrills: "application-boot-drills",
+  // Only while its .env lets it change apps: container access and installs on, data kept aside, not in dry-run.
+  tagChanges: "tag-changes",
+} as const;
+export type RunnerCapability = (typeof RUNNER_CAPABILITY)[keyof typeof RUNNER_CAPABILITY];
 
 export const COMMAND_APPLICATION_COPY = "application-copy";
 
@@ -5129,6 +5297,9 @@ export const SSH_HOST_FILES = {
   textFileBytes: 4 * 1024 * 1024,
   // What a POSIX shell exits with when the command is not there.
   commandNotFoundExit: 127,
+  // The host's clock: seconds since the epoch, and their nanoseconds where its date knows %N.
+  clockCommand: "date +%s.%N",
+  clockReading: /^(\d+)(?:\.(\d+))?/,
 } as const;
 // How a saved root password is used: as the user's own, through sudo, or as root's, through su.
 export const ROOT_METHOD = { sudo: "sudo", su: "su" } as const;
@@ -5177,6 +5348,9 @@ export const LOCAL_HOST = {
   switched: "This machine's runner host is now looked after from Autoheal's own container, with its history.",
   failed: (problem: string) => `This machine's runner could not start or stop: ${problem}`,
   tokenUnreadable: "its token was sealed with another backup passphrase",
+  // Its own container is the one it must never act on: unknown, it does not look after this machine at all.
+  ownContainerUnknown: (name: string) =>
+    `Autoheal cannot find its own container by its hostname (${name}), so it does not look after this machine, as it could take its own container for any other: remove hostname: and network_mode: host from its Compose file`,
 } as const;
 // Autoheal updating itself: a one-shot helper of the new image recreates the control plane's container and watches it.
 export const SELF_UPDATE = {

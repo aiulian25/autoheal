@@ -1,0 +1,273 @@
+/* --- forms ---------------------------------------------------------------------------------- */
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-muted);
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  font-size: var(--text-body);
+  color: var(--text);
+  background: var(--sidebar);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  /* As in buttons, the words sit a little low. */
+  padding: 3px var(--space-3) 0;
+  min-height: var(--control-height);
+}
+
+input.mono {
+  font-size: var(--text-small);
+}
+
+input::placeholder {
+  color: var(--placeholder);
+}
+
+select {
+  appearance: none;
+  background: var(--control) var(--chevron) no-repeat right var(--space-3) center / 12px;
+  padding-right: var(--space-6);
+}
+
+textarea {
+  min-height: var(--textarea-height);
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+
+/* Radios and ticks, drawn in the palette rather than left to the browser. */
+input[type="radio"],
+input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid var(--control-border);
+  background: var(--surface);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+}
+
+input[type="radio"] {
+  border-radius: 50%;
+}
+
+input[type="checkbox"] {
+  border-radius: 5px;
+}
+
+input[type="radio"]:checked {
+  border-color: var(--primary);
+}
+
+input[type="radio"]:checked::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+input[type="checkbox"]:checked {
+  border-color: var(--primary);
+  background: var(--primary) var(--tick) no-repeat center / 12px;
+}
+
+input[type="radio"]:disabled,
+input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
+}
+
+/* The eye sits over the input's right end, in the same grid cell. */
+.password-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: var(--space-2);
+}
+
+.password-field label,
+.password-field input {
+  grid-column: 1 / -1;
+}
+
+.password-field input {
+  grid-row: 2;
+  padding-inline-end: calc(var(--icon-size) + var(--space-5));
+}
+
+/* Edge draws its own eye on password inputs; one is enough. */
+.password-field input::-ms-reveal {
+  display: none;
+}
+
+.reveal {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: center;
+  display: flex;
+  margin-inline-end: var(--space-2);
+  padding: var(--space-1);
+  min-height: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+}
+
+.reveal:hover,
+.reveal[aria-pressed="true"] {
+  background: none;
+  color: var(--text);
+}
+
+.icon {
+  flex: none;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: var(--icon-stroke);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Buttons: a plain one sits on the control surface; primary is the one thing to do. */
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  /* The words sit a little low, as the mockups' renderer sets them. */
+  padding: 1px 10px 0;
+  font: inherit;
+  font-size: var(--text-body);
+  color: var(--text);
+  background: var(--control);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button:hover,
+.button:hover {
+  border-color: var(--text-faint);
+}
+
+button.primary,
+.button.primary {
+  padding-inline: 17px;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+  font-weight: var(--weight-strong);
+}
+
+button.primary:hover,
+.button.primary:hover {
+  border-color: var(--primary);
+  filter: brightness(1.08);
+}
+
+/* A quieter choice beside the main ones: just its words. */
+button.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+button.quiet:hover {
+  color: var(--text);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.quiet.danger {
+  color: var(--danger);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
+}
+
+button.link {
+  min-height: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  text-align: start;
+  font-size: inherit;
+}
+
+fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.choice {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-3);
+  color: var(--text);
+  font-size: var(--text-large);
+}
+
+.notice {
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--border);
+}
+
+.notice.error {
+  color: var(--danger);
+  background: var(--danger-surface);
+  border-color: transparent;
+}
+
+.notice.warning {
+  color: var(--warning);
+  background: var(--warning-surface);
+  border-color: var(--warning-border);
+}
+
+.notice.success {
+  color: var(--good);
+  background: var(--good-surface);
+  border-color: transparent;
+}
+
+.secret {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  user-select: all;
+}
+
+.qr {
+  width: var(--qr-size);
+  height: var(--qr-size);
+  background: #ffffff;
+  border-radius: var(--radius);
+}

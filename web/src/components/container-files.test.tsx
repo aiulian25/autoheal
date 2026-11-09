@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FileAnswer, FileEntry } from "../../../src/shared/protocol.js";
 import { base64FromText, crumbsOf, textOf } from "../container-files.js";
+import { TEXT } from "../constants.js";
 import { ContainerFiles } from "./container-files.js";
 
 const FILES = "/api/inventory/hosts/h1/containers/paperless/files";
@@ -56,9 +57,14 @@ function show() {
   return onClose;
 }
 
-describe("a container's files, in the dashboard", () => {
-  beforeEach(() => vi.spyOn(window, "confirm").mockReturnValue(true));
+// A name given where the button asked for it.
+function give(question: string, name: string) {
+  const asked = screen.getByRole("group", { name: question });
+  fireEvent.change(within(asked).getByRole("textbox"), { target: { value: name } });
+  fireEvent.click(within(asked).getByRole("button", { name: TEXT.askInPlace.save }));
+}
 
+describe("a container's files, in the dashboard", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -99,8 +105,8 @@ describe("a container's files, in the dashboard", () => {
     );
     expect(await screen.findByText("Saved")).toBeTruthy();
 
-    vi.spyOn(window, "prompt").mockReturnValue("cache");
     fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+    give(TEXT.files.askFolderName, "cache");
     await waitFor(() => expect(asked).toContainEqual({ operation: "make_folder", path: "/srv/cache" }));
     fireEvent.click(screen.getByRole("button", { name: "locked" }));
     expect(await screen.findByText("ls: /srv/locked/: Permission denied")).toBeTruthy();
@@ -114,14 +120,16 @@ describe("a container's files, in the dashboard", () => {
     show();
     await screen.findByRole("button", { name: "notes.txt" });
 
-    vi.spyOn(window, "prompt").mockReturnValueOnce("a/b").mockReturnValueOnce("todo.txt");
     fireEvent.click(screen.getByRole("button", { name: "Rename notes.txt" }));
+    give(TEXT.files.askNewName("notes.txt"), "a/b");
     expect(await screen.findByText("A name can't be empty, . or .., nor hold a /.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Rename notes.txt" }));
+    give(TEXT.files.askNewName("notes.txt"), "todo.txt");
     await waitFor(() => expect(asked).toContainEqual({ operation: "rename", path: "/notes.txt", to: "/todo.txt" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
-    expect(window.confirm).toHaveBeenCalledWith("Remove /notes.txt? A folder goes with everything in it.");
+    const removing = screen.getByRole("group", { name: "Remove /notes.txt? A folder goes with everything in it." });
+    fireEvent.click(within(removing).getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(asked).toContainEqual({ operation: "remove", path: "/notes.txt" }));
 
     const upload = screen.getByLabelText("Upload");

@@ -64,6 +64,7 @@ const FIREWALL = {
   ],
   logLastAt: null,
   logRefusedSender: null,
+  logIgnored: null,
   logNameUnresolved: false,
   exposureReadable: true,
 };
@@ -171,8 +172,8 @@ beforeEach(() => {
           });
         }
         return json({
-          name: null,
-          version: null,
+          name: "Gateway",
+          version: "1.2.3",
           capabilities: [
             { capability: "clients", works: true, detail: "12" },
             { capability: "exposure", works: false, detail: "refused" },
@@ -255,6 +256,21 @@ describe("the network page", () => {
     expect(await screen.findByText(text.firewall.logsRefused("192.0.2.77"))).toBeTruthy();
     expect(screen.getByText(text.firewall.logsNameUnresolved)).toBeTruthy();
     expect(screen.getByText(new RegExp(text.firewall.logsLast))).toBeTruthy();
+  });
+
+  it("counts lines other addresses sent while the router's arrive, and says how far its lines can be trusted", async () => {
+    const fetched = vi.mocked(fetch).getMockImplementation()!;
+    const ignored = { sender: "192.0.2.78", at: Date.now(), lines: 12 };
+    const firewall = { ...FIREWALL, logLastAt: Date.now(), logIgnored: ignored };
+    vi.mocked(fetch).mockImplementation(async (url, init) =>
+      url === API_ROUTES.networkFirewall
+        ? new Response(JSON.stringify(firewall), { status: 200, headers: { "content-type": "application/json" } })
+        : fetched(url, init),
+    );
+    shown(<NetworkPage />);
+    openTab(text.tabs.firewall);
+    expect(await screen.findByText(text.firewall.logsTrust)).toBeTruthy();
+    expect(screen.getByText(new RegExp(text.firewall.logsIgnored(12, "192.0.2.78")))).toBeTruthy();
   });
 
   it("claims nothing of the firewall beyond what was checked", async () => {
@@ -351,6 +367,7 @@ describe("the router's card", () => {
 
     fireEvent.click(screen.getByRole("button", { name: text.connection.trustConfirm }));
     expect(await screen.findByText(new RegExp(`${text.connection.capabilities.clients}: 12`))).toBeTruthy();
+    expect(screen.getByText("Asked Gateway, version 1.2.3")).toBeTruthy();
     expect(sent[1]).toMatchObject({
       url: API_ROUTES.routerProbe,
       body: { username: "read", password: "secret", trustedCertificate: FINGERPRINT },

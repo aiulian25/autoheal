@@ -91,6 +91,8 @@ export type InstallSpec = z.infer<typeof installSpecSchema>;
 export const INSTALL_LABEL = "com.autoheal.installed";
 // How every Compose file Autoheal writes marks its services.
 export const INSTALLED_LINE = `${INSTALL_LABEL}: "true"`;
+// And names each container it holds: what ties an install's folder to its own containers and no others.
+export const CONTAINER_NAME_KEY = "container_name";
 export const COMPOSE_FILE = "docker-compose.yml";
 export const ENV_FILE = ".env";
 const DATABASE_SERVICE_SUFFIX = "-db";
@@ -149,7 +151,7 @@ function composeOfDocument(spec: InstallSpec, document: ComposeDocument): string
     return [
       `  ${quoted(name)}:`,
       `    image: ${quoted(service.image)}`,
-      `    container_name: ${quoted(serviceContainerName(spec, name))}`,
+      `    ${CONTAINER_NAME_KEY}: ${quoted(serviceContainerName(spec, name))}`,
       `    restart: ${spec.restartPolicy}`,
       ...(isMain ? [`    env_file: ${ENV_FILE}`] : []),
       "    labels:",
@@ -206,7 +208,7 @@ export function composeOf(spec: InstallSpec): string {
     "services:",
     `  ${service}:`,
     `    image: ${quoted(spec.image)}`,
-    `    container_name: ${quoted(spec.name)}`,
+    `    ${CONTAINER_NAME_KEY}: ${quoted(spec.name)}`,
     `    restart: ${spec.restartPolicy}`,
     `    env_file: ${ENV_FILE}`,
     `    labels:`,
@@ -228,7 +230,7 @@ export function composeOf(spec: InstallSpec): string {
           "        condition: service_healthy",
           `  ${databaseServiceOf(spec)}:`,
           `    image: ${quoted(spec.database.image)}`,
-          `    container_name: ${quoted(databaseNameOf(spec))}`,
+          `    ${CONTAINER_NAME_KEY}: ${quoted(databaseNameOf(spec))}`,
           `    restart: ${spec.restartPolicy}`,
           "    labels:",
           `      ${INSTALLED_LINE}`,

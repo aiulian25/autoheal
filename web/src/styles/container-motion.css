@@ -1,0 +1,365 @@
+/* --- a host's containers as they change: a row at work, an update under it, each change seen for a moment ---- */
+
+/* Which containers show, each kind with how many it holds. */
+.show-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.show-chips .chip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.show-chips .tab-count {
+  translate: none;
+}
+
+/* A row a job works on: tinted, its edge lit, breathing until the job ends. Stopping reads amber, removing red. */
+.host-containers tr.working {
+  --work: var(--accent);
+}
+
+.host-containers tr:is(.working-start, .working-unpause) {
+  --work: var(--good);
+}
+
+.host-containers tr:is(.working-stop, .working-pause) {
+  --work: var(--warning);
+}
+
+.host-containers tr.working-remove {
+  --work: var(--danger);
+}
+
+.host-containers tr.working > td {
+  background: color-mix(in srgb, var(--work) 7%, transparent);
+  animation: work-breathe 1.8s ease-in-out infinite;
+}
+
+.host-containers tr.working > td:first-child {
+  box-shadow: inset var(--step-bar-width) 0 0 var(--work);
+}
+
+@keyframes work-breathe {
+  50% {
+    background: color-mix(in srgb, var(--work) 15%, transparent);
+  }
+}
+
+.working-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--work);
+  font-weight: var(--weight-medium);
+}
+
+.working-state .icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+.pulse {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* A change, seen for a moment: the row washes in the colour the change is known by, then settles. */
+.host-containers tr.motion-appeared,
+.host-containers tr.motion-restarted {
+  --wash: var(--accent);
+}
+
+.host-containers tr.motion-started,
+.host-containers tr.motion-updated {
+  --wash: var(--good);
+}
+
+.host-containers tr.motion-stopped {
+  --wash: var(--warning);
+}
+
+.host-containers tr.motion-paused {
+  --wash: var(--series-blue);
+}
+
+.host-containers tr.motion-failed,
+.host-containers tr.motion-removed {
+  --wash: var(--danger);
+}
+
+.host-containers tr[class*="motion-"] > td {
+  animation: row-wash 1.4s ease-out;
+}
+
+@keyframes row-wash {
+  from {
+    background: color-mix(in srgb, var(--wash) 24%, transparent);
+  }
+}
+
+/* A new container slides in. */
+.host-containers tr.motion-appeared {
+  animation: row-arrive 0.6s ease-out;
+}
+
+@keyframes row-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+
+/* A restart, and a new container in an old one's place: a light runs across the row. */
+.host-containers tr:is(.motion-restarted, .motion-updated) {
+  background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--wash) 32%, transparent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  /* Held past the right edge once it has run: at rest, the light would sit at the row's left. */
+  animation: row-sweep 1.2s ease-in-out both;
+}
+
+.host-containers tr.motion-restarted > td {
+  animation: none;
+}
+
+@keyframes row-sweep {
+  from {
+    background-position: -70% 0;
+  }
+  to {
+    background-position: 170% 0;
+  }
+}
+
+/* A stop dims the row for a moment, a pause frosts it. */
+.host-containers tr.motion-stopped {
+  animation: row-dim 1.4s ease-out;
+}
+
+@keyframes row-dim {
+  30% {
+    filter: grayscale(1);
+    opacity: 0.55;
+  }
+}
+
+.host-containers tr.motion-paused {
+  animation: row-frost 1.4s ease-out;
+}
+
+@keyframes row-frost {
+  30% {
+    filter: saturate(0.3) brightness(1.15);
+  }
+}
+
+/* Something went wrong: the row flashes twice. */
+.host-containers tr.motion-failed > td {
+  animation: row-alarm 1.4s ease-out;
+}
+
+@keyframes row-alarm {
+  0%,
+  40% {
+    background: color-mix(in srgb, var(--wash) 24%, transparent);
+  }
+  20%,
+  60% {
+    background: color-mix(in srgb, var(--wash) 6%, transparent);
+  }
+}
+
+/* A removed container's row dissolves away. */
+.host-containers tr.motion-removed {
+  animation: row-dissolve 1.5s ease-in forwards;
+}
+
+@keyframes row-dissolve {
+  30% {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+    filter: blur(2px);
+  }
+}
+
+/* An update under its row: what it is doing, its layers as they come, and what Docker says. */
+tr.update-stream-row > td {
+  padding: 0 var(--space-4) var(--space-3);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.update-stream {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  overflow: hidden;
+  border: var(--border-width) solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* A light along its top edge while it works. */
+.update-stream::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--focus-width);
+  background-image: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: row-sweep 2.2s linear infinite;
+}
+
+.update-stream.undoing {
+  border-color: var(--warning-border);
+}
+
+.update-stream.undoing::before {
+  background-image: linear-gradient(90deg, transparent, var(--warning), transparent);
+}
+
+.update-stream-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: var(--text-small);
+}
+
+.update-stream-head .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.update-stream-head strong {
+  color: var(--accent);
+  font-weight: var(--weight-strong);
+}
+
+.update-stream.undoing .update-stream-head :is(.icon, strong, .update-stream-toggle) {
+  color: var(--warning);
+}
+
+.update-stream-head.opens {
+  cursor: pointer;
+}
+
+/* Takes the room between the image and the figures, whether or not there is a share to show yet. */
+.update-stream-bar {
+  flex: 1 1 8rem;
+  min-width: 8rem;
+}
+
+.update-stream-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.layer-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--layer-card-width), 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.layer-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+  font-size: var(--text-badge);
+}
+
+.layer-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.layer-state {
+  color: var(--text-muted);
+}
+
+/* The layers coming down or unpacking now glow; the ones in place turn green. */
+.layer-card:is(.layer-downloading, .layer-extracting) {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  animation: layer-glow 1.6s ease-in-out infinite;
+}
+
+.layer-card.layer-done {
+  border-color: color-mix(in srgb, var(--good) 40%, var(--border));
+}
+
+.layer-card.layer-done .layer-state {
+  color: var(--good);
+}
+
+@keyframes layer-glow {
+  50% {
+    box-shadow: 0 0 0 var(--focus-width) color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+}
+
+/* All of Docker's latest lines, the newest last: the runner sends twelve at most. */
+.pull-log {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-small);
+  background: var(--terminal-background);
+  color: var(--terminal-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-badge);
+  list-style: none;
+}
+
+.pull-log li {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Asked for less motion: each change still shows, as a still tint for its moment. Above every effect's own rule. */
+@media (prefers-reduced-motion: reduce) {
+  .host-containers *,
+  .host-containers *::before {
+    animation: none !important;
+  }
+
+  .host-containers tr[class*="motion-"] > td {
+    background: color-mix(in srgb, var(--wash) 14%, transparent);
+  }
+}

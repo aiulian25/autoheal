@@ -1,0 +1,280 @@
+/* --- Attention: what needs a person now ---------------------------------------------------------- */
+
+.attention {
+  gap: 0;
+}
+
+.attention .page-header {
+  margin-bottom: 26px;
+}
+
+/* Hosts in even cards, however many; the Ollama agent beside them as tall as their rows, so it stretches none of them.
+   The widths come from the strip's own, as the menu beside the page may be open or closed. */
+.status-strip {
+  container-type: inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.status-hosts {
+  display: grid;
+  flex: 1 1 100%;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  grid-auto-rows: 1fr;
+  align-self: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.status-strip > .agent-card {
+  flex: 1 1 100%;
+  order: -1;
+}
+
+@container (min-width: 48rem) {
+  .status-hosts {
+    flex: 1 1 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .status-strip > .agent-card {
+    flex: none;
+    order: 0;
+    width: calc((100% - 3 * var(--space-3)) / 4);
+  }
+}
+
+@container (min-width: 72rem) {
+  .status-hosts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .status-strip > .agent-card {
+    width: calc((100% - 4 * var(--space-3)) / 5);
+  }
+}
+
+.attention .status-strip {
+  margin-bottom: 28px;
+}
+
+/* While a hand-over is dragged, the strip, the Ollama Agent with it, stays in sight however far down it began. */
+.attention.dragging .status-strip {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-block: 10px;
+  background: var(--page);
+}
+
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 18px 18px 15px;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  text-decoration: none;
+}
+
+.status-card:hover {
+  border-color: var(--control-border);
+}
+
+.status-card.dashed {
+  border-style: dashed;
+  border-color: var(--control-border);
+  background: none;
+}
+
+.status-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.status-card-head strong {
+  font-size: var(--text-large);
+  font-weight: var(--weight-strong);
+  color: var(--text);
+}
+
+.status-card .state {
+  font-size: var(--text-badge);
+}
+
+/* The Ollama agent: an indigo card, its head ruled off from its model; where work may be dropped on it, a
+   dashed edge, and a glow while something is dragged over it. */
+.status-card.agent-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  row-gap: 0;
+  overflow: hidden;
+  background: var(--agent-wash);
+  border-color: var(--agent-edge);
+}
+
+/* All in one column: the network lies under the drop chip's row, so nothing may be pushed out to a second. */
+.agent-card > * {
+  grid-column: 1;
+}
+
+.agent-card > .status-card-head {
+  grid-row: 1;
+}
+
+.agent-card > .agent-servers {
+  grid-row: 2;
+}
+
+.agent-card > .agent-line {
+  z-index: 1;
+  grid-row: 4;
+}
+
+/* Under the agent's words, out to the card's edges, behind its drop chip. */
+.agent-network {
+  position: relative;
+  grid-row: 3 / 5;
+  margin: 0 -18px -15px;
+  color: var(--agent-avatar);
+  pointer-events: none;
+}
+
+.agent-network.quiet {
+  opacity: 0.35;
+}
+
+.agent-network canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  color: inherit;
+}
+
+.status-card.agent-card.drop-target {
+  padding: 17px 17px 14px;
+  border: 2px dashed var(--agent-edge);
+}
+
+.status-card.agent-card.dragged-over {
+  box-shadow: 0 0 0 4px var(--agent-glow);
+}
+
+.agent-card .status-card-head {
+  padding-bottom: 12px;
+  border-bottom: var(--border-width) solid var(--agent-divider);
+}
+
+.agent-card .status-card-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-avatar {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--agent-avatar);
+  box-shadow: 0 0 8px var(--agent-glow);
+}
+
+.agent-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-top: 6px;
+}
+
+.drop-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: var(--border-width) solid var(--agent-chip-border);
+  border-radius: var(--radius-small);
+  background: var(--agent-chip);
+  color: var(--agent-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-badge);
+}
+
+.drop-chip .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* Handing work to the agent: its button, filled with the agent's indigo, and the one-line tip that says how to
+   drag. The tip shows where a pointer can drag: not on a touch screen. */
+button.agent-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 2rem;
+  padding: 0 14px;
+  border: var(--border-width) solid var(--agent-button-border);
+  border-radius: var(--radius);
+  background: var(--agent-button);
+  color: var(--agent-button-text);
+  font-size: var(--text-small);
+}
+
+button.agent-button .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.drag-tip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: var(--border-width) solid var(--agent-tip-border);
+  border-radius: var(--radius-medium);
+  background: var(--agent-tip);
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.drag-tip > .icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--warning);
+}
+
+.drag-tip strong {
+  color: var(--agent-text);
+}
+
+.drag-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 3px 8px;
+  border-radius: var(--radius-small);
+  background: var(--agent-chip);
+  color: var(--agent-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-badge);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .drag-tip {
+    display: none;
+  }
+}

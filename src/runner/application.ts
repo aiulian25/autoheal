@@ -32,9 +32,9 @@ import {
   JOB_OUTCOMES,
   NVIDIA_SMI,
   ALIVE_FILE_PATH,
-  DEFAULT_DOCKER_SOCKET_PATH,
   RUNNER_UPDATE_TEXT,
   EDIT_OUTCOMES,
+  EVENT_STREAM_CHECK_MILLISECONDS,
   EVENT_STREAM_RETRY_MILLISECONDS,
   EXEC_EVENT_PREFIX,
   HEARTBEAT_INTERVAL_MILLISECONDS,
@@ -48,26 +48,32 @@ import {
   UPDATE_CHECK_INTERVAL_MILLISECONDS,
   UPDATE_FIRST_CHECK_MILLISECONDS,
   WORK_POLL_INTERVAL_MILLISECONDS,
+  RUNNER_CAPABILITY,
+  type RunnerCapability,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
 import { postToGotify } from "../shared/gotify.js";
 import { incidentMessage } from "../shared/incident-message.js";
 import { log } from "../shared/log.js";
 import { untilShutdown } from "../shared/shutdown.js";
-import type {
-  ContainerSnapshot,
-  HeartbeatResponse,
-  HostHealth,
-  IncidentNotice,
-  UnusedImage,
+import {
+  TRIMMABLE_HEARTBEAT_PARTS,
+  type ContainerSnapshot,
+  type Heartbeat,
+  type HeartbeatResponse,
+  type HostHealth,
+  type IncidentNotice,
+  type UnusedImage,
 } from "../shared/protocol.js";
 import { touchAliveFile } from "./alive-file.js";
 import { ContainerInventory } from "./container-inventory.js";
 import { ContainerJobs } from "./container-jobs.js";
 import { ContainerUpdater } from "./container-updater.js";
-import { ControlPlaneClient } from "./control-plane-client.js";
+import { ControlPlaneClient, type ControlPlaneConnection } from "./control-plane-client.js";
 import { Decider, type LocalModel } from "./decider.js";
 import { DockerClient, type DockerConnection, type DockerEvent } from "./docker-client.js";
+import { withRunnerToken } from "./runner-token.js";
+import { EventStreamCheck } from "./event-stream-check.js";
 import { Executor, restartChoiceOf } from "./executor.js";
 import { allGpus, NvidiaGpus, runLocally, type HostCommand } from "./gpu-metrics.js";
 import { answerHostProfile } from "./host-profile.js";
@@ -91,7 +97,7 @@ import { followContainerAccess, type ContainerAccessDependencies } from "./conta
 import { SettingsReader } from "./container-settings.js";
 import { FileOperations } from "./file-operations.js";
 import { TerminalSessions, type HostShellOpener } from "./terminal-sessions.js";
-import { hostScriptThroughDocker, hostShellThroughDocker } from "./host-shell.js";
+import { hostScriptThroughDocker, hostShellThroughDocker, removeLeftHelpers } from "./host-shell.js";
 import { Installs, type HostScript } from "./installs.js";
 import { OwnCompose } from "./own-compose.js";
 import { HostPackageJobs, type HostPackageJobsDependencies, type PackageUnitStarter } from "./host-package-jobs.js";
@@ -124,6 +130,9 @@ export interface RunnerPorts {
   hostShell: HostShellOpener | null;
   // Runs a script on the host; null where that goes through a helper container of its own.
   hostScript: HostScript | null;
+  // For a runner inside the control plane: its connection as the control plane has it now, read once the key it
+  // trusted stops matching, as a renewed certificate may bring a new one. A runner container reads its join file.
+  reconnect?: () => ControlPlaneConnection;
 }
 
 /** A runner container's own: the Docker socket it mounts, and the host it runs on. */
@@ -198,8 +207,9 @@ interface RunnerRuntime {
   updates: ImageUpdateChecker;
   hostMetrics: HostMetricsSampler;
   eventStreamConnected: boolean;
-  // The last containers reported, sent again if Docker cannot be listed for a moment.
+  // The last containers reported, sent again if Docker cannot be listed for a moment, and whether that is so now.
   lastContainers: ContainerSnapshot[];
+  containersStale: boolean;
   reportTimer: NodeJS.Timeout | null;
   // When the first change not reported yet came.
   firstUnreportedAt: number | null;
@@ -209,6 +219,8 @@ interface RunnerRuntime {
   metricsRunning: boolean;
   // What went wrong with the last stats report, logged once rather than every few seconds.
   metricsProblem: string | null;
+  // Why the control plane's last maintenance policy was not taken, logged once rather than at every heartbeat.
+  maintenanceProblem: string | null;
 }
 
 // The .env's Ollama wins; else the control plane's, once it has said; else none yet.
@@ -255,12 +267,13 @@ async function tellPeople(runtime: RunnerRuntime, notice: IncidentNotice) {
 async function updateThisRunner(
   docker: DockerClient,
   selfContainerName: string,
+  socketPath: string,
   release: string | null,
   provenance: ProvenanceSource,
 ): Promise<JobResult> {
   if (release === null) return { succeeded: false, outcome: RUNNER_UPDATE_TEXT.noRelease, output: null };
-  const socketGroup = statSync(DEFAULT_DOCKER_SOCKET_PATH).gid;
-  const handed = await handOverToRelease(docker, { reference: selfContainerName, socketGroup }, release, provenance);
+  const own = { reference: selfContainerName, socketPath, socketGroup: statSync(socketPath).gid };
+  const handed = await handOverToRelease(docker, own, release, provenance);
   return { succeeded: handed.handedOver || handed.upToDate === true, outcome: handed.outcome, output: null };
 }
 
@@ -281,10 +294,11 @@ export async function createRuntime(
   const maintenance = config.controlPlane === null ? null : new MaintenanceGate();
   guard.maintenanceHeld = (name) => maintenance?.held(name) ?? false;
   const joinFile = config.joinFile;
+  const reload = ports.reconnect ?? (joinFile === null ? null : () => joinCodeInFile(joinFile));
   const controlPlane =
     config.controlPlane === null
       ? null
-      : new ControlPlaneClient(config.controlPlane, joinFile === null ? null : () => joinCodeInFile(joinFile));
+      : new ControlPlaneClient(config.controlPlane, reload, runnerCapabilities(config));
   // Recovery identity survives configuration changes, including switching this runner to standalone mode.
   const unavailable = () =>
     Promise.reject(new Error("Application backup reporting requires its enrolled control plane."));
@@ -412,6 +426,7 @@ export async function createRuntime(
     }),
     eventStreamConnected: false,
     lastContainers: [],
+    containersStale: false,
     reportTimer: null,
     firstUnreportedAt: null,
     maintenance,
@@ -419,6 +434,7 @@ export async function createRuntime(
     heartbeatAgain: false,
     metricsRunning: false,
     metricsProblem: null,
+    maintenanceProblem: null,
   };
   // Data is copied and backed up by helpers of Autoheal's image: this runner's own container's, or on an SSH host,
   // which has none, the image the control plane names, pulled there the first time.
@@ -454,12 +470,14 @@ export async function createRuntime(
     installs,
     backups: containerBackups,
     stacks,
+    checkpoints,
     ...(isSidecar
       ? {
           updateRunner: () =>
             updateThisRunner(
               docker,
               config.selfContainerName,
+              config.dockerSocketPath,
               runtime.fromControlPlane?.release?.image ?? null,
               provenanceSource,
             ),
@@ -533,7 +551,7 @@ export async function createRuntime(
   return runtime;
 }
 
-/** Every 6 hours: which images have a newer one behind their tag. The dashboard hears at once. */
+/** Every hour: which images have a newer one behind their tag. The dashboard hears at once. */
 async function checkUpdates(runtime: RunnerRuntime) {
   try {
     await runtime.updates.checkAll();
@@ -561,30 +579,73 @@ async function catchUp(runtime: RunnerRuntime, streamLostAt: number | null) {
   }
 }
 
-/** Follows Docker's events for as long as the runner runs, reconnecting when the stream drops. */
-async function watchEvents(runtime: RunnerRuntime, signal: AbortSignal) {
+/** One look at the container listing: a break the stream missed at two looks in a row drops it, to connect again. */
+async function lookAtStream(runtime: RunnerRuntime, check: EventStreamCheck, silent: AbortController) {
+  // Docker not answering says nothing either way: the next look asks again.
+  const summaries = await runtime.docker.containerSummaries().catch(() => null);
+  const missed = summaries === null ? null : check.missed(summaries);
+  if (missed === null || silent.signal.aborted) return;
+  log(RUNNER_MESSAGES.eventStreamSilent(missed));
+  silent.abort();
+}
+
+/**
+ * Follows Docker's events for as long as the runner runs, connecting again when the stream drops, or when it falls
+ * silent: Docker writes nothing while nothing happens, so the container listing is looked at for what it missed.
+ */
+export async function watchEvents(
+  runtime: RunnerRuntime,
+  signal: AbortSignal,
+  lookEvery: number = EVENT_STREAM_CHECK_MILLISECONDS,
+) {
   let streamLostAt: number | null = null;
   while (!signal.aborted) {
+    const silent = new AbortController();
+    const check = new EventStreamCheck();
+    // The last moment this stream was known to work: when it connected, or its latest event.
+    let heardAt = Date.now();
+    let looking = false;
+    const look = () => {
+      if (looking) return;
+      looking = true;
+      void runtime.lifecycle
+        .run(() => lookAtStream(runtime, check, silent))
+        .finally(() => {
+          looking = false;
+        });
+    };
+    let looks: NodeJS.Timeout | undefined;
     try {
-      const events = await runtime.docker.events(signal);
+      const events = await runtime.docker.events(AbortSignal.any([signal, silent.signal]));
       runtime.eventStreamConnected = true;
+      heardAt = Date.now();
       touchAlive(runtime);
       void runtime.lifecycle.run(() => catchUp(runtime, streamLostAt));
+      look();
+      looks = setInterval(look, lookEvery);
       for await (const event of events) {
+        heardAt = Date.now();
+        check.note(event);
         await runtime.watcher.handleEvent(event);
         noteContainerChange(runtime, event);
       }
     } catch (error) {
-      if (!signal.aborted) {
+      if (!signal.aborted && !silent.signal.aborted) {
         log(RUNNER_MESSAGES.eventStreamLost(describeError(error)));
       }
+    } finally {
+      clearInterval(looks);
     }
-    // A failed attempt to connect again leaves the moment the runner stopped listening as it was.
+    // A failed attempt to connect again leaves this as it was. Catching up starts from the stream's last word, not
+    // from when it was found gone: one that fell silent stopped telling before that.
     if (runtime.eventStreamConnected) {
-      streamLostAt = Date.now();
+      streamLostAt = heardAt;
     }
     runtime.eventStreamConnected = false;
-    await sleep(EVENT_STREAM_RETRY_MILLISECONDS, undefined, { signal }).catch(() => undefined);
+    // A silent stream is replaced at once; one that failed is tried again in a moment.
+    if (!silent.signal.aborted) {
+      await sleep(EVENT_STREAM_RETRY_MILLISECONDS, undefined, { signal }).catch(() => undefined);
+    }
   }
 }
 
@@ -609,7 +670,7 @@ function noteContainerChange(runtime: RunnerRuntime, event: DockerEvent) {
     () => {
       runtime.reportTimer = null;
       runtime.firstUnreportedAt = null;
-      void runtime.lifecycle.run(() => heartbeat(runtime));
+      void runtime.lifecycle.run(() => heartbeat(runtime, { containersOnly: true }));
     },
     reportDelay(runtime.firstUnreportedAt, now),
   );
@@ -618,8 +679,10 @@ function noteContainerChange(runtime: RunnerRuntime, event: DockerEvent) {
 async function currentContainers(runtime: RunnerRuntime): Promise<ContainerSnapshot[]> {
   try {
     runtime.lastContainers = await runtime.inventory.snapshot();
+    runtime.containersStale = false;
   } catch (error) {
     log(RUNNER_MESSAGES.inventoryFailed(describeError(error)));
+    runtime.containersStale = true;
   }
   return runtime.lastContainers;
 }
@@ -680,7 +743,58 @@ function currentHostHealth(runtime: RunnerRuntime): Promise<HostHealth | null> {
  * none uses, send what was decided while the control plane was away. One report at a time; a request that arrives
  * meanwhile runs once more afterwards, so the latest change is never left unreported.
  */
-async function heartbeat(runtime: RunnerRuntime) {
+/** What this runner can do, as its .env allows: the list its requests name, and its heartbeat says field by field. */
+export function runnerCapabilities(config: RunnerConfig): RunnerCapability[] {
+  // A tag change edits the Compose files, and keeps the data of what it moves aside first.
+  const changesTags = config.containerAccess && config.hostDeploy && config.checkpointLimitBytes > 0 && !config.dryRun;
+  return [
+    RUNNER_CAPABILITY.resourcePermissions,
+    RUNNER_CAPABILITY.operationPreviews,
+    RUNNER_CAPABILITY.rollouts,
+    RUNNER_CAPABILITY.applicationBackups,
+    RUNNER_CAPABILITY.applicationBootDrills,
+    ...(changesTags ? [RUNNER_CAPABILITY.tagChanges] : []),
+  ];
+}
+
+/**
+ * The heartbeat as it fits the runner API: what it can do without left out, least needed first, until it fits, and
+ * named in it. A host with more than fits otherwise stays on the dashboard, its containers always reported.
+ */
+export function fitted(payload: Heartbeat, limit: number = RUNNER_BODY_LIMIT_BYTES): Heartbeat {
+  const fits = (report: Heartbeat) => Buffer.byteLength(JSON.stringify(report)) <= limit;
+  if (fits(payload)) return payload;
+  let report: Heartbeat = { ...payload, trimmed: [] };
+  for (const part of TRIMMABLE_HEARTBEAT_PARTS) {
+    // Only what it carries can be left out of it.
+    const carried = part === "host" ? report.host !== null : report[part] !== undefined;
+    if (!carried) continue;
+    report = { ...report, [part]: part === "host" ? null : undefined, trimmed: [...report.trimmed!, part] };
+    if (fits(report)) break;
+  }
+  return report;
+}
+
+/**
+ * The maintenance policy an answer gives. One this runner cannot take (its clock too far off, say) keeps its automatic
+ * actions paused, as the gate holds them, and is said once in the log: the rest of the answer still counts.
+ */
+function applyMaintenance(runtime: RunnerRuntime, policy: unknown) {
+  try {
+    runtime.maintenance?.apply(policy);
+    runtime.maintenanceProblem = null;
+  } catch (error) {
+    const problem = describeError(error);
+    if (problem !== runtime.maintenanceProblem) log(problem);
+    runtime.maintenanceProblem = problem;
+  }
+}
+
+/**
+ * A report to the control plane. One made because containers changed carries them alone: the rest changes rarely, the
+ * full report every 30 seconds brings it, and absent (the host's health, null) the dashboard keeps what it was told.
+ */
+async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { containersOnly?: boolean } = {}) {
   if (runtime.eventStreamConnected) {
     touchAlive(runtime);
   }
@@ -693,20 +807,26 @@ async function heartbeat(runtime: RunnerRuntime) {
   }
   runtime.heartbeatRunning = true;
   try {
-    const [host, containers, unusedImages, networks, volumes] = await Promise.all([
-      currentHostHealth(runtime),
+    const full = !containersOnly;
+    const [host, containers, unusedImages, networks, volumes, clockOffset] = await Promise.all([
+      full ? currentHostHealth(runtime) : null,
       currentContainers(runtime),
-      currentUnusedImages(runtime),
-      currentNetworks(runtime),
-      currentVolumes(runtime),
+      full ? currentUnusedImages(runtime) : undefined,
+      full ? currentNetworks(runtime) : undefined,
+      full ? currentVolumes(runtime) : undefined,
+      full ? runtime.ports.hostFiles.clockOffset() : null,
     ]);
-    const driftReport = runtime.stacks.currentDrift();
-    const payload: import("../shared/protocol.js").Heartbeat = {
-      applicationBackups: true,
-      rollouts: true,
-      operationPreviews: true,
-      topology: runtime.inventory.topology() ?? undefined,
-      resourcePermissions: true,
+    const driftReport = full ? runtime.stacks.currentDrift() : null;
+    const clockOffSeconds = runtime.maintenance?.clockOffSeconds ?? null;
+    // The dashboard keeps these fields, and checks the same names on each request.
+    const capabilities = new Set(runnerCapabilities(runtime.config));
+    const payload: Heartbeat = {
+      applicationBackups: capabilities.has(RUNNER_CAPABILITY.applicationBackups),
+      rollouts: capabilities.has(RUNNER_CAPABILITY.rollouts),
+      operationPreviews: capabilities.has(RUNNER_CAPABILITY.operationPreviews),
+      tagChanges: capabilities.has(RUNNER_CAPABILITY.tagChanges),
+      topology: full ? (runtime.inventory.topology() ?? undefined) : undefined,
+      resourcePermissions: capabilities.has(RUNNER_CAPABILITY.resourcePermissions),
       maintenanceGeneration: runtime.maintenance?.generation,
       runnerVersion: RUNNING_VERSION,
       hostLabel: runtime.config.hostLabel,
@@ -728,10 +848,12 @@ async function heartbeat(runtime: RunnerRuntime) {
       serviceProbes: true,
       ...(runtime.serviceProbes.reports.length === 0 ? {} : { probeResults: runtime.serviceProbes.reports }),
       ...(driftReport === null ? {} : { stackDrift: driftReport }),
+      ...(clockOffSeconds === null ? {} : { clockSkewSeconds: clockOffSeconds }),
+      ...(clockOffset === null ? {} : { hostClock: Date.now() + clockOffset }),
+      ...(runtime.containersStale ? { containersStale: true } : {}),
     };
-    if (Buffer.byteLength(JSON.stringify(payload)) > RUNNER_BODY_LIMIT_BYTES) delete payload.topology;
-    const answer = await runtime.controlPlane.heartbeat(payload);
-    runtime.maintenance?.apply(answer?.control?.maintenance);
+    const answer = await runtime.controlPlane.heartbeat(fitted(payload));
+    applyMaintenance(runtime, answer?.control?.maintenance);
     runtime.fromControlPlane = answer ?? runtime.fromControlPlane;
     // A rotated or revoked credential stops being used from the next pull or check on, and a changed trust policy
     // makes every image's provenance a fresh question.
@@ -888,6 +1010,7 @@ export function createContainerAccess(runtime: RunnerRuntime) {
     profile: () =>
       answerHostProfile({
         docker,
+        details: (summary) => runtime.inventory.detailsOf(summary),
         files: runtime.ports.hostFiles,
         hostRoot: config.hostRoot,
         containerAccess: config.containerAccess,
@@ -899,6 +1022,8 @@ export function createContainerAccess(runtime: RunnerRuntime) {
 /** Checks what the last run left, then starts the runner's loops; the function it gives stops them. */
 export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise<void>> {
   const { config, lifecycle } = runtime;
+  // Before anything here can open a shell or run a script on the host.
+  await removeLeftHelpers(runtime.docker).catch((error: unknown) => log(describeError(error)));
   await runtime.applicationBackups.flush();
   await runtime.approvedWork?.flush().catch((error: unknown) => log(describeError(error)));
   await runtime.shutdownJournal.settleReboots();
@@ -982,6 +1107,7 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
 }
 
 export async function runRunner(): Promise<number> {
-  const runtime = await createRuntime(loadRunnerConfig(process.env));
+  const given = loadRunnerConfig(process.env);
+  const runtime = await createRuntime(await withRunnerToken(given, new DockerClient(given.dockerSocketPath)));
   return untilShutdown(await startRunner(runtime));
 }

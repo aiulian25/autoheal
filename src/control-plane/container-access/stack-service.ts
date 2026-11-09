@@ -8,6 +8,8 @@ import { RunnerRelay } from "./runner-relay.js";
 import type { WaitingRunners } from "./waiting-runners.js";
 
 const CHANGING_ASKS: ReadonlySet<string> = new Set([STACK_ASK.save, STACK_ASK.restore]);
+// What may go to the runner twice: reading the files, their logs or a check of edits changes nothing.
+const READS: ReadonlySet<string> = new Set([STACK_ASK.read, STACK_ASK.logs, STACK_ASK.check]);
 
 /** A stack's files, read and written by its runner when an admin asks. Nothing of them is kept here, or logged. */
 export class StackService {
@@ -18,7 +20,7 @@ export class StackService {
     runners: Pick<WaitingRunners, "wake">,
     private readonly auditLog: Pick<AuditLog, "recordUserAction">,
   ) {
-    this.relay = new RunnerRelay(runners);
+    this.relay = new RunnerRelay(runners, (request) => READS.has(request.kind));
   }
 
   async ask(actor: Actor, hostId: string, project: string, ask: StackAsk): Promise<StackAnswer> {
@@ -46,5 +48,9 @@ export class StackService {
 
   reset() {
     this.relay.reset();
+  }
+
+  resetHost(hostId: string) {
+    this.relay.resetHost(hostId);
   }
 }

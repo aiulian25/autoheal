@@ -24,12 +24,14 @@ import {
   HOST_STATE,
   HOST_STATUS_REVOKED,
   JOB_ACTION,
+  MILLISECONDS_PER_SECOND,
   SSH_STATE,
   type HostChangeDetails,
 } from "../../shared/constants.js";
 import type { ContainerSnapshot, Heartbeat, HostHealth, UnusedImage } from "../../shared/protocol.js";
+import type { OldImageView } from "../../shared/api.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { containerControls, hostChanges, hosts, jobs } from "../database/schema.js";
+import { containerControls, hostChanges, hosts, ignoredVersions, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { HomeAssistantConnection } from "../home-assistant/home-assistant-inventory.js";
 import type { SavedControl } from "../host-control/host-control.js";
@@ -74,7 +76,27 @@ const NOT_CONFIGURED: HomeAssistantView = {
   unavailableEntities: 0,
 };
 
+// The host's clock as its report left, against this one's as it arrived: the moment on the way reads as behind.
+const clockOffsetOf = (hostClock: number | undefined, at: number) =>
+  hostClock === undefined ? null : Math.round((hostClock - at) / MILLISECONDS_PER_SECOND);
+
 /** Everything Autoheal watches: what each runner last reported, and what Home Assistant knows. */
+// Images stored before the dashboard noted when each was left unused have no such time.
+const storedImagesOf = (json: string): OldImageView[] =>
+  (JSON.parse(json) as (UnusedImage & { unusedSince?: number | null })[]).map((image) => ({
+    ...image,
+    unusedSince: image.unusedSince ?? null,
+  }));
+
+/** The reported images, each keeping when it was first reported unused; one new to the list is unused from now. */
+function withUnusedSince(storedJson: string | null, reported: readonly UnusedImage[], at: number): OldImageView[] {
+  const known = new Map((storedJson === null ? [] : storedImagesOf(storedJson)).map((image) => [image.id, image]));
+  return reported.map((image) => {
+    const before = known.get(image.id);
+    return { ...image, unusedSince: before === undefined ? at : before.unusedSince };
+  });
+}
+
 export class InventoryService {
   constructor(
     private readonly databaseHandle: DatabaseHandle,
@@ -93,12 +115,17 @@ export class InventoryService {
    * Every report replaces the previous one: a full picture each time, so nothing drifts. What changed since
    * the last one goes into the host's journal, which keeps two weeks.
    */
-  recordHeartbeat(host: HostRow, heartbeat: Heartbeat) {
+  recordHeartbeat(host: HostRow, received: Heartbeat) {
     // An SSH host's runner lives in the control plane and beats on while its host is down: without its session the
     // beat says nothing of the host, which goes quiet as any other would.
     const unreachable = host.kind === HOST_KIND.ssh && this.sshConnectionOf(host.id)?.state !== SSH_STATE.connected;
     if (unreachable) return;
     const at = this.clock();
+    // Docker could not list them this time: the containers kept are the truest there is, dated from when they came,
+    // and nothing in them changed.
+    const stale = received.containersStale === true;
+    const heartbeat = stale ? { ...received, containers: previousReportOf(host).containers } : received;
+    const containersStaleSince = stale ? (host.containersStaleSince ?? host.lastHeartbeatAt ?? at) : null;
     const reported = {
       lastHeartbeatAt: at,
       runnerVersion: heartbeat.runnerVersion,
@@ -107,11 +134,15 @@ export class InventoryService {
       protectedContainersJson: JSON.stringify(heartbeat.protectedContainers),
       applicationBackups: heartbeat.applicationBackups === true,
       rollouts: heartbeat.rollouts === true,
+      tagChanges: heartbeat.tagChanges === true,
       operationPreviews: heartbeat.operationPreviews === true,
       ...(heartbeat.topology === undefined ? {} : { topologyJson: JSON.stringify(heartbeat.topology) }),
       resourcePermissions: heartbeat.resourcePermissions === true,
       serviceProbes: heartbeat.serviceProbes === true,
       maintenanceGeneration: heartbeat.maintenanceGeneration ?? null,
+      clockSkewSeconds: heartbeat.clockSkewSeconds ?? null,
+      containersStaleSince,
+      reportTrimmedJson: heartbeat.trimmed === undefined ? null : JSON.stringify(heartbeat.trimmed),
       restartBudgetJson: JSON.stringify(heartbeat.restartBudget),
       recoveryHoldJson: heartbeat.recoveryHold ? JSON.stringify(heartbeat.recoveryHold) : null,
       restartWaitJson: heartbeat.restartWait === undefined ? null : JSON.stringify(heartbeat.restartWait),
@@ -121,10 +152,16 @@ export class InventoryService {
       hostDeploy: heartbeat.hostDeploy ?? null,
       docker: heartbeat.docker ?? true,
     };
-    // A host that could not be read this time keeps its last health instead of losing it; its images too.
-    const health = heartbeat.host === null ? {} : { healthJson: JSON.stringify(heartbeat.host) };
+    // A host that could not be read this time keeps its last health instead of losing it; its images too. A full report
+    // says how far the host's clock is, or that its runner could not tell.
+    const health =
+      heartbeat.host === null
+        ? {}
+        : { healthJson: JSON.stringify(heartbeat.host), clockOffsetSeconds: clockOffsetOf(heartbeat.hostClock, at) };
     const images =
-      heartbeat.unusedImages === undefined ? {} : { unusedImagesJson: JSON.stringify(heartbeat.unusedImages) };
+      heartbeat.unusedImages === undefined
+        ? {}
+        : { unusedImagesJson: JSON.stringify(withUnusedSince(host.unusedImagesJson, heartbeat.unusedImages, at)) };
     const networks = heartbeat.networks === undefined ? {} : { networksJson: JSON.stringify(heartbeat.networks) };
     const volumes = heartbeat.volumes === undefined ? {} : { volumesJson: JSON.stringify(heartbeat.volumes) };
     // A host's first report has nothing to compare with.
@@ -188,7 +225,7 @@ export class InventoryService {
   }
 
   /** The images no container on the host uses, newest first; null until its runner reports them. */
-  unusedImages(hostId: string): UnusedImage[] | null {
+  unusedImages(hostId: string): OldImageView[] | null {
     const host = this.databaseHandle.database
       .select({ unusedImagesJson: hosts.unusedImagesJson })
       .from(hosts)
@@ -197,13 +234,15 @@ export class InventoryService {
     if (host === undefined) {
       throw new DomainError(API_ERRORS.hostNotFound);
     }
-    return host.unusedImagesJson === null ? null : (JSON.parse(host.unusedImagesJson) as UnusedImage[]);
+    return host.unusedImagesJson === null ? null : storedImagesOf(host.unusedImagesJson);
   }
 
   hostImages(hostId: string): HostImagesView {
     const removals = and(eq(jobs.hostId, hostId), eq(jobs.action, JOB_ACTION.removeImages));
+    const newestUnusedFirst = (first: OldImageView, second: OldImageView) =>
+      (second.unusedSince ?? 0) - (first.unusedSince ?? 0);
     return {
-      images: this.unusedImages(hostId),
+      images: this.unusedImages(hostId)?.toSorted(newestUnusedFirst) ?? null,
       lastRemoval: jobViews(this.databaseHandle, removals, 1)[0] ?? null,
     };
   }
@@ -279,7 +318,13 @@ export class InventoryService {
       .filter((host) => host.status !== HOST_STATUS_REVOKED)
       .filter((host) => filter.hostId === undefined || host.id === filter.hostId)
       .flatMap((host) =>
-        containerViewsOf(host, now, this.metrics.latestContainers(host.id), this.savedControls(host.id)),
+        containerViewsOf(
+          host,
+          now,
+          this.metrics.latestContainers(host.id),
+          this.savedControls(host.id),
+          this.ignoredVersionsOf(host.id),
+        ),
       )
       .filter((container) => !filter.problemsOnly || container.problem !== null)
       .filter((container) => search === undefined || matches(container, search))
@@ -294,6 +339,16 @@ export class InventoryService {
       .where(eq(containerControls.hostId, hostId))
       .all();
     return new Map(rows.map((row) => [row.containerName, { restart: row.restartChoice, update: row.updateChoice }]));
+  }
+
+  // The newer version a person ignores for each container of the host, by its name.
+  private ignoredVersionsOf(hostId: string): Map<string, string> {
+    const rows = this.databaseHandle.database
+      .select({ containerName: ignoredVersions.containerName, version: ignoredVersions.version })
+      .from(ignoredVersions)
+      .where(eq(ignoredVersions.hostId, hostId))
+      .all();
+    return new Map(rows.map(({ containerName, version }) => [containerName, version]));
   }
 
   /** A host's address on its network, as it last said: how the router's records are matched to it. */

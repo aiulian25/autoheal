@@ -69,6 +69,11 @@ export interface RecreateSpecification {
   extraNetworks: [network: string, endpoint: NetworkEndpoint][];
 }
 
+// A replacement as this updater makes it: created by its tag, and held to the image decided on before anything stopped.
+interface ReplaceSpecification extends RecreateSpecification {
+  image: string;
+}
+
 type UpdaterDocker = Pick<
   DockerClient,
   | "inspect"
@@ -414,10 +419,12 @@ export class ContainerUpdater {
       return failed(JOB_OUTCOMES.pullFailed(reference, describeError(error)));
     }
     const newImage = await this.docker.inspectImage(reference);
+    // Pulled, yet gone before it could be read, as a prune at that moment leaves it: there is nothing to compare with
+    // what runs, so neither an update nor "already current" can be told.
+    if (newImage === null) return failed(JOB_OUTCOMES.pullFailed(reference, JOB_OUTCOMES.notThereAfterPull));
     if (
       rollout &&
-      (newImage === null ||
-        `${newImage.Os}/${newImage.Architecture}` !== rollout.expectedPlatform ||
+      (`${newImage.Os}/${newImage.Architecture}` !== rollout.expectedPlatform ||
         !newImage.RepoDigests?.some(
           (digest) =>
             digest.split("@")[1] === reference.split("@")[1] &&
@@ -425,21 +432,21 @@ export class ContainerUpdater {
         ))
     )
       return failed("Docker did not verify the reviewed image digest and platform. No container was stopped.");
-    if (rollout && newImage?.Id === details.Image)
+    if (rollout && newImage.Id === details.Image)
       return failed("The reviewed image is already running; no rollout replacement was made.");
     const heldBack = await provenanceRefusal(this.provenance, reference, newImage);
     if (heldBack !== null) {
       return failed(heldBack);
     }
-    if (newImage === null || newImage.Id === details.Image) {
+    if (newImage.Id === details.Image) {
       if (details.Image !== undefined) this.confirmCurrent(details.Image, reference);
       return { succeeded: true, outcome: JOB_OUTCOMES.alreadyCurrent(name) };
     }
-    if (rollout && Object.keys(newImage?.Config?.Volumes ?? {}).length > 0)
+    if (rollout && Object.keys(newImage.Config?.Volumes ?? {}).length > 0)
       return failed(
         "The reviewed target image declares persistent volumes. Stateless rollout was refused before stopping the source.",
       );
-    const specification = recreateSpecification(details, configOf(oldImage), reference);
+    const specification = { ...recreateSpecification(details, configOf(oldImage), reference), image: newImage.Id };
     const dataUnkept =
       this.checkpoints === null && [details, ...dependents].some((member) => dataMountsOf(member).length > 0);
     // A person may go ahead though its data cannot be copied first; an automatic update may not. Whether it is
@@ -532,7 +539,7 @@ export class ContainerUpdater {
     if (current === null || current.Id !== details.Image) {
       return failed(RECREATE_OUTCOMES.tagMoved(name, reference));
     }
-    const specification = recreateSpecification(details, configOf(current), reference);
+    const specification = { ...recreateSpecification(details, configOf(current), reference), image: current.Id };
     const wording: ReplaceWording = {
       ...RECREATE_OUTCOMES,
       finished: async (healthy) =>
@@ -560,7 +567,10 @@ export class ContainerUpdater {
     if (current === null || current.Id !== details.Image) {
       return failed(EDIT_OUTCOMES.tagMoved(name, reference));
     }
-    const specification = withSettings(recreateSpecification(details, configOf(current), reference), settings);
+    const specification = {
+      ...withSettings(recreateSpecification(details, configOf(current), reference), settings),
+      image: current.Id,
+    };
     const wasRunning = details.State.Running === true;
     return this.replace(
       name,
@@ -905,7 +915,7 @@ export class ContainerUpdater {
   private async replace(
     name: string,
     details: ContainerDetails,
-    specification: RecreateSpecification,
+    specification: ReplaceSpecification,
     mode: ReplaceMode,
     wording: ReplaceWording,
     steps: UpdateSteps = UNWATCHED,
@@ -925,7 +935,7 @@ export class ContainerUpdater {
   private async swap(
     name: string,
     details: ContainerDetails,
-    specification: RecreateSpecification,
+    specification: ReplaceSpecification,
     mode: ReplaceMode,
     wording: ReplaceWording,
     steps: UpdateSteps,
@@ -972,7 +982,7 @@ export class ContainerUpdater {
       steps.enter(UPDATE_PHASE.starting);
       await this.docker.rename(oldId, parked);
       progress.renamed = true;
-      const newId = await this.docker.create(name, specification.create);
+      const newId = await this.createOn(name, specification.create, specification.image);
       progress.newId = newId;
       for (const [network, endpoint] of specification.extraNetworks) {
         await this.docker.connect(network, newId, endpoint);
@@ -994,6 +1004,18 @@ export class ContainerUpdater {
     }
     const healthy = starts && (await this.docker.inspect(newId))?.State.Health !== undefined;
     return { state: "started", newId, healthy, warning };
+  }
+
+  /**
+   * Created by its tag, which Compose and the dashboard go on reading, then kept only if it runs the image decided on:
+   * should another pull have moved the tag meanwhile, the new container is removed before it ever starts.
+   */
+  private async createOn(name: string, create: Record<string, unknown>, image: string | undefined): Promise<string> {
+    const newId = await this.docker.create(name, create);
+    const runs = (await this.docker.inspect(newId))?.Image;
+    if (runs !== undefined && runs === image) return newId;
+    await this.docker.remove(newId).catch(() => undefined);
+    throw new Error(JOB_OUTCOMES.tagMovedMeanwhile(String(create.Image)));
   }
 
   // The new one holds: the old one goes, and nothing can roll back to it any more.
@@ -1030,7 +1052,7 @@ export class ContainerUpdater {
   private async updateGroup(
     name: string,
     details: ContainerDetails,
-    specification: RecreateSpecification,
+    specification: ReplaceSpecification,
     dependents: readonly ContainerDetails[],
     mode: ReplaceMode,
     wording: ReplaceWording,
@@ -1193,7 +1215,7 @@ export class ContainerUpdater {
         },
       };
       await this.docker.rename(dependent.Id!, parked);
-      const newId = await this.docker.create(name, create);
+      const newId = await this.createOn(name, create, dependent.Image);
       if (wasRunning) {
         await this.docker.start(newId);
       }

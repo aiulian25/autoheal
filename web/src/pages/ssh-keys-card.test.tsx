@@ -42,7 +42,6 @@ it("lists the keys and the hosts using each, makes one without showing its priva
       : new Response(JSON.stringify(answer), { headers: { "content-type": "application/json" } });
   });
   vi.stubGlobal("fetch", fetch);
-  vi.spyOn(window, "confirm").mockReturnValue(true);
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -61,6 +60,7 @@ it("lists the keys and the hosts using each, makes one without showing its priva
   expect(document.body.textContent).not.toContain("the-secret-body");
 
   fireEvent.click(screen.getByRole("button", { name: text.remove }));
+  fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
   await waitFor(() =>
     expect(
       fetch.mock.calls.some(

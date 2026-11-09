@@ -1,0 +1,48 @@
+/* --- The page itself: box sizing, the body and its type. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--line-height);
+  color: var(--text);
+  background: var(--page);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: var(--focus-width) solid var(--ring);
+  outline-offset: var(--focus-width);
+}
+
+h1 {
+  font-size: var(--text-title);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--title-tracking);
+  line-height: 1.2;
+  margin: 0;
+}
+
+h2 {
+  font-size: var(--text-large);
+  font-weight: var(--weight-strong);
+  margin: 0;
+}
+
+h3 {
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}

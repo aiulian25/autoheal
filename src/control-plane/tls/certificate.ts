@@ -10,6 +10,7 @@ import {
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isIP, isIPv4 } from "node:net";
 import { join } from "node:path";
+import type { Server as TlsServer } from "node:tls";
 import {
   ALTERNATIVE_NAME_SEPARATOR,
   ALTERNATIVE_NAME_VALUE_SEPARATOR,
@@ -220,4 +221,26 @@ export function providedCertificate(files: { certificateFile: string; keyFile: s
     certificate,
     pin: publicKeyPin(new X509Certificate(certificate).publicKey),
   };
+}
+
+/** What a TLS listener is given to serve a certificate. */
+export const tlsOptionsOf = (certificate: ServerCertificate) => ({
+  cert: Buffer.from(certificate.certificate),
+  key: Buffer.from(certificate.key),
+});
+
+/**
+ * Puts `next` in place of `served` on every listener, when it differs: renewed while they listen, it is served from
+ * their next connection, with no restart. A certificate and key that do not belong together (files caught half-way
+ * through a renewal) are refused by the first listener, before any serves them. Whether `next` is served now.
+ */
+export function serveRenewed(
+  listeners: readonly Pick<TlsServer, "setSecureContext">[],
+  served: ServerCertificate,
+  next: ServerCertificate,
+): boolean {
+  if (next.certificate === served.certificate && next.key === served.key) return false;
+  const options = tlsOptionsOf(next);
+  listeners.forEach((listener) => listener.setSecureContext(options));
+  return true;
 }

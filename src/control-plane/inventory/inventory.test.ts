@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   startTestControlPlane,
   type TestClient,
@@ -75,6 +75,19 @@ describe("the inventory", () => {
   const containers = async (query = "") =>
     (await admin.get(`${API_ROUTES.containers}${query}`)).json<ContainerView[]>();
 
+  it("shows what a report left out to fit, keeping the last of each, until a report comes whole", async () => {
+    await report("Alder", heartbeatWith());
+    expect((await host("Alder")).reportTrimmed).toBeNull();
+
+    await report("Alder", heartbeatWith({ networks: undefined, host: null, trimmed: ["networks", "host"] }));
+    const trimmed = await host("Alder");
+    expect(trimmed.reportTrimmed).toEqual(["networks", "host"]);
+    expect(trimmed.health).not.toBeNull();
+
+    await report("Alder", heartbeatWith());
+    expect((await host("Alder")).reportTrimmed).toBeNull();
+  });
+
   it("shows a reporting runner's recovery hold on its host until it ends, the runner goes quiet or holds nothing", async () => {
     const until = controlPlane.clock.now + HOST_SILENT_AFTER_MILLISECONDS / 2;
     await report("Alder", heartbeatWith({ recoveryHold: { reason: "no_saved_state", until } }));
@@ -95,6 +108,34 @@ describe("the inventory", () => {
     // A quiet runner's last hold may be over by now: its host shows it is silent instead.
     controlPlane.clock.now += HOST_SILENT_AFTER_MILLISECONDS + 1;
     expect((await host("Alder")).recoveryHold).toBeNull();
+  });
+
+  it("shows how far a host's clock is from the control plane's as its last full report found it, while it reports", async () => {
+    await report(
+      "Alder",
+      heartbeatWith({ hostClock: controlPlane.clock.now - 95_000, host: hostHealth({ ntpActive: false }) }),
+    );
+    expect(await host("Alder")).toMatchObject({ clockOffsetSeconds: -95, health: { ntpActive: false } });
+    expect((await host("Mini")).clockOffsetSeconds).toBeNull();
+    // A report of its containers alone keeps it; a full one says it anew, or that its runner could not tell.
+    await report("Alder", heartbeatWith({ host: null }));
+    expect((await host("Alder")).clockOffsetSeconds).toBe(-95);
+    await report("Alder", heartbeatWith({ hostClock: controlPlane.clock.now + 3_000 }));
+    expect((await host("Alder")).clockOffsetSeconds).toBe(3);
+    await report("Alder", heartbeatWith());
+    expect((await host("Alder")).clockOffsetSeconds).toBeNull();
+    // A quiet host's last reading may be long out of date.
+    await report("Alder", heartbeatWith({ hostClock: controlPlane.clock.now - 95_000 }));
+    controlPlane.clock.now += HOST_SILENT_AFTER_MILLISECONDS + 1;
+    expect((await host("Alder")).clockOffsetSeconds).toBeNull();
+  });
+
+  it("shows where a container's image's code lives as its runner read it, and nothing from a runner before that", async () => {
+    const source = "https://github.com/paperless-ngx/paperless-ngx";
+    await report("Alder", heartbeatWith({ containers: [containerSnapshot({ name: "paperless", source })] }));
+    expect((await containers())[0]).toMatchObject({ name: "paperless", source });
+    await report("Alder", heartbeatWith({ containers: [containerSnapshot({ name: "paperless" })] }));
+    expect((await containers())[0]!.source).toBeNull();
   });
 
   it("preserves optional rollback recovery metadata through heartbeat and dashboard views", async () => {
@@ -188,6 +229,25 @@ describe("the inventory", () => {
     ]);
     expect(listed[0]).toMatchObject({ problem: "unhealthy", protected: false, hostState: "online" });
     expect(listed[1]).toMatchObject({ problem: null, protected: true });
+  });
+
+  it("reads a host's report once rather than on every look, and the new one once it comes", async () => {
+    await report("Alder", heartbeatWith({ containers: [containerSnapshot({ name: "paperless" })] }));
+    const inventory = controlPlane.services.inventoryService;
+    const hostId = (await host("Alder")).id;
+    inventory.containers();
+    inventory.hosts();
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      expect(inventory.containers({ hostId }).map(({ name }) => name)).toEqual(["paperless"]);
+      expect(inventory.hosts().find(({ id }) => id === hostId)?.containerCount).toBe(1);
+      expect(parse.mock.calls.filter(([text]) => String(text).includes('"paperless"'))).toEqual([]);
+
+      await report("Alder", heartbeatWith({ containers: [containerSnapshot({ name: "tika" })] }));
+      expect(inventory.containers({ hostId }).map(({ name }) => name)).toEqual(["tika"]);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it("filters by host, by problems and by search text", async () => {

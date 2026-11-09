@@ -68,7 +68,8 @@ export class IncidentReconciler {
   }
 
   private async reconcile(incident: IncidentSummaryView, host: HostView | undefined, now: number) {
-    if (!reportedSince(host, incident)) {
+    // A list its Docker could not give this time is no word on how the container is.
+    if (!reportedSince(host, incident) || (host.containersStaleSince ?? null) !== null) {
       this.fineSince.delete(incident.id);
       return;
     }

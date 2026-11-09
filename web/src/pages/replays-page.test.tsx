@@ -10,7 +10,7 @@ import {
   type SessionView,
 } from "../../../src/shared/api.js";
 import { PATHS, SESSION_QUERY_KEY } from "../constants.js";
-import { ReplayDetailPage, ReplaysPage } from "./management-pages.js";
+import { ReplayDetailPage, ReplaysPage } from "./replays-page.js";
 
 const session: SessionView = {
   user: { id: "u1", username: "admin", role: "admin", mustChangePassword: false, totpEnabled: true },
@@ -96,6 +96,9 @@ function show(path: string) {
   return router;
 }
 
+// Long enough for every answer above to be shown.
+const SETTLED_WITHIN_MILLISECONDS = 300;
+
 const bodiesOf = (fetch: ReturnType<typeof serve>, method: string, path: string) =>
   fetch.mock.calls
     .filter(([url, init]) => url === path && init?.method === method)
@@ -131,5 +134,34 @@ describe("trying a model before switching to it", () => {
     await waitFor(() =>
       expect(bodiesOf(fetch, "PUT", API_ROUTES.ollamaSettings)).toEqual([{ ...environment, model: "qwen3:30b-a3b" }]),
     );
+  });
+
+  it("says a host another Ollama watches replays on that one, and whose the other models are", async () => {
+    serve({
+      [API_ROUTES.ollamaServers]: {
+        extras: [{ id: "s1", name: "Rowan", model: "qwen3:30b-a3b", hostIds: ["h1"] }],
+        reviewServerId: null,
+        defaultName: null,
+        routerServerId: null,
+      },
+    });
+    show(PATHS.replays);
+    const model = (await screen.findByRole("combobox", { name: "Model" })) as HTMLSelectElement;
+    await waitFor(() =>
+      expect([...model.options].map((option) => option.text)).toEqual([
+        "Each host's own Ollama and model (in use)",
+        "qwen3:30b-a3b",
+      ]),
+    );
+    expect(model.querySelector("optgroup")?.label).toBe("Other models on Default");
+  });
+
+  it("offers no switch for a run that several servers' models answered", async () => {
+    serve({ [apiPath(API_ROUTES.replay, { replayId: "r1" })]: run({ modelName: "qwen3:4b-instruct, qwen3:30b-a3b" }) });
+    show(apiPath(PATHS.replay, { replayId: "r1" }));
+    expect(await screen.findByText(/qwen3:4b-instruct, qwen3:30b-a3b/)).toBeTruthy();
+    await expect(
+      screen.findByRole("button", { name: /from now on/ }, { timeout: SETTLED_WITHIN_MILLISECONDS }),
+    ).rejects.toThrow();
   });
 });

@@ -1,0 +1,337 @@
+/* --- a host: how it runs, its containers, its updates, and what Autoheal may do there --------------- */
+
+.host-page {
+  gap: 0;
+}
+
+.host-page .crumbs {
+  margin-top: -7px;
+}
+
+.host-page .page-header {
+  margin-top: 24px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.host-page .lede {
+  margin-top: 9.5px;
+  font-size: var(--text-body);
+}
+
+.host-page .page-header > .header-action {
+  margin-bottom: 3px;
+}
+
+.title-row .badge {
+  translate: 0 -1.5px;
+}
+
+/* A host's name being changed where it shows: on a phone its buttons go under it. */
+.rename-host {
+  flex-wrap: wrap;
+}
+
+.banner.danger {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 16px;
+  margin-top: 21px;
+  padding: 0 18px 0 19.5px;
+  min-height: 51px;
+  background: var(--danger-banner);
+  border-color: var(--danger-border);
+  color: var(--text);
+  font-size: var(--text-body);
+}
+
+.banner.danger .icon {
+  width: 20px;
+  height: 20px;
+  color: var(--danger);
+}
+
+.banner.danger a,
+.banner.danger button {
+  margin-left: auto;
+}
+
+.banner.danger .snooze-choices {
+  margin-left: auto;
+}
+
+.banner.danger .snooze-choices button,
+.banner.danger .snooze-choices + a {
+  margin-left: 0;
+}
+
+.snooze-choices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.snooze-choices button {
+  padding-inline: var(--space-2);
+}
+
+/* The words sit a little low, as in buttons; the icon stays centred. */
+.banner.danger p,
+.banner.danger a {
+  padding-top: 3px;
+}
+
+.banner code {
+  font-size: inherit;
+  font-weight: var(--weight-strong);
+}
+
+.host-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  min-height: var(--host-tabs-height);
+  margin-top: 29px;
+  background: var(--page);
+}
+
+.host-section {
+  --cards-gap: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cards-gap);
+  margin-top: 23.5px;
+}
+
+/* Leave room for the sticky tab row, including its horizontal scrollbar on narrow screens. */
+.host-section,
+.host-changes {
+  scroll-margin-top: calc(3rem + 24px);
+}
+
+@media (max-width: 48rem) {
+  .host-section .stat-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A section headed by its name alone sits a touch lower than one with a search beside it, as drawn. */
+.host-updates {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-top: 1.5px;
+}
+
+.host-updates > h2,
+.host-control > h2 {
+  font-size: var(--text-heading);
+}
+
+.update-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 64rem) {
+  .update-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* What a card lists above, what to do about it in a bar along its foot. */
+.update-card {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.update-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 17px 20px 0;
+}
+
+.update-card h3 {
+  font-size: var(--text-large);
+}
+
+.update-card-line {
+  margin-top: 4px;
+  font-size: var(--text-small);
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.update-card .update-rows {
+  margin: 8.5px -20px 0;
+}
+
+.update-card .update-row {
+  min-height: 60px;
+  gap: 21px;
+}
+
+.tick-space {
+  flex: none;
+  width: 18px;
+}
+
+.update-what .link.mono {
+  align-self: flex-start;
+  font-size: var(--text-body);
+  color: var(--text);
+}
+
+.package-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 4px;
+}
+
+.update-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding: 14px 20px;
+  background: var(--surface-muted);
+  border-top: var(--border-width) solid var(--border);
+}
+
+.update-card-foot button.link {
+  font-size: var(--text-small);
+  text-decoration: underline;
+}
+
+.update-row .badge {
+  font-weight: var(--weight-normal);
+}
+
+.update-card > .notice {
+  margin: 0 20px 14px;
+}
+
+.package-history {
+  margin: 4px 0 14px;
+}
+
+.host-control {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-top: 1.5px;
+}
+
+.choice-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 64rem) {
+  .choice-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Little below: the last answer's own height leaves the room, as drawn. */
+.choice-card {
+  gap: 0;
+  padding: 20px 20px 8.5px;
+}
+
+.choice-card h3 {
+  font-size: var(--text-large);
+}
+
+.choice-options {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+}
+
+/* An answer the size of a finger: the radio or tick, then its words and, under them, what it leaves out. */
+label.choice-option {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 18px;
+  min-height: 52px;
+  font-size: var(--text-body);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.choice-words {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5px;
+}
+
+.choice-words .faint {
+  font-size: var(--text-badge);
+}
+
+.choice-option input {
+  margin-top: 2px;
+}
+
+.cleanup-often {
+  margin-top: 9.5px;
+  gap: 5px;
+}
+
+.cleanup-often select {
+  width: 100%;
+  padding-left: 10px;
+}
+
+.choice-option.build-cache {
+  margin-top: 22px;
+  min-height: 0;
+}
+
+.cleanup-line {
+  margin-top: 20px;
+}
+
+/* Below what a host's page draws: its last half hour, old images, open work and recent incidents. */
+.host-more {
+  --cards-gap: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cards-gap);
+  margin-top: 40px;
+}
+
+.host-more h2 {
+  font-size: var(--text-heading);
+}
+
+.host-more .card h2 {
+  font-size: var(--text-large);
+}
+
+.revoke-host,
+.join-code {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.join-code-made {
+  display: grid;
+  gap: 8px;
+  flex-basis: 100%;
+  min-width: 0;
+}

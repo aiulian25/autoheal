@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeDockerEngine, exitedContainer } from "../../test/fakes/fake-docker-engine.js";
 import { HOST_TERMINAL_HELPER } from "../shared/constants.js";
 import { DockerClient } from "./docker-client.js";
-import { hostShellThroughDocker } from "./host-shell.js";
+import { hostShellThroughDocker, removeLeftHelpers } from "./host-shell.js";
 
 describe("a shell on the runner's own host, through a helper", () => {
   let engine: FakeDockerEngine;
@@ -14,6 +14,28 @@ describe("a shell on the runner's own host, through a helper", () => {
   });
 
   afterEach(() => engine.close());
+
+  it("removes every helper a runner that stopped mid-shell or mid-script left, running or not, and nothing else", async () => {
+    const helper = (name: string, running: boolean) => {
+      const container = exitedContainer(name, {
+        Config: {
+          Image: "sha256:autoheal",
+          Tty: false,
+          Env: [],
+          Labels: { [HOST_TERMINAL_HELPER.label]: HOST_TERMINAL_HELPER.labelValue },
+        },
+      });
+      return { ...container, State: { ...container.State, Status: running ? "running" : "exited", Running: running } };
+    };
+    engine.add(helper(`${HOST_TERMINAL_HELPER.containerPrefix}shell`, true));
+    engine.add(helper(`${HOST_TERMINAL_HELPER.containerPrefix}script`, false));
+    engine.add(exitedContainer("paperless"));
+    await removeLeftHelpers(new DockerClient(engine.socketPath));
+    expect(engine.removals.map((removal) => removal.split("?")[0]).toSorted()).toEqual([
+      `${HOST_TERMINAL_HELPER.containerPrefix}script`,
+      `${HOST_TERMINAL_HELPER.containerPrefix}shell`,
+    ]);
+  });
 
   it("runs nsenter as root in a privileged helper of the runner's image in the host's processes, then removes it", async () => {
     const open = hostShellThroughDocker(new DockerClient(engine.socketPath), "autoheal", null);

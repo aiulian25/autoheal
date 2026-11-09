@@ -391,8 +391,14 @@ export class Installs {
     if (labels[INSTALL_LABEL] === undefined || folder === undefined) {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notOurs(name) };
     }
-    const taken = await hostScript(downScript(folder, removeData), DOWN_TIMEOUT_MILLISECONDS);
+    const taken = await hostScript(downScript(folder, name, removeData), DOWN_TIMEOUT_MILLISECONDS);
     if (taken.exitCode === INSTALL_EXIT.notOurs) return { succeeded: false, outcome: INSTALL_OUTCOMES.notOurs(name) };
+    if (taken.exitCode === INSTALL_EXIT.notItsFolder) {
+      return { succeeded: false, outcome: INSTALL_OUTCOMES.notItsFolder(name, folder) };
+    }
+    if (taken.exitCode === INSTALL_EXIT.notTakenDown) {
+      return { succeeded: false, outcome: INSTALL_OUTCOMES.notTakenDown(name, tail(taken.output)) };
+    }
     if (taken.exitCode !== 0) {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notRemoved(name, tail(taken.output)) };
     }

@@ -5,6 +5,7 @@ import { API_ROUTES, apiPath, type HostControlView } from "../../../src/shared/a
 import {
   HOST_RESTART_CHOICES,
   MAX_RESTARTS_PER_WINDOW,
+  MILLISECONDS_PER_SECOND,
   wordsOf,
   type HostRestartChoice,
 } from "../../../src/shared/constants.js";
@@ -17,39 +18,12 @@ import type {
 } from "../../../src/shared/recovery-policy-simulator.js";
 import { api, ReadableError } from "../api-client.js";
 import { hostsQuery, containerQueryMatchesHosts } from "../queries.js";
+import { REHEARSAL_FORM, TEXT } from "../constants.js";
 import { ErrorNotice, Loading } from "./common.js";
 
-const EVENT_LABELS: Record<RehearsalEvent["kind"], string> = {
-  failure: "Container fails",
-  stop: "Planned stop",
-  "operation-start": "Group operation starts",
-  "operation-end": "Group operation ends",
-  "host-operation-start": "Host operation starts",
-  "host-operation-end": "Host operation ends",
-  offline: "Runner loses connection",
-  online: "Runner receives fresh policy",
-  "runner-restart": "Runner restarts",
-  "clock-change": "Runner clock changes",
-};
-const REASONS: Record<RehearsalReason, string> = {
-  allowed: "Restart permitted",
-  "empty-name": "Missing container",
-  "safety-state": "Recovery safety state unavailable",
-  protected: "Protected container",
-  "operation-held": "Another operation holds this resource",
-  maintenance: "Maintenance window active",
-  "deliberate-stop": "Recent deliberate stop",
-  cooldown: "Incident cooldown active",
-  "restart-budget": "Hourly restart budget exhausted",
-  "policy-unavailable": "Fresh maintenance policy unavailable",
-  "policy-ask": "A person's approval is required",
-  "policy-tell": "Policy only reports failures",
-  "policy-ignore": "Policy leaves this container unwatched",
-  "dry-run": "Would restart; no Docker change",
-  "runner-restart": "Runner reconstructed",
-  "clock-change": "Clock change recorded",
-  "state-updated": "Scenario state updated",
-};
+const text = TEXT.rehearsal;
+const EVENT_LABELS: Record<RehearsalEvent["kind"], string> = text.events;
+const REASONS: Record<RehearsalReason, string> = text.reasons;
 const named = (kind: RehearsalEvent["kind"]) => ["failure", "stop", "operation-start", "operation-end"].includes(kind);
 interface Row {
   seconds: number;
@@ -59,7 +33,7 @@ interface Row {
   statePreserved: boolean;
 }
 const initialRows = (name: string): Row[] =>
-  [0, 61, 600, 1200, 3600].map((seconds) => ({
+  REHEARSAL_FORM.startSeconds.map((seconds) => ({
     seconds,
     kind: "failure",
     name,
@@ -67,9 +41,10 @@ const initialRows = (name: string): Row[] =>
     statePreserved: true,
   }));
 const eventOf = (row: Row, start: number): RehearsalEvent => {
-  const at = start + row.seconds * 1000;
+  const at = start + row.seconds * MILLISECONDS_PER_SECOND;
   if (row.kind === "runner-restart") return { at, kind: row.kind, statePreserved: row.statePreserved };
-  if (row.kind === "clock-change") return { at, kind: row.kind, offsetMilliseconds: row.clockOffsetSeconds * 1000 };
+  if (row.kind === "clock-change")
+    return { at, kind: row.kind, offsetMilliseconds: row.clockOffsetSeconds * MILLISECONDS_PER_SECOND };
   if (row.kind === "failure" || row.kind === "stop" || row.kind === "operation-start" || row.kind === "operation-end")
     return { at, kind: row.kind, name: row.name };
   return { at, kind: row.kind };
@@ -101,10 +76,7 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
     mutationFn: async (result: PolicyRehearsalResult) => {
       const path = apiPath(API_ROUTES.hostControl, { hostId: result.hostId });
       const current = await api<HostControlView>("GET", path);
-      if (current.restartDefault !== result.change.before)
-        throw new ReadableError(
-          "This host's default changed after rehearsal. Refresh and rehearse the current policy before applying.",
-        );
+      if (current.restartDefault !== result.change.before) throw new ReadableError(text.changedMeanwhile);
       return api<HostControlView>("PUT", path, { restartDefault: result.change.after });
     },
     onSuccess: () => {
@@ -136,10 +108,7 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
   const result = rehearsal.data;
   return (
     <div>
-      <p className="small muted">
-        Rehearse guard decisions without Docker or model calls. A rehearsal does not prove application recovery or
-        checkpoint compatibility. Current policy is unchanged until you separately review and apply a default below.
-      </p>
+      <p className="small muted">{text.explanation}</p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -154,9 +123,9 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
         }}
       >
         <label>
-          Host{" "}
+          {text.host}{" "}
           <select
-            aria-label="Rehearsal host"
+            aria-label={text.hostLabel}
             value={hostId}
             disabled={busy}
             onChange={(event) => {
@@ -164,7 +133,7 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
               resetPlan();
             }}
           >
-            <option value="">Choose a host</option>
+            <option value="">{text.chooseHost}</option>
             {hosts.data?.map((host) => (
               <option key={host.id} value={host.id}>
                 {host.label}
@@ -180,21 +149,19 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
             void context.refetch();
           }}
         >
-          Refresh current controls
+          {text.refresh}
         </button>
         {context.isFetching && <Loading />}
         {data && (
           <>
             <p className="small">
-              Current default: <strong>{wordsOf(data.restartDefault)}</strong>.{" "}
-              {data.dryRun
-                ? "This host only watches; reached restart stages reserve credits but do not change Docker."
-                : "Live host: rehearsal still performs no action."}
+              {text.currentDefault} <strong>{wordsOf(data.restartDefault)}</strong>
+              {TEXT.sentenceEnd} {data.dryRun ? text.watchingHost : text.liveHost}
             </p>
             <label>
-              Proposed failure policy{" "}
+              {text.proposedPolicy}{" "}
               <select
-                aria-label="Proposed failure policy"
+                aria-label={text.proposedPolicy}
                 value={choice}
                 disabled={busy || !admin}
                 onChange={(event) => {
@@ -210,9 +177,9 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
               </select>
             </label>
             <label>
-              Event source{" "}
+              {text.eventSource}{" "}
               <select
-                aria-label="Rehearsal event source"
+                aria-label={text.eventSourceLabel}
                 value={source}
                 disabled={busy}
                 onChange={(event) => {
@@ -220,8 +187,8 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                   resetPlan();
                 }}
               >
-                <option value="synthetic">Custom timeline</option>
-                <option value="history">Captured failures from the last seven days</option>
+                <option value="synthetic">{text.sources.synthetic}</option>
+                <option value="history">{text.sources.history}</option>
               </select>
             </label>
             {source === "synthetic" && (
@@ -230,9 +197,9 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                   <table>
                     <thead>
                       <tr>
-                        <th>Seconds after start</th>
-                        <th>Event</th>
-                        <th>Container / detail</th>
+                        <th>{text.columns.seconds}</th>
+                        <th>{text.columns.event}</th>
+                        <th>{text.columns.detail}</th>
                         <th />
                       </tr>
                     </thead>
@@ -241,11 +208,11 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                         <tr key={index}>
                           <td>
                             <input
-                              aria-label={`Event ${index + 1} seconds`}
+                              aria-label={text.rowSeconds(index + 1)}
                               type="number"
                               required
                               min={0}
-                              max={604800}
+                              max={REHEARSAL_FORM.latestSeconds}
                               step={1}
                               value={row.seconds}
                               disabled={busy}
@@ -261,7 +228,7 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                           </td>
                           <td>
                             <select
-                              aria-label={`Event ${index + 1} type`}
+                              aria-label={text.rowType(index + 1)}
                               value={row.kind}
                               disabled={busy}
                               onChange={(event) => {
@@ -283,7 +250,7 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                           <td>
                             {named(row.kind) && (
                               <select
-                                aria-label={`Event ${index + 1} container`}
+                                aria-label={text.rowContainer(index + 1)}
                                 value={row.name}
                                 disabled={busy}
                                 onChange={(event) => {
@@ -317,16 +284,16 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                                     resetPlan();
                                   }}
                                 />
-                                Saved safety state available
+                                {text.statePreserved}
                               </label>
                             )}
                             {row.kind === "clock-change" && (
                               <label>
-                                Clock offset in seconds{" "}
+                                {text.clockOffset}{" "}
                                 <input
                                   type="number"
-                                  min={-86400}
-                                  max={86400}
+                                  min={-REHEARSAL_FORM.clockOffsetSeconds}
+                                  max={REHEARSAL_FORM.clockOffsetSeconds}
                                   value={row.clockOffsetSeconds}
                                   disabled={busy}
                                   onChange={(event) => {
@@ -346,14 +313,14 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                           <td>
                             <button
                               type="button"
-                              aria-label={`Remove event ${index + 1}`}
+                              aria-label={text.removeRow(index + 1)}
                               disabled={busy || rows.length <= 1}
                               onClick={() => {
                                 setRows((current) => current.filter((_item, at) => at !== index));
                                 resetPlan();
                               }}
                             >
-                              Remove
+                              {text.remove}
                             </button>
                           </td>
                         </tr>
@@ -363,27 +330,24 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                 </div>
                 <button
                   type="button"
-                  disabled={busy || rows.length >= 50}
+                  disabled={busy || rows.length >= REHEARSAL_FORM.rows}
                   onClick={() => {
                     setRows((current) => [
                       ...current,
                       {
                         ...initialRows(data.containers[0]?.name ?? "")[0]!,
-                        seconds: (current.at(-1)?.seconds ?? 0) + 60,
+                        seconds: (current.at(-1)?.seconds ?? 0) + REHEARSAL_FORM.stepSeconds,
                       },
                     ]);
                     resetPlan();
                   }}
                 >
-                  Add event
+                  {text.addRow}
                 </button>
                 {data.containers.length > 1 && (
                   <fieldset disabled={busy}>
-                    <legend>Declared dependency group for this scenario</legend>
-                    <p className="small muted">
-                      Selected members share an operation hold in this rehearsal. Confirm the real dependency graph
-                      separately.
-                    </p>
+                    <legend>{text.group}</legend>
+                    <p className="small muted">{text.groupExplanation}</p>
                     {data.containers.map((container) => (
                       <label key={container.name}>
                         <input
@@ -414,30 +378,27 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                 (source === "synthetic" && (!rows.length || rows.some((row) => named(row.kind) && !row.name)))
               }
             >
-              Run policy rehearsal
+              {text.run}
             </button>
-            {!admin && <p className="muted small">An administrator runs and applies policy rehearsals.</p>}
+            {!admin && <p className="muted small">{text.adminOnly}</p>}
           </>
         )}
       </form>
       <ErrorNotice error={hosts.error ?? context.error ?? rehearsal.error ?? apply.error} />
       {result && (
-        <section aria-label="Policy rehearsal result">
-          <h3>Reviewed policy difference</h3>
-          <p>
-            Host default: {wordsOf(result.change.before)} → {wordsOf(result.change.after)}. Explicit container overrides
-            and protected resources stay in force.
-          </p>
+        <section aria-label={text.result}>
+          <h3>{text.difference}</h3>
+          <p>{text.hostDefault(wordsOf(result.change.before), wordsOf(result.change.after))}</p>
           {result.change.containers.length > 0 ? (
             <ul>
               {result.change.containers.map((container) => (
                 <li key={container.name}>
-                  {container.name}: {wordsOf(container.before)} → {wordsOf(container.after)}
+                  {text.containerChange(container.name, wordsOf(container.before), wordsOf(container.after))}
                 </li>
               ))}
             </ul>
           ) : (
-            <p>No existing container inherits a different choice in this rehearsal.</p>
+            <p>{text.noContainerChanges}</p>
           )}
           <ul className="small muted">
             {[...result.evidence.assumptions, ...result.proposed.assumptions].map((assumption) => (
@@ -448,30 +409,31 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
             <table>
               <thead>
                 <tr>
-                  <th>At</th>
-                  <th>Container</th>
-                  <th>Event</th>
-                  <th>Current policy</th>
-                  <th>Proposed policy</th>
-                  <th>Credits used</th>
+                  <th>{text.decisionColumns.at}</th>
+                  <th>{text.decisionColumns.container}</th>
+                  <th>{text.decisionColumns.event}</th>
+                  <th>{text.decisionColumns.current}</th>
+                  <th>{text.decisionColumns.proposed}</th>
+                  <th>{text.decisionColumns.credits}</th>
                 </tr>
               </thead>
               <tbody>
                 {result.proposed.decisions.map((decision, index) => (
                   <tr key={index}>
                     <td>{new Date(decision.at).toLocaleString()}</td>
-                    <td>{decision.name ?? "Whole host"}</td>
+                    <td>{decision.name ?? TEXT.maintenance.wholeHost}</td>
                     <td>{EVENT_LABELS[decision.event]}</td>
                     <td>
-                      {wordsOf(result.current.decisions[index]!.result)} ·{" "}
+                      {wordsOf(result.current.decisions[index]!.result)}
+                      {TEXT.separator}
                       {REASONS[result.current.decisions[index]!.reason]}
                     </td>
                     <td>
-                      {wordsOf(decision.result)} · {REASONS[decision.reason]}
+                      {wordsOf(decision.result)}
+                      {TEXT.separator}
+                      {REASONS[decision.reason]}
                     </td>
-                    <td>
-                      {decision.restartsUsed} / {MAX_RESTARTS_PER_WINDOW}
-                    </td>
+                    <td>{text.credits(decision.restartsUsed, MAX_RESTARTS_PER_WINDOW)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -486,24 +448,20 @@ function RehearsalForm({ admin, initialHostId }: { admin: boolean; initialHostId
                   disabled={busy}
                   onChange={(event) => setReviewed(event.target.checked)}
                 />
-                I reviewed the default change and the rehearsal assumptions.
+                {text.reviewed}
               </label>
               <button
                 type="button"
                 disabled={!reviewed || busy || apply.isSuccess}
                 onClick={() => apply.mutate(result)}
               >
-                Apply reviewed host default
+                {text.apply}
               </button>
             </div>
           )}
         </section>
       )}
-      {apply.isSuccess && (
-        <p role="status">
-          Host default saved through the normal control policy. Runners receive it at their next heartbeat.
-        </p>
-      )}
+      {apply.isSuccess && <p role="status">{text.applied}</p>}
     </div>
   );
 }
@@ -517,7 +475,7 @@ export function PolicyRehearsal({ admin }: { admin: boolean }) {
   }, [location.hash]);
   return (
     <details id="policy-rehearsal" className="card" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Rehearse recovery policy</summary>
+      <summary>{text.title}</summary>
       {open && <RehearsalForm admin={admin} initialHostId={parameters.get("hostId") ?? ""} />}
     </details>
   );

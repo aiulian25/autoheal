@@ -13,7 +13,7 @@ import {
   type RecoveryCodesView,
   type TotpSetupView,
 } from "../../shared/api.js";
-import { TOTP_PERIOD_SECONDS } from "../../shared/constants.js";
+import { LOGIN_FREE_FAILURES, TOTP_PERIOD_SECONDS } from "../../shared/constants.js";
 
 const STEP_MILLISECONDS = TOTP_PERIOD_SECONDS * 1000;
 
@@ -57,6 +57,17 @@ describe("your own account", () => {
     });
     expect(view.sessions.map((session) => session.current).sort()).toEqual([false, true]);
     expect(view.sessions[0]!.id).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("slows wrong guesses at your password as signing in does, so a borrowed session cannot guess it fast", async () => {
+    const rename = (currentPassword: string) =>
+      admin.request({ method: "PATCH", url: API_ROUTES.account, payload: { username: "alex", currentPassword } });
+    for (let guess = 0; guess <= LOGIN_FREE_FAILURES; guess += 1) {
+      expect((await rename("not-my-password")).json()).toEqual({ error: "wrong_password" });
+    }
+    const slowed = await rename(NEW_ADMIN_PASSWORD);
+    expect(slowed.statusCode).toBe(429);
+    expect(slowed.json()).toEqual({ error: "too_many_attempts", retryAfterSeconds: 1 });
   });
 
   it("renames you only with your password, and never to a name someone else has", async () => {

@@ -6,7 +6,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
@@ -15,7 +15,7 @@ import {
   type TaskSummaryView,
   type UpdateRunView,
 } from "../../shared/api.js";
-import { HTTP_HEADERS, JOB_ANSWER_MILLISECONDS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { HTTP_HEADERS, JOB_ANSWER_MILLISECONDS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type ContainerSnapshot, type WorkResponse } from "../../shared/protocol.js";
 import { hosts, users } from "../database/schema.js";
 
@@ -145,7 +145,7 @@ describe("updating several containers one at a time", () => {
     };
     const nextJob = () =>
       vi.waitFor(async () => {
-        const [job] = await takeWork(RUNNER_CAPABILITIES);
+        const [job] = await takeWork(EVERY_RUNNER_CAPABILITY);
         if (job === undefined) throw new Error("not yet");
         return job;
       });

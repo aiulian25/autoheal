@@ -7,10 +7,10 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
+import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type JobView, type TerminalView } from "../../shared/api.js";
-import { HOST_SILENT_AFTER_MILLISECONDS, HTTP_HEADERS, RUNNER_CAPABILITIES } from "../../shared/constants.js";
+import { HOST_SILENT_AFTER_MILLISECONDS, HTTP_HEADERS } from "../../shared/constants.js";
 import {
   RESOURCE_ACTIONS,
   type ResourceAction,
@@ -36,7 +36,7 @@ describe("scoped operator capabilities", () => {
       method,
       url,
       payload,
-      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: RUNNER_CAPABILITIES },
+      headers: { authorization: `Bearer ${token}`, [HTTP_HEADERS.runnerCapabilities]: EVERY_RUNNER_CAPABILITY },
     });
   const report = (supported = true) =>
     runner("POST", RUNNER_ROUTES.heartbeat, {

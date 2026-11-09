@@ -8,14 +8,13 @@ import {
   type DiagnosticSection,
   type DiagnosticPreview,
 } from "../../../src/shared/diagnostics.js";
+import { JSON_INDENT } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { TEXT } from "../constants.js";
 import { ErrorNotice } from "./common.js";
 
-const LABELS: Record<DiagnosticSection, string> = {
-  trace: "Trace event types and timestamps",
-  facts: "Anonymized host/container facts",
-  usage: "Captured numeric usage",
-};
+const text = TEXT.diagnostics;
+const LABELS: Record<DiagnosticSection, string> = text.sections;
 export function DiagnosticsPreview({ incidentId }: { incidentId: string }) {
   const id = useId();
   const [sections, setSections] = useState<DiagnosticSection[]>([...DIAGNOSTIC_SECTIONS]);
@@ -49,13 +48,10 @@ export function DiagnosticsPreview({ incidentId }: { incidentId: string }) {
   const busy = preview.isPending || download.isPending;
   return (
     <details className="card diagnostics-preview">
-      <summary>Download diagnostics</summary>
-      <p className="small muted">
-        Uses captured evidence only. Raw logs, model text, environment values, terminal output, names and addresses are
-        excluded. Review the complete contents before sharing. No new runner collection occurs.
-      </p>
+      <summary>{text.title}</summary>
+      <p className="small muted">{text.explanation}</p>
       <fieldset disabled={busy}>
-        <legend>Include in the bundle</legend>
+        <legend>{text.include}</legend>
         {DIAGNOSTIC_SECTIONS.map((section) => (
           <label className="choice-option" key={section} htmlFor={`${id}-${section}`}>
             <input
@@ -82,12 +78,14 @@ export function DiagnosticsPreview({ incidentId }: { incidentId: string }) {
           preview.mutate();
         }}
       >
-        Preview diagnostics
+        {text.preview}
       </button>
       {preview.data && (
-        <section aria-label="Diagnostic bundle preview">
+        <section aria-label={text.previewLabel}>
           <p>
-            {preview.data.byteLength.toLocaleString()} bytes · preview expires{" "}
+            {text.size(preview.data.byteLength.toLocaleString())}
+            {TEXT.separator}
+            {text.expires}{" "}
             <time dateTime={new Date(preview.data.expiresAt).toISOString()}>
               {new Date(preview.data.expiresAt).toLocaleTimeString()}
             </time>
@@ -97,15 +95,15 @@ export function DiagnosticsPreview({ incidentId }: { incidentId: string }) {
               <li key={line}>{line}</li>
             ))}
           </ul>
-          <p className="small mono">Evidence SHA-256: {preview.data.bundle.manifest.sha256}</p>
-          <pre className="log">{JSON.stringify(preview.data.bundle, null, 2)}</pre>
+          <p className="small mono">{text.hash(preview.data.bundle.manifest.sha256)}</p>
+          <pre className="log">{JSON.stringify(preview.data.bundle, null, JSON_INDENT)}</pre>
           <button type="button" disabled={busy || download.isSuccess} onClick={() => download.mutate()}>
-            Download reviewed bundle
+            {text.download}
           </button>
         </section>
       )}
       <ErrorNotice error={preview.error ?? download.error} />
-      {download.isSuccess && <p role="status">Diagnostics downloaded. Create a new preview to download again.</p>}
+      {download.isSuccess && <p role="status">{text.downloaded}</p>}
     </details>
   );
 }

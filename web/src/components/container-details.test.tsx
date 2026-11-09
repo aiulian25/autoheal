@@ -179,6 +179,46 @@ it("takes it off a network with another click, and says why when it cannot", asy
   expect(screen.getByRole("button", { name: "newt" }).getAttribute("aria-pressed")).toBe("true");
 });
 
+it("lists each port it has, where the host publishes it, and where a proxy on its networks reaches it", async () => {
+  answers[`${SETTINGS}?details=true`] = {
+    error: null,
+    settings: null,
+    details: {
+      ...details,
+      ports: [
+        {
+          port: 80,
+          protocol: "tcp",
+          published: [
+            { address: "", port: 8080 },
+            { address: "::1", port: 8443 },
+          ],
+        },
+        { port: 3000, protocol: "tcp", published: [] },
+      ],
+    },
+  };
+  show();
+  open(/^Network/);
+  expect(await screen.findByText("Ports")).toBeTruthy();
+  expect(screen.getByText("80/tcp")).toBeTruthy();
+  expect(screen.getByText("8080, [::1]:8443")).toBeTruthy();
+  expect(screen.getByText("3000/tcp")).toBeTruthy();
+  expect(screen.getByText("not published")).toBeTruthy();
+  expect(screen.getByText("A proxy on one of its networks (newt) reaches it at app:80.")).toBeTruthy();
+});
+
+it("shows the ports it publishes where its runner is too old to list the rest", async () => {
+  const publishing = { ...container, ports: [{ published: 8080, target: 80, protocol: "tcp" }] } as ContainerView;
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <ContainerDetailTabs container={publishing} tab="network" onTab={() => undefined} trend={null} />
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText("80/tcp")).toBeTruthy();
+  expect(screen.getByText("8080")).toBeTruthy();
+});
+
 it("says so where it cannot join anything, or its runner is too old to offer", async () => {
   answers[`${SETTINGS}?details=true`] = {
     error: null,

@@ -1,11 +1,15 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
+import {
+  runnerTokenOf,
+  startTestControlPlane,
+  type TestClient,
+  type TestControlPlane,
+} from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type ContainerView, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { HOST_KIND, HTTP_STATUS, JOB_ACTION } from "../../shared/constants.js";
-import { decodeJoinCode } from "../../shared/join-code.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
 import { hosts, jobs } from "../database/schema.js";
 
@@ -38,7 +42,7 @@ describe("updating a sidecar runner from the dashboard", () => {
     controlPlane = await startTestControlPlane();
     admin = (await fullySignedInAdmin(controlPlane)).client;
     const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
-    token = decodeJoinCode(enrolled.joinCode)!.token;
+    token = runnerTokenOf(enrolled);
     await runnerSays(RUNNER_ROUTES.heartbeat, heartbeatWith({ hostLabel: "Alder" }));
     hostId = (await admin.get(API_ROUTES.hosts)).json<HostView[]>().find(({ label }) => label === "Alder")!.id;
   });

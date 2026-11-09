@@ -1,254 +1,17 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createMemoryRouter, RouterProvider } from "react-router";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { API_ROUTES, apiPath, type IncidentSummaryView } from "../../../src/shared/api.js";
+import { TEXT } from "../constants.js";
 import {
-  API_ROUTES,
-  apiPath,
-  type BoardView,
-  type ContainerView,
-  type HostView,
-  type IncidentSummaryView,
-  type SessionView,
-  type TaskSummaryView,
-  type UpdateRunView,
-} from "../../../src/shared/api.js";
-import { AGENT_DRAG_TYPE, PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
-import { AttentionPage } from "./attention-page.js";
-
-const sessionFor = (role: "admin" | "viewer"): SessionView => ({
-  user: { id: "u1", username: role, role, mustChangePassword: false, totpEnabled: true },
-  csrfToken: "csrf",
-  secondFactorDone: true,
-});
-
-const alder: HostView = {
-  id: "h1",
-  label: "Alder",
-  state: "online",
-  tokenHint: "abcd",
-  enrolledAt: Date.now(),
-  lastHeartbeatAt: Date.now(),
-  runnerVersion: "2.0.0",
-  dryRun: false,
-  eventStreamConnected: true,
-  protectedContainers: [],
-  restartBudget: {},
-  containerAccess: null,
-  health: null,
-  metrics: null,
-  containerCount: 2,
-  runningCount: 2,
-  problemCount: 0,
-};
-
-const waitingImage = (name: string, overrides: Partial<ContainerView> = {}): ContainerView => ({
-  hostId: "h1",
-  hostLabel: "Alder",
-  hostState: "online",
-  name,
-  containerId: "0123456789ab",
-  image: `example/${name}:latest`,
-  state: "running",
-  health: "none",
-  startedAt: Date.now(),
-  finishedAt: null,
-  exitCode: null,
-  oomKilled: false,
-  restartCount: 0,
-  restartPolicy: "unless-stopped",
-  composeProject: null,
-  composeService: null,
-  link: null,
-  version: null,
-  ports: null,
-  hostNetwork: false,
-  update: { status: "available", checkedAt: Date.now(), policy: "ask", remote: null, reason: null },
-  usage: null,
-  byItself: { restart: "restart", update: "ask", restartLock: null, updateLock: null },
-  protected: false,
-  handsOff: null,
-  problem: null,
-  ...overrides,
-});
-
-// Its images name their versions and where its code lives.
-const QUANTUM = waitingImage("quantum", {
-  version: "v1.120.1",
-  update: {
-    status: "available",
-    checkedAt: Date.now(),
-    policy: "ask",
-    remote: {
-      version: "v1.120.2",
-      revision: null,
-      source: "https://github.com/example/quantum",
-      createdAt: Date.now() - 3 * 24 * 3_600_000,
-    },
-    reason: null,
-  },
-});
-
-const updateTask = (name: string, advice: TaskSummaryView["advice"]): TaskSummaryView => ({
-  id: `task-${name}`,
-  number: 1,
-  title: `Update ${name} on Alder`,
-  status: "todo",
-  priority: "low",
-  source: "detector",
-  assignee: { kind: "user", id: "u1", name: "admin" },
-  labels: ["update"],
-  hostId: "h1",
-  hostLabel: "Alder",
-  resource: { kind: "container", id: name, label: name },
-  parentId: null,
-  occurrences: 1,
-  checkedOut: false,
-  advice,
-  snoozedUntil: null,
-  incidentId: null,
-  createdAt: Date.now(),
-  updatedAt: Date.now(),
-  lastSeenAt: Date.now(),
-  closedAt: null,
-});
-
-const board: BoardView = {
-  needsYou: [],
-  autoheal: [],
-  noticed: [
-    { kind: "task", task: updateTask("quantum", "update") },
-    { kind: "task", task: updateTask("radicale", "hold") },
-  ],
-  done: [],
-};
-
-const RUNS = apiPath(API_ROUTES.containerUpdates, { hostId: "h1" });
-
-const handedOver = {
-  id: "i1",
-  hostId: "h1",
-  hostLabel: "Alder",
-  containerName: "tika",
-  image: "apache/tika:3",
-  trigger: "die",
-  status: "awaiting_approval",
-  decidedBy: "model",
-  action: "escalate",
-  target: null,
-  verdict: "needs you",
-  detectedAt: Date.now(),
-  updatedAt: Date.now(),
-} as const;
-
-const diskNearlyFull: TaskSummaryView = {
-  ...updateTask("disk", null),
-  id: "task-disk",
-  title: "Alder's disk is 97% full",
-  labels: [],
-  resource: null,
-};
-
-// What waits for a person besides the updates: one incident Ollama handed over, and one problem.
-const needsYou: BoardView = {
-  ...board,
-  needsYou: [
-    { kind: "incident", incident: handedOver },
-    { kind: "task", task: diskNearlyFull },
-  ],
-};
-
-const started: UpdateRunView = {
-  id: "run-1",
-  hostId: "h1",
-  names: ["quantum"],
-  status: "running",
-  current: "quantum",
-  done: [],
-  failed: null,
-  createdAt: Date.now(),
-  updatedAt: Date.now(),
-};
-
-const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-
-// Two of the host's own packages wait for a person: the rules hold netdata's repository's.
-const heldPackages = {
-  facts: { setting: "apply", unsupported: null },
-  running: null,
-  automatic: [],
-  packages: ["netdata-dashboard", "netdata-user"].map((name) => ({ name, security: false })),
-};
-// Tika failed and waits for a person; its image is up to date.
-const TIKA = waitingImage("tika", {
-  state: "exited",
-  update: { status: "current", checkedAt: Date.now(), policy: "ask", remote: null, reason: null },
-});
-
-function serve(
-  role: "admin" | "viewer",
-  shown: BoardView = board,
-  overview: unknown = { homeAssistant: null },
-  packages: unknown = { packages: [], automatic: [] },
-  more: Record<string, unknown> = {},
-) {
-  const answers: Record<string, unknown> = {
-    [API_ROUTES.overview]: overview,
-    [API_ROUTES.session]: sessionFor(role),
-    [API_ROUTES.board]: shown,
-    [API_ROUTES.hosts]: [alder],
-    [API_ROUTES.containers]: [QUANTUM, waitingImage("radicale"), TIKA],
-    [API_ROUTES.hostUpdateSettings]: { securityInWindow: true, windowStart: "03:00", windowEnd: "05:00" },
-    [apiPath(API_ROUTES.hostPackages, { hostId: "h1" })]: packages,
-    [API_ROUTES.ollama]: { reachable: true, model: "qwen3:30b-a3b" },
-    [API_ROUTES.ollamaServers]: { extras: [], reviewServerId: null },
-    [RUNS]: null,
-    ...more,
-  };
-  const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-    const path = url.split("?")[0]!;
-    if (init?.method === "POST" && path.endsWith("/impact")) {
-      const containerName = path.split("/").at(-2)!;
-      return json({
-        id: `review-${containerName}`,
-        hostId: "h1",
-        containerName,
-        action: "update",
-        expiresAt: Date.now() + 60_000,
-        answer: {
-          ok: true,
-          fingerprint: "a".repeat(64),
-          members: [{ name: containerName, protected: false }],
-          resources: [],
-          refusals: [],
-        },
-      });
-    }
-    if (init?.method === "POST" && path === RUNS) {
-      return json(started);
-    }
-    if (init?.method === "POST" && path === API_ROUTES.agentDispatch) {
-      const sent = JSON.parse(String(init.body)) as { updates: string[]; incidents: string[] };
-      return json({ updates: sent.updates.length, packages: 0, incidents: sent.incidents.length });
-    }
-    return json(path in answers ? answers[path] : []);
-  });
-  vi.stubGlobal("fetch", fetch);
-  return fetch;
-}
-
-function renderAttention(role: "admin" | "viewer") {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(SESSION_QUERY_KEY, sessionFor(role));
-  const router = createMemoryRouter([{ path: PATHS.home, element: <AttentionPage /> }], {
-    initialEntries: [PATHS.home],
-  });
-  render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
-}
+  waitingImage,
+  QUANTUM,
+  board,
+  RUNS,
+  handedOver,
+  needsYou,
+  serve,
+  renderAttention,
+} from "../test-support/attention-page.js";
 
 describe("updates on the attention page", () => {
   afterEach(() => {
@@ -317,7 +80,7 @@ describe("updates on the attention page", () => {
     expect(await within(quantum).findByText("v1.120.1 → v1.120.2")).toBeTruthy();
     expect(within(quantum).getByText("3 days ago")).toBeTruthy();
     expect(within(quantum).getByRole("link", { name: "release notes" }).getAttribute("href")).toBe(
-      "https://github.com/example/quantum/releases",
+      "https://github.com/example/quantum/releases?q=1.120.2",
     );
     const radicale = screen.getByRole("checkbox", { name: "Update radicale" }).closest("li")!;
     expect(within(radicale).getByText("Container image · recreated with its settings and volumes")).toBeTruthy();
@@ -420,203 +183,55 @@ describe("updates on the attention page", () => {
   });
 });
 
-// What a browser's drag carries, as far as the page reads it.
-function dragged() {
-  const data = new Map<string, string>();
-  return {
-    setData: (type: string, value: string) => void data.set(type, value),
-    getData: (type: string) => data.get(type) ?? "",
-    get types() {
-      return [...data.keys()];
-    },
-    effectAllowed: "",
-  };
-}
-
-const sentHandOver = (fetch: ReturnType<typeof serve>, body: object) =>
-  waitFor(() =>
-    expect(fetch).toHaveBeenCalledWith(
-      API_ROUTES.agentDispatch,
-      expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
-    ),
-  );
-
-describe("handing work to the Ollama agent", () => {
+describe("arranging the attention page", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    window.localStorage.clear();
   });
 
-  it("ticks every update its runner would take, and dispatches the ticked ones to the agent", async () => {
-    const fetch = serve("admin", board, { homeAssistant: null }, heldPackages);
-    renderAttention("admin");
+  const { onItNow, healed, comingUp, howFar } = TEXT.attention;
+  const updates = TEXT.attention.sections.updates.label;
+  const sideCards = () => [...document.querySelectorAll(".attention-side h2")].map((heading) => heading.textContent);
 
-    const all = await screen.findByRole("button", { name: "Select all (4)" });
-    expect(await screen.findByRole("checkbox", { name: "Update netdata-user" })).toBeTruthy();
-    expect(screen.getByText("Drag & drop active")).toBeTruthy();
-    expect(screen.getByText(/to run with LLM supervision/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Dispatch to Ollama Agent" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(all);
-    expect(screen.getAllByRole("checkbox").every((box) => (box as HTMLInputElement).checked)).toBe(true);
-    expect(screen.getByRole("button", { name: "Clear selection" })).toBeTruthy();
+  it("hides a card for this browser alone, and brings it back from the hidden cards line", async () => {
+    serve("viewer");
+    renderAttention("viewer");
+    await screen.findByRole("heading", { name: healed });
+    // Nothing to arrange shows until asked for.
+    expect(screen.queryByRole("group", { name: TEXT.arrange.controls(healed) })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.start }));
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.hideCard(healed) }));
+    expect(screen.queryByRole("heading", { name: healed })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.done }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Dispatch to Ollama Agent" }));
-    await sentHandOver(fetch, {
-      updates: ["task-quantum", "task-radicale"],
-      packages: [{ hostId: "h1", names: ["netdata-dashboard", "netdata-user"] }],
-      incidents: [],
-    });
-    expect(await screen.findByText("Handed 2 items to Ollama.")).toBeTruthy();
-    expect(screen.getAllByRole("checkbox").some((box) => (box as HTMLInputElement).checked)).toBe(false);
+    // As after a reload: this browser keeps it hidden.
+    cleanup();
+    renderAttention("viewer");
+    await screen.findByRole("heading", { name: onItNow });
+    expect(screen.queryByRole("heading", { name: healed })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.show(healed) }));
+    expect(await screen.findByRole("heading", { name: healed })).toBeTruthy();
+    expect(window.localStorage.length).toBe(0);
   });
 
-  describe("with several Ollama servers", () => {
-    const withDell = (reachable: boolean) => ({
-      [API_ROUTES.ollamaServers]: {
-        extras: [
-          {
-            id: "s1",
-            name: "Delta3640",
-            url: "http://delta",
-            model: "big:30b",
-            contextTokens: 1,
-            plainHttp: true,
-            status: { reachable },
-            hostIds: ["h1"],
-          },
-        ],
-        reviewServerId: null,
-      },
-    });
-    const agentCard = async () => (await screen.findByText(TEXT.attention.agent.dropTarget)).closest("a")!;
-
-    it("shows each server and who it watches, and says where a drag goes", async () => {
-      serve("admin", board, { homeAssistant: null }, heldPackages, withDell(true));
-      renderAttention("admin");
-      const agent = await agentCard();
-      expect(await within(agent).findByText("Delta3640")).toBeTruthy();
-      expect(within(agent).getByText("big:30b")).toBeTruthy();
-      expect(within(agent).getByText("1 host")).toBeTruthy();
-      expect(within(agent).getByText("2 of 2 answering")).toBeTruthy();
-      expect(screen.getByText(TEXT.attention.agent.ready)).toBeTruthy();
-      const quantum = (await screen.findByRole("checkbox", { name: "Update quantum" })).closest("li")!;
-      fireEvent.dragStart(quantum, { dataTransfer: dragged() });
-      expect(await within(agent).findByText("Goes to Delta3640")).toBeTruthy();
-      fireEvent.dragEnd(quantum);
-      expect(await within(agent).findByText(TEXT.attention.agent.dropTarget)).toBeTruthy();
-    });
-
-    it("says a drag goes to the default while its server is off, and that it is partly offline", async () => {
-      serve("admin", board, { homeAssistant: null }, heldPackages, withDell(false));
-      renderAttention("admin");
-      const agent = await agentCard();
-      expect(await within(agent).findByText("1 of 2 answering")).toBeTruthy();
-      expect(
-        within(agent).getByText(TEXT.attention.ollama.onDefault(TEXT.attention.ollama.defaultServer)),
-      ).toBeTruthy();
-      expect(await screen.findByText(TEXT.attention.agent.partlyOffline)).toBeTruthy();
-      const quantum = (await screen.findByRole("checkbox", { name: "Update quantum" })).closest("li")!;
-      fireEvent.dragStart(quantum, { dataTransfer: dragged() });
-      expect(await within(agent).findByText("Goes to the default server")).toBeTruthy();
-    });
-  });
-
-  it("shows one server just as before", async () => {
-    serve("admin");
-    renderAttention("admin");
-    const agent = (await screen.findByText(TEXT.attention.agent.dropTarget)).closest("a")!;
-    expect(within(agent).getByText("qwen3:30b-a3b")).toBeTruthy();
-    expect(within(agent).getByText(TEXT.attention.ollama.answering)).toBeTruthy();
-    expect(within(agent).queryByText(TEXT.attention.ollama.defaultName)).toBeNull();
-  });
-
-  it("takes what is dropped on its card: the ticked rows with the one dragged, else that one alone", async () => {
-    const fetch = serve("admin", board, { homeAssistant: null }, heldPackages);
-    renderAttention("admin");
-    const agent = (await screen.findByText("Drop Target")).closest("a")!;
-    const quantum = (await screen.findByRole("checkbox", { name: "Update quantum" })).closest("li")!;
-    const user = (await screen.findByRole("checkbox", { name: "Update netdata-user" })).closest("li")!;
-
-    const alone = dragged();
-    const page = agent.closest(".page")!;
-    fireEvent.dragStart(quantum, { dataTransfer: alone });
-    // The agent's strip stays in sight while it drags.
-    expect(page.className).toContain("dragging");
-    fireEvent.dragOver(agent, { dataTransfer: alone });
-    expect(agent.className).toContain("dragged-over");
-    fireEvent.drop(agent, { dataTransfer: alone });
-    expect(page.className).not.toContain("dragging");
-    await sentHandOver(fetch, { updates: ["task-quantum"], packages: [], incidents: [] });
-
-    fireEvent.click(screen.getByRole("checkbox", { name: "Update radicale" }));
-    const together = dragged();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Update netdata-user" }));
-    fireEvent.dragStart(user, { dataTransfer: together });
-    expect(JSON.parse(together.getData(AGENT_DRAG_TYPE))).toEqual(["update:task-radicale", "package:h1:netdata-user"]);
-    fireEvent.drop(agent, { dataTransfer: together });
-    await sentHandOver(fetch, {
-      updates: ["task-radicale"],
-      packages: [{ hostId: "h1", names: ["netdata-user"] }],
-      incidents: [],
-    });
-
-    // Something else dropped there is not a hand-over.
-    const stranger = dragged();
-    stranger.setData("text/plain", "hello");
-    fireEvent.drop(agent, { dataTransfer: stranger });
-    expect(fetch.mock.calls.filter(([url]) => url === API_ROUTES.agentDispatch)).toHaveLength(2);
-  });
-
-  it("opens a host's updates once one of them is ticked, so nothing ticked is out of sight", async () => {
-    const rowan = { ...alder, id: "h2", label: "Rowan" };
-    serve(
-      "admin",
-      board,
-      { homeAssistant: null },
-      { packages: [], automatic: [] },
-      {
-        [API_ROUTES.hosts]: [alder, rowan],
-        [apiPath(API_ROUTES.hostPackages, { hostId: "h2" })]: heldPackages,
-      },
-    );
-    renderAttention("admin");
-    // The folded group's summary says Review; each row's own link says it too.
-    const folded = (await screen.findByText("Review", { selector: "summary span" })).closest("details")!;
-    expect(folded.open).toBe(false);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Select all (4)" }));
-    await waitFor(() => expect(folded.open).toBe(true));
-  });
-
-  it("leads each update to its own place on the host: a container's row, the host's updates", async () => {
+  it("puts a pinned card first in its column after a reload, and leaves what needs a person in its place", async () => {
     serve("admin", needsYou);
     renderAttention("admin");
-    const row = (await screen.findAllByText("quantum")).map((found) => found.closest("li")).find(Boolean)!;
-    expect(within(row).getByRole("link", { name: "Review" }).getAttribute("href")).toBe("/hosts/h1?container=quantum");
-    const group = row.closest("details")!;
-    expect(
-      within(group)
-        .getByRole("link", { name: /^Review on / })
-        .getAttribute("href"),
-    ).toMatch(/#updates$/);
-  });
+    await screen.findByRole("heading", { name: comingUp });
+    expect(sideCards()).toEqual([onItNow, healed, comingUp, howFar]);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.start }));
+    // The updates and the four cards beside them; what to decide and fix has no controls.
+    expect(screen.getAllByRole("group", { name: /^Arrange / })).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.pinCard(comingUp) }));
+    expect(sideCards()).toEqual([comingUp, onItNow, healed, howFar]);
+    // Alone in its column, the updates have nothing to come before.
+    expect(screen.getByRole("button", { name: TEXT.arrange.hideCard(updates) })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: TEXT.arrange.pinCard(updates) })).toBeNull();
 
-  it("hands an escalated incident over from its card, and offers a viewer none of it", async () => {
-    const fetch = serve("admin", needsYou);
-    renderAttention("admin");
-    const decision = (await screen.findByText("tika")).closest("article")!;
-    expect(decision.getAttribute("draggable")).toBe("true");
-    fireEvent.click(within(decision).getByRole("button", { name: "Hand to Ollama" }));
-    await sentHandOver(fetch, { updates: [], packages: [], incidents: ["i1"] });
     cleanup();
-
-    serve("viewer", needsYou, { homeAssistant: null }, heldPackages);
-    renderAttention("viewer");
-    expect(await screen.findByText("netdata-user")).toBeTruthy();
-    expect(screen.queryByText("Drop Target")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Dispatch to Ollama Agent|Hand to Ollama|Select all/ })).toBeNull();
-    expect(screen.queryAllByRole("checkbox")).toEqual([]);
-    expect(screen.queryByText("Drag & drop active")).toBeNull();
-    expect(screen.getByText("Agent ready")).toBeTruthy();
+    renderAttention("admin");
+    await screen.findByRole("heading", { name: comingUp });
+    expect(sideCards()).toEqual([comingUp, onItNow, healed, howFar]);
   });
 });
