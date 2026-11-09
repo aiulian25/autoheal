@@ -31,6 +31,7 @@ import {
   METRICS_HISTORY_MILLISECONDS,
   METRICS_HISTORY_POINTS,
   METRICS_INTERVAL_MILLISECONDS,
+  RUNNER_UPDATE_REPORT,
 } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type Heartbeat, type MetricsReport } from "../../shared/protocol.js";
 import { MetricsStore } from "./metrics-store.js";
@@ -128,6 +129,26 @@ describe("the inventory", () => {
     await report("Alder", heartbeatWith({ hostClock: controlPlane.clock.now - 95_000 }));
     controlPlane.clock.now += HOST_SILENT_AFTER_MILLISECONDS + 1;
     expect((await host("Alder")).clockOffsetSeconds).toBeNull();
+  });
+
+  it("shows how a sidecar runner's last update from the dashboard went, as it last said, while it reports", async () => {
+    const failed = {
+      state: RUNNER_UPDATE_REPORT.state.failed,
+      finishedAt: controlPlane.clock.now,
+      message: "The new version did not become healthy, so the old one was started again.",
+    };
+    await report("Alder", heartbeatWith({ runnerUpdate: failed }));
+    expect((await host("Alder")).runnerUpdate).toEqual(failed);
+    expect((await host("Mini")).runnerUpdate).toBeNull();
+    // A report without it, as a runner's of its containers alone, keeps it; one that says there is none clears it.
+    await report("Alder", heartbeatWith());
+    expect((await host("Alder")).runnerUpdate).toEqual(failed);
+    await report("Alder", heartbeatWith({ runnerUpdate: null }));
+    expect((await host("Alder")).runnerUpdate).toBeNull();
+    // A runner gone quiet may have gone with its update.
+    await report("Alder", heartbeatWith({ runnerUpdate: failed }));
+    controlPlane.clock.now += HOST_SILENT_AFTER_MILLISECONDS + 1;
+    expect((await host("Alder")).runnerUpdate).toBeNull();
   });
 
   it("shows where a container's image's code lives as its runner read it, and nothing from a runner before that", async () => {

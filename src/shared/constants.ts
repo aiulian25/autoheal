@@ -641,7 +641,8 @@ export const RUNNER_MESSAGES = {
   refusedForGood: (what: string, error: string) => `control plane refused the ${what} for good, dropped it: ${error}`,
   notificationFailed: (error: string) => `notification failed: ${error}`,
   notification: (title: string, body: string) => `${title} | ${body.replaceAll("\n\n", " | ")}`,
-  dockerError: (status: number, body: string) => `Docker answered HTTP ${status}: ${body}`,
+  // On one line: Docker ends its answers with a newline, and an update helper's last line is read as how it went.
+  dockerError: (status: number, body: string) => `Docker answered HTTP ${status}: ${body.trim()}`,
   inventoryFailed: (error: string) => `could not list this host's containers: ${error}`,
   imagesFailed: (error: string) => `could not list this host's unused images: ${error}`,
   networksFailed: (error: string) => `could not list this host's networks: ${error}`,
@@ -5414,6 +5415,18 @@ export const SELF_UPDATE_FINAL: readonly SelfUpdateStatus[] = [
 // control plane, and is left alone.
 export const SELF_UPDATE_CLEARABLE_HELPER: readonly string[] = ["created", "exited"];
 
+// The short-lived containers Autoheal starts for its own work, by their labels: never one of the host's containers, nor
+// one to heal, even an update's helper, which stays once done.
+const HELPER_LABELS: readonly string[] = [HOST_HELPER.label, HOST_TERMINAL_HELPER.label, SELF_UPDATE.label];
+export const isAutohealHelper = (labels: Readonly<Record<string, string | undefined>> | null | undefined) =>
+  HELPER_LABELS.some((label) => labels?.[label] !== undefined);
+/** How a sidecar runner reports its last update from the dashboard: by its helper, which it leaves in place once done. */
+export const RUNNER_UPDATE_REPORT = {
+  state: { running: "running", succeeded: "succeeded", failed: "failed" },
+  // The helper's last line says how the update went, or why it could not.
+  logLines: 1,
+  messageCharacters: 1_000,
+} as const;
 /** A sidecar runner moving to its control plane's release, as its job's outcome says it. */
 export const RUNNER_UPDATE_TEXT = {
   handedOver: (reference: string) =>
@@ -5443,6 +5456,8 @@ export const SELF_UPDATE_TEXT = {
     "The update was going back, and its old container was gone: Autoheal now runs a container started outside the update.",
   blocked: (problem: string) =>
     `The update stopped where nothing can safely start: ${problem}. The old container and its database copy are kept. Update Autoheal again to go on.`,
+  earlierUnfinished: (image: string) =>
+    `an earlier update, to ${image}, stopped partway with its old container still kept aside, so nothing new was started. Once the container that should run is up and healthy under its own name, update again`,
   noSocket:
     "Autoheal's container has no Docker socket, so it cannot update itself: on the main host, docker compose pull && docker compose up -d.",
   noOwnContainer: "Autoheal cannot find its own container in Docker, so it cannot update itself.",

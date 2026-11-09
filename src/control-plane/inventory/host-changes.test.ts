@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
+import { SELF_UPDATE } from "../../shared/constants.js";
 import { changesBetween } from "./host-changes.js";
 
 const FIRST_BOOT = "11111111-1111-4111-8111-111111111111";
 const SECOND_BOOT = "22222222-2222-4222-8222-222222222222";
 
 describe("what changed between two reports", () => {
+  it("never counts Autoheal's own update helper, which older runners report and newer ones leave out", () => {
+    const helper = containerSnapshot({ name: SELF_UPDATE.helperName });
+    const host = containerSnapshot({ name: "tika" });
+    const reported = (containers: ReturnType<typeof containerSnapshot>[]) => ({ containers, health: null });
+
+    expect(changesBetween(reported([host, helper]), heartbeatWith({ containers: [host], host: null }))).toEqual([]);
+    expect(changesBetween(reported([host]), heartbeatWith({ containers: [host, helper], host: null }))).toEqual([]);
+  });
+
   it("names each container that appeared, went, was recreated with its image, stopped or started, and the host's own", () => {
     const previous = {
       containers: [

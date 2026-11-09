@@ -97,7 +97,8 @@ class ExecFrames {
 export interface DockerEvent {
   Type?: string;
   Action?: string;
-  Actor?: { Attributes?: { name?: string } };
+  // A container's name, and its labels beside it.
+  Actor?: { Attributes?: { name?: string; [label: string]: string | undefined } };
 }
 
 interface Response {

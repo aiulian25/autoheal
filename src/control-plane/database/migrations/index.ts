@@ -42,6 +42,7 @@ import { containersStaleMigration } from "./0068-containers-stale.js";
 import { reportTrimmedMigration } from "./0069-report-trimmed.js";
 import { joinCodesMigration } from "./0070-join-codes.js";
 import { clockOffsetMigration } from "./0071-clock-offset.js";
+import { runnerUpdateMigration } from "./0072-runner-update.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -150,6 +151,7 @@ export const MIGRATIONS: readonly Migration[] = [
   reportTrimmedMigration,
   joinCodesMigration,
   clockOffsetMigration,
+  runnerUpdateMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

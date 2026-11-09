@@ -21,7 +21,13 @@ import {
 } from "../../shared/constants.js";
 import { containerProblem } from "../../shared/container-problem.js";
 import { imageRepository } from "../../shared/image-reference.js";
-import type { ContainerSnapshot, RecoveryHold, RestartWait, TrimmableHeartbeatPart } from "../../shared/protocol.js";
+import type {
+  ContainerSnapshot,
+  RecoveryHold,
+  RestartWait,
+  RunnerUpdateReport,
+  TrimmableHeartbeatPart,
+} from "../../shared/protocol.js";
 import { controlOf, policyOf, type SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 
@@ -91,6 +97,9 @@ function handsOffOf(host: HostRow, isProtected: boolean, name: string): HandsOff
   return host.dryRun === true ? HANDS_OFF.dryRun : null;
 }
 
+const runnerUpdateOf = (host: HostRow) =>
+  host.runnerUpdateJson === null ? null : readOnce<RunnerUpdateReport>(host, "runnerUpdate", host.runnerUpdateJson);
+
 /** `saved`: the answers someone gave on the host's page, by container name. */
 export function toHostView(
   host: HostRow,
@@ -120,6 +129,8 @@ export function toHostView(
     // Only a reporting runner's is true now.
     clockSkewSeconds: hostStateOf(host, now) === HOST_STATE.online ? host.clockSkewSeconds : null,
     clockOffsetSeconds: hostStateOf(host, now) === HOST_STATE.online ? host.clockOffsetSeconds : null,
+    // Only a reporting runner's: one gone quiet may have gone with its update.
+    runnerUpdate: hostStateOf(host, now) === HOST_STATE.online ? runnerUpdateOf(host) : null,
     containersStaleSince: hostStateOf(host, now) === HOST_STATE.online ? host.containersStaleSince : null,
     reportTrimmed:
       hostStateOf(host, now) === HOST_STATE.online && host.reportTrimmedJson !== null

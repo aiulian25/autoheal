@@ -163,13 +163,18 @@ export class InventoryService {
         ? {}
         : { unusedImagesJson: JSON.stringify(withUnusedSince(host.unusedImagesJson, heartbeat.unusedImages, at)) };
     const networks = heartbeat.networks === undefined ? {} : { networksJson: JSON.stringify(heartbeat.networks) };
+    // A sidecar's report of its last update replaces the one before, null too; one without it leaves that as it was.
+    const runnerUpdate =
+      heartbeat.runnerUpdate === undefined
+        ? {}
+        : { runnerUpdateJson: heartbeat.runnerUpdate && JSON.stringify(heartbeat.runnerUpdate) };
     const volumes = heartbeat.volumes === undefined ? {} : { volumesJson: JSON.stringify(heartbeat.volumes) };
     // A host's first report has nothing to compare with.
     const changes = host.lastHeartbeatAt === null ? [] : changesBetween(previousReportOf(host), heartbeat);
     this.databaseHandle.database.transaction((transaction) => {
       transaction
         .update(hosts)
-        .set({ ...reported, ...health, ...images, ...networks, ...volumes })
+        .set({ ...reported, ...health, ...images, ...networks, ...volumes, ...runnerUpdate })
         .where(eq(hosts.id, host.id))
         .run();
       const rows = changes.map((change) => ({

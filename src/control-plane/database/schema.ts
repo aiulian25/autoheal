@@ -222,6 +222,8 @@ export const hosts = sqliteTable("hosts", {
   clockSkewSeconds: integer("clock_skew_seconds"),
   // How far its clock is from the control plane's, in seconds, as its last full report found it; null when unknown.
   clockOffsetSeconds: integer("clock_offset_seconds"),
+  // How a sidecar runner's last update from the dashboard went, as JSON; null when none is known.
+  runnerUpdateJson: text("runner_update_json"),
   // When its kept containers were reported, while its runner says Docker could not list them since; null otherwise.
   containersStaleSince: integer("containers_stale_since"),
   // What its latest report left out to fit, as a JSON list; null when it left out nothing.

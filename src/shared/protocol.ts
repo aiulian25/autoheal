@@ -26,6 +26,7 @@ import {
   FILE_PATH_CHARACTERS,
   MOUNT_KIND,
   RESTART_POLICIES,
+  RUNNER_UPDATE_REPORT,
   SETTINGS_LIMITS,
   VOLUME_NAME_PATTERN,
   type FileOperation,
@@ -423,6 +424,15 @@ export const TRIMMABLE_HEARTBEAT_PARTS = [
 ] as const;
 export type TrimmableHeartbeatPart = (typeof TRIMMABLE_HEARTBEAT_PARTS)[number];
 
+export const runnerUpdateSchema = z.object({
+  state: z.enum(RUNNER_UPDATE_REPORT.state),
+  // When its helper finished; null while it works, and where Docker did not say.
+  finishedAt: z.number().int().nonnegative().safe().nullable(),
+  // The helper's last line; null where its log could not be read.
+  message: z.string().max(RUNNER_UPDATE_REPORT.messageCharacters).nullable(),
+});
+export type RunnerUpdateReport = z.infer<typeof runnerUpdateSchema>;
+
 export const heartbeatSchema = z.object({
   // Absent until a runner has looked: says nothing either way.
   stackDrift: stackDriftReportSchema.optional(),
@@ -441,6 +451,9 @@ export const heartbeatSchema = z.object({
   // its own as the report arrives. In a full report only; absent when the clock could not be read, and from runners
   // from before it.
   hostClock: z.number().int().nonnegative().safe().optional(),
+  // How its last update from the dashboard went, by the helper that did it; null where none is there. A sidecar's,
+  // in a full report only; absent from any other runner, and from runners from before it.
+  runnerUpdate: runnerUpdateSchema.nullable().optional(),
   runnerVersion: z.string().max(RUNNER_VERSION_MAXIMUM_LENGTH),
   // What the runner calls its host; a host added without a name takes it.
   hostLabel: z.string().regex(HOST_LABEL_PATTERN).optional(),

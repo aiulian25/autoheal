@@ -413,6 +413,9 @@ export const STACKS_TEXT = {
       "data copied aside first and everything put back if it does not come back well. Or ignore it.",
     handTo: "Hand to Ollama",
     handOne: (name: string) => `Hand the new version of ${name} to Ollama`,
+    // Once handed: greyed, until its tag change has gone well and the row leaves, or Ollama gives it back.
+    withOllama: "Handed to Ollama",
+    withOllamaOf: (name: string) => `The new version of ${name} is with Ollama`,
     handTicked: (count: number) => `Hand ${count} to Ollama`,
     handed: (count: number) => `Handed ${count} to Ollama.`,
     tickOne: (name: string) => `Tick the new version of ${name}`,

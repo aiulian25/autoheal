@@ -1,9 +1,10 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { API_ROUTES, apiPath, type HostView } from "../../../src/shared/api.js";
-import { HOST_KIND, JOB_ACTION } from "../../../src/shared/constants.js";
+import { HOST_KIND, JOB_ACTION, RUNNER_UPDATE_REPORT } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
 import { ErrorNotice } from "../components/common.js";
 import { RUNNER_UPDATE_COMMAND, TEXT } from "../constants.js";
+import { timeAgo } from "../format.js";
 import { settingsQuery } from "../queries.js";
 import { isAdmin, useSession } from "../session.js";
 import { CommandBlock } from "./ssh-setup.js";
@@ -28,6 +29,18 @@ export function UpdateRunnerButton({ hostId, asked }: { hostId: string; asked: s
   );
 }
 
+/** Its last update from here, where its version does not say how that went: at work, or not gone through and why. */
+function LastRunnerUpdate({ update }: { update: NonNullable<HostView["runnerUpdate"]> }) {
+  if (update.state === RUNNER_UPDATE_REPORT.state.running) return <p>{TEXT.ssh.runnerUpdating}</p>;
+  if (update.state === RUNNER_UPDATE_REPORT.state.succeeded) return null;
+  return (
+    <p>
+      {TEXT.ssh.runnerUpdateFailed(update.message ?? TEXT.ssh.runnerUpdateUnsaid)}
+      {update.finishedAt !== null && <span className="muted"> {timeAgo(update.finishedAt)}</span>}
+    </p>
+  );
+}
+
 /**
  * A runner on another version than Autoheal, and the ways to bring it level: from here, which has it replace itself
  * with the newest image behind its tag, or by hand on that host, as any other container manager would.
@@ -36,6 +49,7 @@ export function RunnerBehind({ host, warning }: { host: HostView; warning?: stri
   const autoheal = useQuery(settingsQuery).data?.version;
   const admin = isAdmin(useSession().data);
   const runner = host.runnerVersion;
+  const lastUpdate = host.runnerUpdate ?? null;
   if (autoheal === undefined || runner === null || runner === autoheal) {
     return null;
   }
@@ -43,6 +57,7 @@ export function RunnerBehind({ host, warning }: { host: HostView; warning?: stri
     <div className="notice small stack" role="status">
       {warning !== undefined && <strong>{warning}</strong>}
       <p>{TEXT.ssh.runnerBehind(runner, autoheal)}</p>
+      {lastUpdate !== null && <LastRunnerUpdate update={lastUpdate} />}
       {admin && (
         <div className="card-actions">
           <UpdateRunnerButton hostId={host.id} asked={TEXT.ssh.updateRunnerAsked} />

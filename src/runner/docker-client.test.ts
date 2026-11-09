@@ -7,7 +7,7 @@ import { FakeDockerEngine, exitedContainer } from "../../test/fakes/fake-docker-
 import { FakeSshServer } from "../../test/fakes/fake-ssh-server.js";
 import { SshDockerConnection } from "../control-plane/ssh/ssh-docker-connection.js";
 import { SshSession } from "../control-plane/ssh/ssh-session.js";
-import { SSH_STATE } from "../shared/constants.js";
+import { RUNNER_MESSAGES, SSH_STATE } from "../shared/constants.js";
 import { DockerClient, type DockerEvent } from "./docker-client.js";
 import { LocalDockerConnection } from "./local-docker-connection.js";
 import { singleEntryArchive } from "./tar.js";
@@ -385,6 +385,14 @@ describe("DockerClient over a connection: the local socket, or an SSH host's ses
     }));
     await expect(new DockerClient(new SshDockerConnection(session)).version()).rejects.toThrow(
       /the SSH session is connecting, not connected/,
+    );
+  });
+});
+
+describe("Docker's refusals, as Autoheal tells them", () => {
+  it("keeps one on a single line, though Docker ends its answer with a newline", () => {
+    expect(RUNNER_MESSAGES.dockerError(404, '{"message":"No such container: autoheal-autoheal-previous"}\n')).toBe(
+      'Docker answered HTTP 404: {"message":"No such container: autoheal-autoheal-previous"}',
     );
   });
 });

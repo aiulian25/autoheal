@@ -7,6 +7,7 @@ import {
 import { NO_DATABASE, SelfUpdateDatabaseFiles } from "../control-plane/self-update/self-update-database.js";
 import { selfUpdate } from "../control-plane/self-update/self-update-helper.js";
 import { DockerClient } from "../runner/docker-client.js";
+import { describeError } from "../shared/errors.js";
 import {
   DEFAULT_DATA_DIRECTORY,
   DEFAULT_DOCKER_SOCKET_PATH,
@@ -34,6 +35,7 @@ export async function runSelfUpdate(
   commandArguments: string[],
   output: Pick<Console, "log" | "error"> = console,
   dataDirectory: string = DEFAULT_DATA_DIRECTORY,
+  docker: DockerClient = new DockerClient(DEFAULT_DOCKER_SOCKET_PATH),
 ): Promise<number> {
   const parsed = selfUpdateArguments.safeParse(commandArguments);
   if (!parsed.success) {
@@ -49,8 +51,9 @@ export async function runSelfUpdate(
     output.error(SELF_UPDATE_TEXT.recoveryBlocked(blocked));
     return EXIT_FAILURE;
   }
+  // Said in a line of its own, last: a runner reads its helper's last line as how its update went.
   const outcome = await selfUpdate(
-    new DockerClient(DEFAULT_DOCKER_SOCKET_PATH),
+    docker,
     { container, image, reference },
     (step) => {
       outcomes.write(step);
@@ -58,6 +61,9 @@ export async function runSelfUpdate(
     },
     runnerMode === undefined ? new SelfUpdateDatabaseFiles(dataDirectory) : NO_DATABASE,
     outcomeIn(record),
-  );
-  return outcome.status === SELF_UPDATE_STATUS.succeeded ? EXIT_SUCCESS : EXIT_FAILURE;
+  ).catch((error: unknown) => {
+    output.error(SELF_UPDATE_TEXT.helperFailed(describeError(error)));
+    return null;
+  });
+  return outcome?.status === SELF_UPDATE_STATUS.succeeded ? EXIT_SUCCESS : EXIT_FAILURE;
 }

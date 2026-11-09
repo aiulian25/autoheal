@@ -5,6 +5,7 @@ import {
   EVENT_KILL,
   EXIT_CODE_SUCCESS,
   TRIGGER_BY_EVENT,
+  isAutohealHelper,
   isParkedContainer,
   type Trigger,
 } from "../shared/constants.js";
@@ -71,6 +72,7 @@ export class Watcher {
 
   async handleEvent(event: DockerEvent) {
     if (this.stopping) return;
+    if (isAutohealHelper(event.Actor?.Attributes)) return;
     const action = event.Action ?? "";
     const name = event.Actor?.Attributes?.name ?? "";
     if (action === EVENT_KILL) {

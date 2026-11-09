@@ -194,6 +194,7 @@
   --good-ring: light-dark(#bfe3cd, #23402f);
   --next-ring: light-dark(#c3c6cf, #3a404a);
   --danger: light-dark(#c8372f, #f2706a);
+  --on-danger: light-dark(#ffffff, #240c0b);
   --danger-surface: light-dark(
     color-mix(in srgb, #c8372f 10%, transparent),
     color-mix(in srgb, #f2706a 14%, transparent)

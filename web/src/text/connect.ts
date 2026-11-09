@@ -109,6 +109,10 @@ export const CONNECT_TEXT = {
     updateRunnerAsked:
       "Asked. The runner pulls Autoheal's release and is replaced in a moment, keeping its settings; it is put back if the new one does not come back healthy. This goes once it reports the new release.",
     orOnHost: "Or run this on that host, in the runner's folder:",
+    // How its last update from here went, as the runner reports it, where its version does not already say.
+    runnerUpdating: "An update of this runner is under way.",
+    runnerUpdateFailed: (said: string) => `Its last update from here did not go through: ${said}`,
+    runnerUpdateUnsaid: "its helper's log could not be read.",
     states: {
       [SSH_STATE.connecting]: "connecting over SSH",
       [SSH_STATE.connected]: "connected over SSH",

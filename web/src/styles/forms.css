@@ -203,6 +203,13 @@ button.quiet.danger {
   color: var(--danger);
 }
 
+/* The main choice where it cannot be taken back: solid red, with words made to read on it. */
+button.primary.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--on-danger);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: var(--disabled-opacity);

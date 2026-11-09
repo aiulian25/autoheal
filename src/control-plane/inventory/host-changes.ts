@@ -2,6 +2,7 @@ import {
   CONTAINER_STATE_RUNNING,
   HOST_CHANGE,
   REPORT_LIMITS,
+  SELF_UPDATE,
   type HostChangeDetails,
   type HostChangeKind,
 } from "../../shared/constants.js";
@@ -14,6 +15,9 @@ export interface HostChange {
 }
 
 const running = (container: ContainerSnapshot) => container.state === CONTAINER_STATE_RUNNING;
+// Autoheal's own update helper, which older runners report and newer ones leave out: never one of the host's changes,
+// least of all a removal read off the first report of the runner it just made.
+const isHostContainer = (container: ContainerSnapshot) => container.name !== SELF_UPDATE.helperName;
 
 // What happened to one container between two reports: the most telling change only.
 function containerChange(before: ContainerSnapshot, after: ContainerSnapshot): HostChange | null {
@@ -61,25 +65,27 @@ export function changesBetween(
   previous: { containers: readonly ContainerSnapshot[]; health: HostHealth | null },
   next: Heartbeat,
 ): HostChange[] {
-  const before = new Map(previous.containers.map((container) => [container.name, container]));
-  const after = new Set(next.containers.map((container) => container.name));
-  const appeared = next.containers
+  const earlier = previous.containers.filter(isHostContainer);
+  const later = next.containers.filter(isHostContainer);
+  const before = new Map(earlier.map((container) => [container.name, container]));
+  const after = new Set(later.map((container) => container.name));
+  const appeared = later
     .filter((container) => !before.has(container.name))
     .map((container) => ({
       kind: HOST_CHANGE.appeared,
       containerName: container.name,
       details: { image: container.image },
     }));
-  const removed = previous.containers
+  const removed = earlier
     .filter((container) => !after.has(container.name))
     .map((container) => ({
       kind: HOST_CHANGE.removed,
       containerName: container.name,
       details: { image: container.image },
     }));
-  const changed = next.containers.flatMap((container) => {
-    const earlier = before.get(container.name);
-    const change = earlier === undefined ? null : containerChange(earlier, container);
+  const changed = later.flatMap((container) => {
+    const reported = before.get(container.name);
+    const change = reported === undefined ? null : containerChange(reported, container);
     return change === null ? [] : [change];
   });
   return [...hostChanges(previous.health, next.host), ...appeared, ...removed, ...changed].slice(

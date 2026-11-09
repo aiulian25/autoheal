@@ -11,6 +11,7 @@ import {
   MILLISECONDS_PER_MINUTE,
   OLD_CONTAINER_SUFFIX,
   RECOVERY_HOLD,
+  SELF_UPDATE,
   TRIGGER_DIE,
   VERDICT_ESCALATED,
 } from "../shared/constants.js";
@@ -154,6 +155,13 @@ describe("catching up once the event stream connects", () => {
     const { watcher, handled } = setup({}, ["attic"]);
     expect(watcher.catchUp([crashed("attic", 5), crashed("paperless", 5)], NOW, null)).toBe(2);
     expect(await handled()).toEqual([["paperless", "die"]]);
+  });
+
+  it("never takes on one of Autoheal's own helpers, as an update's that stays, failed, to say how it went", async () => {
+    const { watcher, handled } = setup();
+    const labels = { name: SELF_UPDATE.helperName, [SELF_UPDATE.label]: "1", exitCode: "1" };
+    await watcher.handleEvent({ Type: "container", Action: TRIGGER_DIE, Actor: { Attributes: labels } });
+    expect(await handled()).toEqual([]);
   });
 
   it("handles a crash once when its die event comes as well", async () => {

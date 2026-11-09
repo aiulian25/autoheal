@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { handOverToRelease } from "./runner-self-update.js";
+import { handOverToRelease, lastUpdateOf } from "./runner-self-update.js";
 import type { VolumeReport } from "../shared/volumes.js";
 import { RUNNING_VERSION } from "../shared/build-version.js";
 import { containerResources } from "./operation-coordinator.js";
@@ -259,6 +259,10 @@ async function tellPeople(runtime: RunnerRuntime, notice: IncidentNotice) {
   await postToGotify(config.gotify, message.title, message.body, message.priority);
 }
 
+// Only a runner container of its own can be replaced from here: not the control plane looking after its own machine
+// (in place, with its own alive file), nor a host reached over SSH (no local host, and no container of its own).
+const isSidecar = (runtime: RunnerRuntime) => runtime.aliveFile === ALIVE_FILE_PATH;
+
 /**
  * This sidecar runner handing itself over to the release its control plane runs: the job's outcome says whether it
  * was handed over, or why nothing changed. Its own container is the one its settings name, as for every other
@@ -463,15 +467,12 @@ export async function createRuntime(
   runtime.containerBackups = containerBackups;
   guard.externalRecoveryBlocked = (name, id) =>
     applicationBackups.isBlocked(name, id) || containerBackups.isBlocked(name);
-  // Only a runner container of its own can be replaced from here: not the control plane looking after its own machine
-  // (in place, with its own alive file), nor a host reached over SSH (no local host, and no container of its own).
-  const isSidecar = ports.localHost?.aliveFile === ALIVE_FILE_PATH;
   const jobs = new ContainerJobs({
     installs,
     backups: containerBackups,
     stacks,
     checkpoints,
-    ...(isSidecar
+    ...(isSidecar(runtime)
       ? {
           updateRunner: () =>
             updateThisRunner(
@@ -808,13 +809,14 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
   runtime.heartbeatRunning = true;
   try {
     const full = !containersOnly;
-    const [host, containers, unusedImages, networks, volumes, clockOffset] = await Promise.all([
+    const [host, containers, unusedImages, networks, volumes, clockOffset, runnerUpdate] = await Promise.all([
       full ? currentHostHealth(runtime) : null,
       currentContainers(runtime),
       full ? currentUnusedImages(runtime) : undefined,
       full ? currentNetworks(runtime) : undefined,
       full ? currentVolumes(runtime) : undefined,
       full ? runtime.ports.hostFiles.clockOffset() : null,
+      full && isSidecar(runtime) ? lastUpdateOf(runtime.docker).catch(() => undefined) : undefined,
     ]);
     const driftReport = full ? runtime.stacks.currentDrift() : null;
     const clockOffSeconds = runtime.maintenance?.clockOffSeconds ?? null;
@@ -850,6 +852,7 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
       ...(driftReport === null ? {} : { stackDrift: driftReport }),
       ...(clockOffSeconds === null ? {} : { clockSkewSeconds: clockOffSeconds }),
       ...(clockOffset === null ? {} : { hostClock: Date.now() + clockOffset }),
+      ...(runnerUpdate === undefined ? {} : { runnerUpdate }),
       ...(runtime.containersStale ? { containersStale: true } : {}),
     };
     const answer = await runtime.controlPlane.heartbeat(fitted(payload));

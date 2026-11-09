@@ -79,6 +79,7 @@ import type {
   PublishedPort,
   RecoveryHold,
   RestartWait,
+  RunnerUpdateReport,
   TrimmableHeartbeatPart,
   UnusedImage,
   UpdateProgress,
@@ -785,6 +786,9 @@ export interface HostView {
   // How far its clock is from the control plane's, in seconds (ahead is positive), as its last full report found it,
   // whether or not that pauses anything; null or absent while it does not report, and when its runner could not tell.
   clockOffsetSeconds?: number | null;
+  // How its sidecar runner's last update from the dashboard went, while that runner reports; null or absent when
+  // none is known.
+  runnerUpdate?: RunnerUpdateReport | null;
   // When the containers shown for it were reported, while its runner says Docker could not list them since; null or
   // absent while they are current.
   containersStaleSince?: number | null;

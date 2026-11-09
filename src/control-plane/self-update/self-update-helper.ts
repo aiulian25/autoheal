@@ -43,6 +43,30 @@ const isHealthy = (details: ContainerDetails | null) =>
   (details.State.Health === undefined || details.State.Health.Status === HEALTH_HEALTHY);
 
 /**
+ * The earlier update this one has to take up first, or null where there is none. One to another image is over when its
+ * original is gone, back under its name, or parked stopped beside a healthy container of that name: the parked copy
+ * goes, as that update's watch would have removed it. Anything else of it is still in hand, and nothing new starts.
+ */
+async function stillInHand(
+  docker: HelperDocker,
+  earlier: JournalledOutcome | null,
+  image: string,
+): Promise<JournalledOutcome | null> {
+  const recovery = unfinishedRecovery(earlier);
+  if (earlier === null || recovery === null || earlier.to === image) return earlier;
+  const original = await docker.inspect(recovery.original);
+  if (original === null) return null;
+  const originalName = containerNameOf(original);
+  if (originalName === recovery.name) return null;
+  const parked = originalName === `${recovery.name}${SELF_UPDATE.previousSuffix}` && original.State.Running !== true;
+  if (!parked || !isHealthy(await docker.inspect(recovery.name))) {
+    throw new Error(SELF_UPDATE_TEXT.earlierUnfinished(earlier.to));
+  }
+  await docker.remove(originalName, false);
+  return null;
+}
+
+/**
  * Autoheal's own container on a new image, as its update helper does it, outside the container it replaces: the old
  * one stopped, its database copied and checked with no writer left, the old one kept aside under another name, the
  * new one made with everything the old one was given, then watched. One that holds sees the old one and the copy
@@ -59,10 +83,8 @@ export async function selfUpdate(
   timing: SelfUpdateTiming = SELF_UPDATE_TIMING,
   now: () => number = Date.now,
 ): Promise<SelfUpdateOutcome> {
-  const resumed = unfinishedRecovery(earlier);
-  if (resumed !== null && earlier?.to !== request.image) {
-    throw new Error(`an update to ${earlier?.to} is unfinished`);
-  }
+  const carried = await stillInHand(docker, earlier, request.image);
+  const resumed = unfinishedRecovery(carried);
   const original = resumed?.original ?? request.container;
   const old = await docker.inspect(original);
   if (old === null && resumed === null) {
@@ -70,12 +92,13 @@ export async function selfUpdate(
   }
   const name = resumed?.name ?? containerNameOf(old!);
   const previous = `${name}${SELF_UPDATE.previousSuffix}`;
-  const startedAt = earlier !== null && resumed !== null ? earlier.startedAt : now();
-  const from = (resumed !== null ? earlier?.from : old?.Image) ?? "";
+  const startedAt = carried !== null && resumed !== null ? carried.startedAt : now();
+  const from = (resumed !== null ? carried?.from : old?.Image) ?? "";
   let phase: SelfUpdatePhase = resumed?.phase ?? SELF_UPDATE_PHASE.preparing;
   let snapshot: DatabaseSnapshot | null = resumed?.snapshot ?? null;
-  // Sticky: an earlier helper of this same update may already have promised to put the database back.
-  let dataRestored = earlier?.dataRestored ?? false;
+  // Sticky: an earlier helper of this same update may already have promised to put the database back. A new update
+  // starts without it, or the version it brings would settle work as if its own database had gone back.
+  let dataRestored = resumed !== null && carried?.dataRestored === true;
   const step = (status: SelfUpdateOutcome["status"], message: string, final: boolean) => {
     const outcome = {
       status,

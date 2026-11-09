@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   API_ROUTES,
@@ -8,13 +8,16 @@ import {
   type ContainerView,
   type HostView,
   type IgnoredVersionChange,
+  type JobView,
 } from "../../../src/shared/api.js";
-import { IGNORE_EVERY_VERSION } from "../../../src/shared/constants.js";
+import { IGNORE_EVERY_VERSION, JOB_ACTION, JOB_STATUS } from "../../../src/shared/constants.js";
 import { imageTag } from "../../../src/shared/image-reference.js";
 import { handedCount, isDatabaseMajor, tagHandable, tagItem, useHandOver } from "../agent-dispatch.js";
 import { api } from "../api-client.js";
 import { NEWER_VERSIONS_SHOWN, TEXT } from "../constants.js";
+import { hostJobsQuery } from "../queries.js";
 import { ErrorNotice } from "./common.js";
+import { isWaiting } from "./container-actions.js";
 import { Icon } from "./icons.js";
 import { ReleaseNotesLink } from "./release-notes-link.js";
 
@@ -104,6 +107,24 @@ function whyNotHandable(container: ContainerView): string | null {
   return container.composeProject === null ? text.notFromCompose : null;
 }
 
+// Each newer version handed from here, with its container's tag changes as they were then: only one asked since ends it.
+type Handed = ReadonlyMap<string, ReadonlySet<string>>;
+
+const tagChangesOf = (jobs: readonly JobView[], container: ContainerView) =>
+  jobs.filter((job) => job.action === JOB_ACTION.changeTag && job.containerName === container.name);
+
+/**
+ * Whether a newer version is with Ollama now: its tag change on its way, or handed from here and not given back since.
+ * One whose change went well leaves the list with the next report; one Ollama gave back is offered again.
+ */
+function withOllama(container: ContainerView, jobs: readonly JobView[], handed: Handed): boolean {
+  const changes = tagChangesOf(jobs, container);
+  if (changes.some(isWaiting)) return true;
+  const before = handed.get(tagItem(container));
+  if (before === undefined) return false;
+  return !changes.some((job) => !before.has(job.id) && job.status !== JOB_STATUS.succeeded);
+}
+
 // One container ignores a version that is out now, or every new one.
 const ignoresNow = (container: ContainerView) =>
   container.update.ignored === IGNORE_EVERY_VERSION || ignoresNewerVersion(container);
@@ -123,6 +144,8 @@ export function NewerVersions({
 }) {
   const [open, setOpen] = useState(false);
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+  const [handed, setHanded] = useState<Handed>(new Map());
+  const jobs = useQuery(hostJobsQuery(host.id)).data ?? [];
   const handOver = useHandOver();
   const ignore = useIgnoreVersions(host.id);
   const newer = containers.filter(hasNewerVersion);
@@ -131,7 +154,8 @@ export function NewerVersions({
   const busy = handOver.isPending || ignore.isPending;
   const shown = open ? newer : newer.slice(0, NEWER_VERSIONS_SHOWN);
   const hidden = newer.length - NEWER_VERSIONS_SHOWN;
-  const handable = (container: ContainerView) => admin && tagHandable(host, container);
+  const isWithOllama = (container: ContainerView) => withOllama(container, jobs, handed);
+  const handable = (container: ContainerView) => admin && tagHandable(host, container) && !isWithOllama(container);
   const tickedRows = newer.filter((container) => ticked.has(container.name));
   const tickedHandable = tickedRows.filter(handable);
   const clear = () => setTicked(new Set());
@@ -139,7 +163,19 @@ export function NewerVersions({
     setTicked((current) =>
       current.has(name) ? new Set([...current].filter((each) => each !== name)) : new Set([...current, name]),
     );
-  const hand = (rows: readonly ContainerView[]) => handOver.mutate(rows.map(tagItem), { onSuccess: clear });
+  const noteHanded = (rows: readonly ContainerView[]) =>
+    setHanded((current) => {
+      const next = new Map(current);
+      rows.forEach((row) => next.set(tagItem(row), new Set(tagChangesOf(jobs, row).map((job) => job.id))));
+      return next;
+    });
+  const hand = (rows: readonly ContainerView[]) =>
+    handOver.mutate(rows.map(tagItem), {
+      onSuccess: () => {
+        clear();
+        noteHanded(rows);
+      },
+    });
   const ignoreRows = (rows: readonly ContainerView[], version: (container: ContainerView) => string | null) =>
     ignore.mutate(
       rows.map((container) => ({ container: container.name, version: version(container) })),
@@ -180,6 +216,7 @@ export function NewerVersions({
         <ul className="update-rows">
           {shown.map((container) => {
             const why = whyNotHandable(container);
+            const handedOver = isWithOllama(container);
             return (
               <li key={container.name} className="update-row newer-row">
                 {admin ? (
@@ -204,11 +241,11 @@ export function NewerVersions({
                 {admin && (
                   <button
                     type="button"
-                    aria-label={text.handOne(container.name)}
+                    aria-label={handedOver ? text.withOllamaOf(container.name) : text.handOne(container.name)}
                     disabled={!handable(container) || busy}
                     onClick={() => hand([container])}
                   >
-                    {text.handTo}
+                    {handedOver ? text.withOllama : text.handTo}
                   </button>
                 )}
                 {admin && (

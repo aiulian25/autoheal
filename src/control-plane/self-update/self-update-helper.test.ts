@@ -25,6 +25,8 @@ const NAME = "autoheal-control-plane";
 const PREVIOUS = `${NAME}-autoheal-previous`;
 const OLD_IMAGE = `sha256:${"1".repeat(64)}`;
 const NEW_IMAGE = `sha256:${"2".repeat(64)}`;
+// What an earlier update, never finished, was moving to.
+const EARLIER_IMAGE = `sha256:${"3".repeat(64)}`;
 const TIMING: SelfUpdateTiming = { healthyWithinMilliseconds: 400, watchMilliseconds: 300, pollMilliseconds: 20 };
 
 describe("Autoheal's update helper", () => {
@@ -477,6 +479,25 @@ describe("Autoheal's update helper", () => {
     });
   });
 
+  it("starts a new update with nothing of an earlier one's database going back", async () => {
+    const earlier: JournalledOutcome = {
+      status: SELF_UPDATE_STATUS.rolledBack,
+      from: OLD_IMAGE,
+      to: EARLIER_IMAGE,
+      reference: "autoheal:local",
+      startedAt: 1,
+      finishedAt: 2,
+      message: `${SELF_UPDATE_TEXT.notHealthy} ${SELF_UPDATE_TEXT.dataRestored}`,
+      recovery: null,
+      dataRestored: true,
+    };
+
+    await update(new WatchedDocker(engine.socketPath), earlier);
+
+    // Else the version it brings would settle work as if its own database had gone back.
+    expect(steps.map(({ dataRestored }) => dataRestored)).not.toContain(true);
+  });
+
   it("removes the old container and the copy only once the new one has held, and never by force", async () => {
     await update();
     expect(existsSync(snapshotFile())).toBe(false);
@@ -618,11 +639,80 @@ describe("Autoheal's update helper", () => {
       expect(outcome.status).toBe(SELF_UPDATE_STATUS.blocked);
     });
 
-    it("refuses to take up an update to another image", async () => {
-      const earlier = await stopPartway();
-      await expect(
-        update(new WatchedDocker(engine.socketPath), { ...earlier, to: OLD_IMAGE, recovery: { ...earlier.recovery } }),
-      ).rejects.toThrow("is unfinished");
+    describe("one to another image, as a runner's next update finds it", () => {
+      it("goes ahead once its old container is gone, as a docker compose up by hand leaves it", async () => {
+        // A helper that found nothing to go back to; the container was brought up by hand since.
+        const stuck: JournalledOutcome = {
+          status: SELF_UPDATE_STATUS.blocked,
+          from: OLD_IMAGE,
+          to: EARLIER_IMAGE,
+          reference: "autoheal:local",
+          startedAt: 1,
+          finishedAt: null,
+          message: SELF_UPDATE_TEXT.blocked("no such container"),
+          recovery: {
+            version: SELF_UPDATE.recoveryVersion,
+            phase: SELF_UPDATE_PHASE.rollingBack,
+            original: containerIdOf("gone"),
+            name: NAME,
+            snapshot: null,
+          },
+          dataRestored: false,
+        };
+
+        const outcome = await update(new WatchedDocker(engine.socketPath), stuck);
+
+        expect(outcome).toMatchObject({ status: SELF_UPDATE_STATUS.succeeded, from: OLD_IMAGE, to: NEW_IMAGE });
+        expect(steps[0]!.startedAt).not.toBe(1);
+        expect(engine.containers.get(NAME)).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
+      });
+
+      it("goes ahead once its old container is back under its name", async () => {
+        const earlier = await stopPartway();
+        const parked = engine.containers.get(PREVIOUS)!;
+        engine.containers.delete(PREVIOUS);
+        engine.add({ ...parked, Name: `/${NAME}`, State: { ...parked.State, Status: "running", Running: true } });
+
+        const outcome = await update(new WatchedDocker(engine.socketPath), {
+          ...earlier,
+          status: SELF_UPDATE_STATUS.blocked,
+          to: EARLIER_IMAGE,
+          recovery: { ...earlier.recovery, phase: SELF_UPDATE_PHASE.rollingBack },
+        });
+
+        expect(outcome).toMatchObject({ status: SELF_UPDATE_STATUS.succeeded, from: OLD_IMAGE, to: NEW_IMAGE });
+      });
+
+      it("removes the old container it kept aside, never by force, once a healthy one holds the name", async () => {
+        const earlier = await stopPartway();
+        // That update's new container, which has run since: the one this update replaces.
+        engine.add(runningContainer(NAME, { Id: containerIdOf("earlier-new"), Image: EARLIER_IMAGE }));
+
+        const outcome = await update(new WatchedDocker(engine.socketPath), {
+          ...earlier,
+          to: EARLIER_IMAGE,
+          recovery: { ...earlier.recovery },
+        });
+
+        expect(outcome).toMatchObject({ status: SELF_UPDATE_STATUS.succeeded, from: EARLIER_IMAGE, to: NEW_IMAGE });
+        expect([...engine.containers.values()].map(({ Image }) => Image)).toEqual([NEW_IMAGE]);
+        expect(engine.removals.filter((removal) => removal.includes("force"))).toEqual([]);
+      });
+
+      it("starts nothing while its old container is kept aside with nothing healthy in its place", async () => {
+        const earlier = await stopPartway();
+
+        await expect(
+          update(new WatchedDocker(engine.socketPath), {
+            ...earlier,
+            to: EARLIER_IMAGE,
+            recovery: { ...earlier.recovery },
+          }),
+        ).rejects.toThrow(SELF_UPDATE_TEXT.earlierUnfinished(EARLIER_IMAGE));
+        expect(engine.containers.get(PREVIOUS)).toMatchObject({ Image: OLD_IMAGE });
+        expect(engine.creations).toEqual([]);
+        expect(steps).toEqual([]);
+      });
     });
   });
 
@@ -653,6 +743,34 @@ describe("Autoheal's update helper", () => {
       expect(engine.creations.length).toBe(creationsBefore);
       expect(engine.containers.has(PREVIOUS)).toBe(false);
       expect(readFileSync(join(data, SELF_UPDATE.outcomeFile), "utf8")).toBe(body);
+    });
+
+    it("says in its last line why it started nothing over an earlier update still in hand, and fails", async () => {
+      const old = engine.containers.get(NAME)!;
+      engine.containers.delete(NAME);
+      engine.add({ ...old, Name: `/${PREVIOUS}`, State: { ...old.State, Status: "exited", Running: false } });
+      new SelfUpdateOutcomeFile(data).write({
+        status: SELF_UPDATE_STATUS.blocked,
+        from: OLD_IMAGE,
+        to: EARLIER_IMAGE,
+        reference: "autoheal:local",
+        startedAt: 1,
+        finishedAt: null,
+        message: SELF_UPDATE_TEXT.interrupted,
+        recovery: {
+          version: SELF_UPDATE.recoveryVersion,
+          phase: SELF_UPDATE_PHASE.replacing,
+          original: containerIdOf(NAME),
+          name: NAME,
+          snapshot: null,
+        },
+      });
+
+      const code = await runSelfUpdate(ARGUMENTS, output, data, new DockerClient(engine.socketPath));
+
+      expect(code).toBe(EXIT_FAILURE);
+      expect(said.at(-1)).toBe(SELF_UPDATE_TEXT.helperFailed(SELF_UPDATE_TEXT.earlierUnfinished(EARLIER_IMAGE)));
+      expect(engine.creations).toEqual([]);
     });
 
     it("refuses the arguments it cannot use, as before", async () => {

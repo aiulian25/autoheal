@@ -10,7 +10,14 @@ import { FakeDockerEngine, exitedContainer } from "../../test/fakes/fake-docker-
 import { containerSnapshot, heartbeatWith } from "../../test/support/inventory.js";
 import { loadRunnerConfig } from "../config/runner-config.js";
 import { ownCertificate } from "../control-plane/tls/certificate.js";
-import { HOST_TERMINAL_HELPER, HTTP_HEADERS, JOB_ACTION, SELF_UPDATE } from "../shared/constants.js";
+import {
+  HOST_TERMINAL_HELPER,
+  HTTP_HEADERS,
+  JOB_ACTION,
+  RUNNER_UPDATE_REPORT,
+  SELF_UPDATE,
+  SELF_UPDATE_TEXT,
+} from "../shared/constants.js";
 import {
   RUNNER_ROUTES,
   type ContainerJob,
@@ -602,6 +609,15 @@ describe("a report made because containers changed", () => {
   });
 
   it("carries the containers alone, the rest left to the full report as the dashboard keeps it", async () => {
+    // How its last update went, as the helper left it: in the full report only.
+    const FINISHED = "2026-11-09T16:35:50.123456789Z";
+    engine.add(
+      exitedContainer(SELF_UPDATE.helperName, {
+        State: { Status: "exited", Running: false, ExitCode: 1, FinishedAt: FINISHED },
+        Config: { Image: "ghcr.io/example/autoheal:1.2.0", Labels: { [SELF_UPDATE.label]: "1" } },
+      }),
+      `${SELF_UPDATE_TEXT.started}\n${SELF_UPDATE_TEXT.notHealthy}\n`,
+    );
     const material = ownCertificate(join(root, "tls"), ["127.0.0.1"], Date.now()).material;
     const heartbeats: Heartbeat[] = [];
     server = createServer({ key: material.key, cert: material.certificate }, (request, response) => {
@@ -631,9 +647,15 @@ describe("a report made because containers changed", () => {
     const [full, change] = heartbeats as [Heartbeat, Heartbeat];
     expect(full.volumes).toBeDefined();
     expect(full.unusedImages).toBeDefined();
+    expect(full.runnerUpdate).toEqual({
+      state: RUNNER_UPDATE_REPORT.state.failed,
+      finishedAt: Date.parse(FINISHED),
+      message: SELF_UPDATE_TEXT.notHealthy,
+    });
+    expect(full.containers.map((container) => container.name)).not.toContain(SELF_UPDATE.helperName);
     expect(change.containers.map((container) => container.name)).toEqual(["paperless"]);
     expect(change).toMatchObject({ host: null });
-    for (const part of ["volumes", "unusedImages", "networks", "topology", "stackDrift"] as const) {
+    for (const part of ["volumes", "unusedImages", "networks", "topology", "stackDrift", "runnerUpdate"] as const) {
       expect(change[part]).toBeUndefined();
     }
   });

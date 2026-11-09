@@ -64,6 +64,8 @@ const apps = [
   }),
   container("shared-db", { image: "docker.io/library/mariadb:11", project: "data", folder: "/home/me/docker/data" }),
   container("autoheal-helper-1", { env: ["PUID=7", "PGID=7"], labels: { "com.autoheal.helper": "true" } }),
+  // A runner's update helper, which stays once done.
+  container("autoheal-self-update", { env: ["PUID=7", "PGID=7"], labels: { "autoheal.self-update": "1" } }),
 ];
 
 describe("how a host is set up", () => {

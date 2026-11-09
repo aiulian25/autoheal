@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { SELF_UPDATE } from "../shared/constants.js";
+import { RUNNER_UPDATE_REPORT, SELF_UPDATE, SELF_UPDATE_TEXT } from "../shared/constants.js";
 import type { ContainerDetails } from "./incident-report.js";
-import { handOverToRelease, type RunnerUpdateDocker, updateTarget } from "./runner-self-update.js";
+import { handOverToRelease, lastUpdateOf, type RunnerUpdateDocker, updateTarget } from "./runner-self-update.js";
 
 const OLD = `sha256:${"1".repeat(64)}`;
 const NEW = `sha256:${"2".repeat(64)}`;
@@ -80,6 +80,8 @@ describe("a sidecar runner moving to its control plane's release", () => {
     expect(world.state.created[0]!.specification).toMatchObject({ Healthcheck: { Test: ["NONE"] } });
     expect(helper.Cmd).toEqual(["self-update", "runner-id", NEW, RELEASE, SELF_UPDATE.runnerMode]);
     expect(helper.HostConfig).toMatchObject({
+      // Kept once done, so the runner that runs then can tell how it went.
+      AutoRemove: false,
       Binds: ["/var/run/docker.sock:/var/run/docker.sock", `${SELF_UPDATE.runnerVolume}:/data`],
       GroupAdd: ["998"],
       ReadonlyRootfs: true,
@@ -180,6 +182,56 @@ describe("a sidecar runner moving to its control plane's release", () => {
 
     expect((await handOverToRelease(world.docker, own, RELEASE)).handedOver).toBe(false);
     expect(world.state.calls).toEqual([]);
+  });
+});
+
+describe("how a sidecar runner tells its last update from the dashboard went", () => {
+  const FINISHED = "2026-11-09T16:35:50.123456789Z";
+  const helper = (state: ContainerDetails["State"]) => ({ Name: `/${SELF_UPDATE.helperName}`, State: state }) as never;
+  const docker = (found: ContainerDetails | null, said: string | Error = "") => ({
+    inspect: async (name: string) => (name === SELF_UPDATE.helperName ? found : null),
+    logs: async () => {
+      if (said instanceof Error) throw said;
+      return said;
+    },
+  });
+
+  it("says nothing where no helper is here", async () => {
+    expect(await lastUpdateOf(docker(null))).toBeNull();
+    expect(await lastUpdateOf(docker(helper({ Status: "created", Running: false })))).toBeNull();
+  });
+
+  it("says one is under way while its helper works", async () => {
+    expect(await lastUpdateOf(docker(helper({ Status: "running", Running: true })))).toEqual({
+      state: RUNNER_UPDATE_REPORT.state.running,
+      finishedAt: null,
+      message: null,
+    });
+  });
+
+  it("tells how it went by the helper's exit, with what it said last and when it finished", async () => {
+    const said = `${SELF_UPDATE_TEXT.started}\n${SELF_UPDATE_TEXT.notHealthy}\n`;
+    const failed = helper({ Status: "exited", Running: false, ExitCode: 1, FinishedAt: FINISHED });
+    expect(await lastUpdateOf(docker(failed, said))).toEqual({
+      state: RUNNER_UPDATE_REPORT.state.failed,
+      finishedAt: Date.parse(FINISHED),
+      message: SELF_UPDATE_TEXT.notHealthy,
+    });
+    const held = helper({ Status: "exited", Running: false, ExitCode: 0, FinishedAt: FINISHED });
+    expect((await lastUpdateOf(docker(held, SELF_UPDATE_TEXT.succeeded)))?.state).toBe(
+      RUNNER_UPDATE_REPORT.state.succeeded,
+    );
+  });
+
+  it("still tells how it went where its log or its finish cannot be read, and keeps what it says short", async () => {
+    const zeroTime = helper({ Status: "exited", Running: false, ExitCode: 1, FinishedAt: "0001-01-01T00:00:00Z" });
+    expect(await lastUpdateOf(docker(zeroTime, new Error("no log driver")))).toEqual({
+      state: RUNNER_UPDATE_REPORT.state.failed,
+      finishedAt: null,
+      message: null,
+    });
+    const long = "x".repeat(RUNNER_UPDATE_REPORT.messageCharacters + 50);
+    expect((await lastUpdateOf(docker(zeroTime, long)))?.message).toHaveLength(RUNNER_UPDATE_REPORT.messageCharacters);
   });
 });
 

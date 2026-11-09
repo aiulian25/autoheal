@@ -1,5 +1,10 @@
 import { join } from "node:path";
-import { COMPOSE_PROJECT_LABEL, CONTAINER_ACCESS_REFUSALS, HOST_HELPER, HOST_PROFILE } from "../shared/constants.js";
+import {
+  COMPOSE_PROJECT_LABEL,
+  CONTAINER_ACCESS_REFUSALS,
+  HOST_PROFILE,
+  isAutohealHelper,
+} from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
 import type { HostProfile, HostProfileAnswer } from "../shared/protocol.js";
 import type { ContainerSummary, DockerClient } from "./docker-client.js";
@@ -106,7 +111,7 @@ function databasesOf(containers: readonly ContainerDetails[]): HostProfile["data
 
 /** What a host's containers show of how it is set up. Space on its disks is added to `places` by whoever can look. */
 export function profileOf(all: readonly ContainerDetails[]): HostProfile {
-  const containers = all.filter((container) => container.Config.Labels?.[HOST_HELPER.label] === undefined);
+  const containers = all.filter((container) => !isAutohealHelper(container.Config.Labels));
   const present = <Value>(values: readonly (Value | null | undefined)[]) =>
     values.filter((value): value is Value => value !== null && value !== undefined);
   const binds = containers.flatMap((container) =>

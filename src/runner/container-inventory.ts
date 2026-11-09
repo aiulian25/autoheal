@@ -16,9 +16,7 @@ import {
   HEALTH_IN_STATUS_PATTERN,
   HIGHEST_PORT,
   HOMEPAGE_LINK_LABEL,
-  HOST_HELPER,
   HOST_NETWORK_MODE,
-  HOST_TERMINAL_HELPER,
   MILLISECONDS_PER_SECOND,
   NANOCPUS_PER_CPU,
   PAGE_CACHE_KEYS,
@@ -27,10 +25,10 @@ import {
   RECLAIMABLE_MEMORY_KEYS,
   REPORT_LIMITS,
   RESTART_POLICY_CHARACTERS,
-  SELF_UPDATE,
   SHORT_CONTAINER_ID_LENGTH,
   UPDATE_LABEL,
   UPDATE_POLICIES,
+  isAutohealHelper,
   type ContainerHealthName,
   type ContainerStateName,
   type UpdatePolicy,
@@ -64,11 +62,6 @@ export const listedHealth = (summary: ContainerSummary) => HEALTH_IN_STATUS_PATT
 
 /** A container as its listing tells it apart: which one it is, its state and its health. */
 export const listingKey = (summary: ContainerSummary) => `${summary.Id}|${summary.State}|${listedHealth(summary)}`;
-
-// The short-lived containers Autoheal starts for its own work: never one of the host's containers.
-const HELPER_LABELS: readonly string[] = [HOST_HELPER.label, HOST_TERMINAL_HELPER.label, SELF_UPDATE.label];
-const isAutohealHelper = (summary: ContainerSummary) =>
-  HELPER_LABELS.some((label) => summary.Labels?.[label] !== undefined);
 
 /**
  * The container Compose is replacing, whose name it prefixes with its own short id for the moment it takes to make
@@ -246,7 +239,7 @@ export class ContainerInventory {
   async snapshot(): Promise<ContainerSnapshot[]> {
     const recoveries = (await this.journal?.pending()) ?? [];
     const summaries = (await this.docker.containerSummaries())
-      .filter((summary) => !isAutohealHelper(summary))
+      .filter((summary) => !isAutohealHelper(summary.Labels))
       .slice(0, REPORT_LIMITS.containers);
     const present = new Set(summaries.map(nameOf));
     for (const name of this.details.keys()) {
