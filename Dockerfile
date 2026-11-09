@@ -1,7 +1,7 @@
 # One image, two modes: "control-plane" (dashboard + API) and "runner" (one per host).
 # Both base images are pinned by digest: bump them by hand.
 ARG BUILDER_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
-ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs24-debian13:nonroot@sha256:55de7e48a8414e7aff825207c0b3c0f7db3b10133efc50d748560c27c9053be1
+ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs24-debian13:nonroot@sha256:088a01637f22908632ba09018be2e0b516f2fa6f7869c191d29491139db43c78
 
 # Metadata-capable checkpoint tool, isolated from the Node build dependencies.
 FROM ${BUILDER_IMAGE} AS checkpoint-tool
