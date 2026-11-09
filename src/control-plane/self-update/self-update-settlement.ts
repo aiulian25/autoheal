@@ -5,14 +5,32 @@ import {
   SYSTEM_ACTOR_LABEL,
   TARGET_AUTOHEAL,
 } from "../../shared/constants.js";
+import { and, eq, gte } from "drizzle-orm";
 import type { AuditLog } from "../audit/audit-log.js";
 import { settleDispatchedWork } from "../backups/settle-dispatched-work.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { outcomeIn, type SelfUpdateOutcomeFile } from "./self-update-outcome.js";
+import { auditEvents } from "../database/schema.js";
+import { outcomeIn, type SelfUpdateOutcomeFile, type StoredOutcome } from "./self-update-outcome.js";
 
 /** What the settlement closed, or null where this database was not put back by an update. */
 export interface SelfUpdateSettlement {
   cancelledIncidents: number;
+}
+
+// Whether this update was settled already: its record may have lost the mark to a helper from before it was kept, but
+// the audit log holds the settling, written after the file went back.
+function settledBefore(databaseHandle: DatabaseHandle, stored: StoredOutcome): boolean {
+  return databaseHandle.database
+    .select({ detailsJson: auditEvents.detailsJson })
+    .from(auditEvents)
+    .where(
+      and(
+        eq(auditEvents.action, AUDIT_ACTIONS.selfUpdateRollbackSettled),
+        gte(auditEvents.occurredAt, stored.startedAt),
+      ),
+    )
+    .all()
+    .some(({ detailsJson }) => (JSON.parse(detailsJson) as { to?: unknown }).to === stored.to);
 }
 
 /**
@@ -34,6 +52,10 @@ export function settleSelfUpdateRollback(
     return null;
   }
   const { audited, settled, recovery, dataRestored, ...outcome } = stored;
+  if (settledBefore(databaseHandle, stored)) {
+    outcomes.write({ ...outcome, recovery, dataRestored }, { audited, settled: true });
+    return null;
+  }
   const cancelledIncidents = databaseHandle.database.transaction(() =>
     settleDispatchedWork(databaseHandle, now, JOB_CANCELLED_BY_SELF_UPDATE_ROLLBACK),
   );

@@ -131,6 +131,11 @@ export async function selfUpdate(
       // What holds its name may be the new one, or the old one if an earlier helper got that far.
       const holder = await docker.inspect(name);
       const isOriginal = holder?.Id === old?.Id;
+      // Going back needs the old container. With it gone, what runs is left running and its database as it is: taking
+      // them down would leave nothing that could start.
+      if (!isOriginal && (await docker.inspect(previous)) === null) {
+        return finish(SELF_UPDATE_STATUS.failed, SELF_UPDATE_TEXT.nothingToGoBackTo);
+      }
       if (holder !== null && (!isOriginal || holder.State.Running === true)) await stopped(name);
       if (holder !== null && !isOriginal) await docker.remove(name, false);
       if (snapshot === null) throw new Error("no copy of the database was kept");
@@ -165,7 +170,11 @@ export async function selfUpdate(
     if (old === null) {
       if (!isHealthy(await docker.inspect(name))) return blocked(new Error(`${original} is gone`));
       if (snapshot !== null) database.discard(snapshot);
-      return finish(SELF_UPDATE_STATUS.succeeded, SELF_UPDATE_TEXT.succeeded);
+      // One that was going back, or had put the database back, did not hold: what runs now was started elsewhere.
+      const wentBack = resumed.phase === SELF_UPDATE_PHASE.rollingBack || dataRestored;
+      if (!wentBack) return finish(SELF_UPDATE_STATUS.succeeded, SELF_UPDATE_TEXT.succeeded);
+      const restoredNote = dataRestored ? ` ${SELF_UPDATE_TEXT.dataRestored}` : "";
+      return finish(SELF_UPDATE_STATUS.failed, `${SELF_UPDATE_TEXT.startedOutside}${restoredNote}`);
     }
     if (resumed.phase === SELF_UPDATE_PHASE.rollingBack) {
       return rollBack(SELF_UPDATE_STATUS.rolledBack, SELF_UPDATE_TEXT.interrupted);

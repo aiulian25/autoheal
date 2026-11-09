@@ -885,7 +885,7 @@ export const WORK_ITEM_STATUSES = Object.values(WORK_ITEM_STATUS);
 export type WorkItemStatus = (typeof WORK_ITEM_STATUS)[keyof typeof WORK_ITEM_STATUS];
 
 // Moves with package.json's version, which a test holds it to: the dashboard must not name an older release.
-export const APP_VERSION = "1.3.6";
+export const APP_VERSION = "1.4.1";
 export const BUILD_ID_FILE = "build-id";
 export const BUILD_ID_LENGTH = 12;
 export const RUNNER_TOKEN_BYTES = 32;
@@ -5436,6 +5436,11 @@ export const SELF_UPDATE_TEXT = {
   dataRestored:
     "Its database went back to how it was before the update, as the old version could not use it: changes since then are gone.",
   interrupted: "The update stopped partway, and nothing is watching it. Update Autoheal again to finish it or go back.",
+  // The old container went while the update watched the new one, as a docker compose up removes it: going back needs it.
+  nothingToGoBackTo:
+    "The update did not hold, and its old container was gone, so there was nothing to go back to. Autoheal was left as it is, with its database; the copy from before the update is kept in its data volume.",
+  startedOutside:
+    "The update was going back, and its old container was gone: Autoheal now runs a container started outside the update.",
   blocked: (problem: string) =>
     `The update stopped where nothing can safely start: ${problem}. The old container and its database copy are kept. Update Autoheal again to go on.`,
   noSocket:

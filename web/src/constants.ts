@@ -305,6 +305,8 @@ export const BOARD_SAFETY_REFRESH_MILLISECONDS = 60_000;
 export const CONTAINER_TIMELINE_SHOWN = 10;
 // Coalesce nearby runner inventory reports into one refresh per relevant query.
 export const LIVE_INVENTORY_BATCH_MILLISECONDS = 250;
+// How long before the live stream connects again once the browser has given up on it, as it does on a proxy's error page.
+export const LIVE_RECONNECT_MILLISECONDS = 5_000;
 // Usage meters turn amber, then red, past these percentages.
 export const METER_WARNING_PERCENT = 75;
 export const METER_DANGER_PERCENT = 90;

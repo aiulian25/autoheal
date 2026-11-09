@@ -44,7 +44,7 @@ const storedSchema = outcomeSchema.extend({
   audited: z.boolean().default(false),
   settled: z.boolean().default(false),
 });
-type StoredOutcome = z.infer<typeof storedSchema>;
+export type StoredOutcome = z.infer<typeof storedSchema>;
 /** What a control plane has done about a record it read, kept beside the update the helper wrote. */
 export type SelfUpdateHandled = { audited?: boolean; settled?: boolean };
 
@@ -93,12 +93,19 @@ export class SelfUpdateOutcomeFile {
     return { state: SELF_UPDATE_RECORD.valid, outcome: parsed.data };
   }
 
-  // Whole or not at all: written beside it, then moved over it.
+  // Whole or not at all: written beside it, then moved over it. The settled mark stays with the update it was made for,
+  // whoever writes next, as a helper does at each step: only a new update starts without it.
   write(outcome: JournalledOutcome, handled: SelfUpdateHandled = {}) {
     const next = `${this.path}.next`;
-    const stored = { ...outcome, audited: handled.audited ?? false, settled: handled.settled ?? false };
+    const settled = handled.settled ?? this.settledFor(outcome);
+    const stored = { ...outcome, audited: handled.audited ?? false, settled };
     writeFileSync(next, JSON.stringify(stored));
     renameSync(next, this.path);
+  }
+
+  private settledFor(outcome: JournalledOutcome): boolean {
+    const stored = outcomeIn(this.read());
+    return stored !== null && stored.settled && stored.startedAt === outcome.startedAt && stored.to === outcome.to;
   }
 }
 

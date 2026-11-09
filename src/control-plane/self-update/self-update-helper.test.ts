@@ -19,7 +19,7 @@ import {
 import { runSelfUpdate } from "../../commands/self-update.js";
 import { SelfUpdateDatabaseFiles, type SelfUpdateDatabase } from "./self-update-database.js";
 import { selfUpdate, type SelfUpdateTiming } from "./self-update-helper.js";
-import type { JournalledOutcome } from "./self-update-outcome.js";
+import { SelfUpdateOutcomeFile, outcomeIn, type JournalledOutcome } from "./self-update-outcome.js";
 
 const NAME = "autoheal-control-plane";
 const PREVIOUS = `${NAME}-autoheal-previous`;
@@ -416,6 +416,30 @@ describe("Autoheal's update helper", () => {
     });
   });
 
+  describe("when its old container is gone by the time the new one fails, as a docker compose up removes it", () => {
+    it("leaves what runs as it is, with its database, rather than taking it down with nothing to go back to", async () => {
+      const docker = new WatchedDocker(engine.socketPath);
+      docker.migrates = true;
+      engine.failingImages.add(NEW_IMAGE);
+      // Taken away from outside the update, as Compose takes a spare copy of its service, just before it goes back.
+      const removedFromOutside = (step: JournalledOutcome) => {
+        steps.push(step);
+        if (step.recovery?.phase === SELF_UPDATE_PHASE.rollingBack) engine.containers.delete(PREVIOUS);
+      };
+
+      const outcome = await selfUpdate(docker, REQUEST, removedFromOutside, watchedDatabase(), null, TIMING);
+
+      expect(outcome).toMatchObject({ status: SELF_UPDATE_STATUS.failed, message: SELF_UPDATE_TEXT.nothingToGoBackTo });
+      // The new one was neither stopped nor removed, and its database was not put back.
+      expect(events).toEqual([`stop ${OLD_IMAGE}`, "snapshot", `start ${NEW_IMAGE} on ${OLD_SCHEMA}`]);
+      expect(engine.removals).not.toContain(NAME);
+      expect(schema()).toBe(NEW_SCHEMA);
+      // The copy from before the update is kept, and the record is finished: there is nothing to take up.
+      expect(existsSync(snapshotFile())).toBe(true);
+      expect(lastStep()).toMatchObject({ status: SELF_UPDATE_STATUS.failed, recovery: null, dataRestored: false });
+    });
+  });
+
   describe("before anything is replaced", () => {
     it("does not touch the database or the name while the old one still runs", async () => {
       const docker = new WatchedDocker(engine.socketPath);
@@ -523,6 +547,65 @@ describe("Autoheal's update helper", () => {
       });
       expect(outcome.status).toBe(SELF_UPDATE_STATUS.succeeded);
       expect(existsSync(snapshotFile())).toBe(false);
+    });
+
+    it("says it went back and a container started elsewhere runs, never that the new one held", async () => {
+      const earlier = await stopPartway();
+      engine.containers.delete(PREVIOUS);
+      engine.add(runningContainer(NAME, { Image: NEW_IMAGE }));
+      // A helper that put the database back, then found no old container to bring back.
+      const wentBack = {
+        ...earlier,
+        status: SELF_UPDATE_STATUS.blocked,
+        dataRestored: true,
+        recovery: { ...earlier.recovery, phase: SELF_UPDATE_PHASE.rollingBack, original: containerIdOf("gone") },
+      };
+
+      const outcome = await update(new WatchedDocker(engine.socketPath), wentBack);
+
+      expect(outcome).toMatchObject({
+        status: SELF_UPDATE_STATUS.failed,
+        message: `${SELF_UPDATE_TEXT.startedOutside} ${SELF_UPDATE_TEXT.dataRestored}`,
+      });
+      expect(lastStep()).toMatchObject({ recovery: null, dataRestored: true });
+      expect(engine.containers.get(NAME)).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
+    });
+
+    it("keeps the mark that its database going back was settled, as each step is written over the last", async () => {
+      const outcomes = new SelfUpdateOutcomeFile(data);
+      outcomes.write(
+        {
+          status: SELF_UPDATE_STATUS.blocked,
+          from: OLD_IMAGE,
+          to: NEW_IMAGE,
+          reference: "autoheal:local",
+          startedAt: 1,
+          finishedAt: null,
+          message: SELF_UPDATE_TEXT.interrupted,
+          recovery: {
+            version: SELF_UPDATE.recoveryVersion,
+            phase: SELF_UPDATE_PHASE.rollingBack,
+            original: containerIdOf("gone"),
+            name: NAME,
+            snapshot: null,
+          },
+          dataRestored: true,
+        },
+        { settled: true },
+      );
+
+      // As the helper's command writes them, on Docker as these tests fake it.
+      await selfUpdate(
+        new WatchedDocker(engine.socketPath),
+        REQUEST,
+        (step) => outcomes.write(step),
+        watchedDatabase(),
+        outcomeIn(outcomes.read()),
+        TIMING,
+      );
+
+      // Its next start must not close the work handed out since, as a second settling would.
+      expect(outcomeIn(outcomes.read())).toMatchObject({ status: SELF_UPDATE_STATUS.failed, settled: true });
     });
 
     it("says so when neither is there, rather than claiming anything", async () => {

@@ -5,14 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES, type JobView } from "../../src/shared/api.js";
 import type { UpdateProgress } from "../../src/shared/protocol.js";
 import { containersQuery, hostContainersQuery, hostsQuery, localHostQuery } from "./queries.js";
-import { LIVE_INVENTORY_BATCH_MILLISECONDS } from "./constants.js";
+import { LIVE_INVENTORY_BATCH_MILLISECONDS, LIVE_RECONNECT_MILLISECONDS } from "./constants.js";
 import { useLiveUpdates } from "./live.js";
 
 // The browser's EventSource, as much as the hook uses: the test sends what the control plane would.
 class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
   static opened: FakeEventSource[] = [];
   readonly listeners = new Map<string, ((message: MessageEvent<string>) => void)[]>();
   closed = false;
+  readyState = FakeEventSource.OPEN;
 
   constructor(readonly url: string) {
     FakeEventSource.opened.push(this);
@@ -30,6 +34,18 @@ class FakeEventSource {
     for (const listener of this.listeners.get(kind) ?? []) {
       listener({ data: JSON.stringify(data) } as MessageEvent<string>);
     }
+  }
+
+  // A dropped connection, which the browser tries again by itself.
+  drop() {
+    this.readyState = FakeEventSource.CONNECTING;
+    this.send("error", {});
+  }
+
+  // An answer that is not the stream, such as a proxy's error page: the browser gives up on it for good.
+  fail() {
+    this.readyState = FakeEventSource.CLOSED;
+    this.send("error", {});
   }
 }
 
@@ -213,6 +229,32 @@ describe("the dashboard's live stream", () => {
     expect(stale(["incidents", "open"])).toBe(true);
     expect(stale(["containers", "hostId=a"])).toBe(false);
     hook.unmount();
+  });
+
+  it("opens a new stream once the browser gives up on one, as behind a proxy while the control plane restarts", () => {
+    vi.useFakeTimers();
+    queryClient.setQueryData(["settings"], { version: "1.3.6" });
+    const hook = listen();
+    // A drop the browser tries again by itself leaves it to the browser.
+    act(() => FakeEventSource.opened[0]!.drop());
+    act(() => vi.advanceTimersByTime(LIVE_RECONNECT_MILLISECONDS));
+    expect(FakeEventSource.opened).toHaveLength(1);
+
+    act(() => FakeEventSource.opened[0]!.fail());
+    act(() => vi.advanceTimersByTime(LIVE_RECONNECT_MILLISECONDS - 1));
+    expect(FakeEventSource.opened).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(FakeEventSource.opened).toHaveLength(2);
+    // Its opening reads everything again, the version the restarted control plane runs among it.
+    act(() => FakeEventSource.opened[1]!.send("open", {}));
+    expect(stale(["settings"])).toBe(true);
+
+    // Closed with the page, it opens no other.
+    act(() => FakeEventSource.opened[1]!.fail());
+    hook.unmount();
+    act(() => vi.advanceTimersByTime(LIVE_RECONNECT_MILLISECONDS));
+    expect(FakeEventSource.opened).toHaveLength(2);
+    expect(FakeEventSource.opened[1]!.closed).toBe(true);
   });
 
   it("invalidates all cached page data whenever the connection opens again", () => {

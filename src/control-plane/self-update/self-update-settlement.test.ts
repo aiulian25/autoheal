@@ -169,6 +169,29 @@ describe("an update of Autoheal that went back, and the work its replacement had
     expect(jobNow(after.id).status).toBe(JOB_STATUS.pending);
   });
 
+  it("settles an update once, even when a helper from before the mark was kept wrote its record over", async () => {
+    await report();
+    wentBack();
+    expect(settle()).not.toBeNull();
+    const after = await askRestart("paperless");
+    // The same update written again without the mark, as a helper did at each step.
+    wentBack();
+
+    expect(settle()).toBeNull();
+    expect(jobNow(after.id).status).toBe(JOB_STATUS.pending);
+    expect(outcomeIn(outcomes.read())).toMatchObject({ dataRestored: true, settled: true });
+  });
+
+  it("keeps the mark through later writes of the same update, and starts a new update without it", () => {
+    wentBack(true);
+    const { audited: _audited, settled: _settled, ...same } = outcomeIn(outcomes.read())!;
+    outcomes.write({ ...same, status: SELF_UPDATE_STATUS.failed, message: SELF_UPDATE_TEXT.startedOutside });
+    expect(outcomeIn(outcomes.read())).toMatchObject({ status: SELF_UPDATE_STATUS.failed, settled: true });
+
+    outcomes.write({ ...same, startedAt: 3, dataRestored: false });
+    expect(outcomeIn(outcomes.read())!.settled).toBe(false);
+  });
+
   it("takes a real rollback end to end: the answered job is waiting again, and the fence closes it", async () => {
     await report();
     const job = await askRestart("paperless");
