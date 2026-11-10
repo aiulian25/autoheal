@@ -19,7 +19,7 @@ const profile: HostProfile = {
   proxies: [{ kind: "Nginx Proxy Manager", container: "npm", network: "npm" }],
   databases: { common: "postgres:16", ownToAnApp: 2, standingAlone: 0 },
 };
-const host = { id: "h1", label: "DeltaAv1", health: { address: "192.168.10.178" } } as HostView;
+const host = { id: "h1", label: "OrionBx3", health: { address: "192.168.10.178" } } as HostView;
 const DRAFT = apiPath(API_ROUTES.hostInstallDraft, { hostId: "h1" });
 const CHECK = apiPath(API_ROUTES.hostInstallCheck, { hostId: "h1" });
 const INSTALL = apiPath(API_ROUTES.hostInstall, { hostId: "h1" });

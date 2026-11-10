@@ -69,7 +69,7 @@ const HostTerminal = lazy(() =>
   import("../components/shell-terminal.js").then((module) => ({ default: module.HostTerminal })),
 );
 
-// "delta3640 · 192.168.10.178 · Ubuntu 24.04.5 LTS · up 1 day · reported 12 seconds ago"
+// "orion2480 · 192.168.10.178 · Ubuntu 24.04.5 LTS · up 1 day · reported 12 seconds ago"
 function aboutHost(host: HostView): string {
   const health = host.health;
   return [

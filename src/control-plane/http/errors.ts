@@ -142,6 +142,7 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.contextTooLarge]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.integrationTokenRequired]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.integrationNotSet]: HTTP_STATUS.notFound,
+  [API_ERRORS.assistantNotTested]: HTTP_STATUS.conflict,
   [API_ERRORS.hostPackagesNotAllowed]: HTTP_STATUS.conflict,
   [API_ERRORS.hostPackagesUnsupported]: HTTP_STATUS.conflict,
   [API_ERRORS.hostPackagesBusy]: HTTP_STATUS.conflict,

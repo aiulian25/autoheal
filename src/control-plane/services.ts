@@ -351,7 +351,8 @@ export function createControlPlaneServices(
   const trustedProxies = tracked(new TrustedProxiesService(settingsStore, auditLog, trustedProxyAddresses));
   const homeAssistant = tracked(
     new HomeAssistantConnection(
-      (settings) => new HomeAssistantInventory(new HomeAssistantClient(settings), homeAssistantTiming, clock),
+      (settings, onState) =>
+        new HomeAssistantInventory(new HomeAssistantClient(settings), homeAssistantTiming, clock, onState),
     ),
   );
   homeAssistant.use(integrationsService.homeAssistant());
@@ -701,6 +702,20 @@ export function createControlPlaneServices(
       clock,
     ),
   );
+  const dispatchService = tracked(
+    new DispatchService({
+      tasks: tasksService,
+      incidents: incidentsService,
+      inventory: inventoryService,
+      hostPackages,
+      auditLog,
+      databaseHandle,
+      wake: () => {
+        void autohealWorker.run().catch(logged);
+        void repairWorker.run().catch(logged);
+      },
+    }),
+  );
   const services: ControlPlaneServices = {
     metricRollups,
     rollouts,
@@ -885,20 +900,7 @@ export function createControlPlaneServices(
         models: ollamaPool,
       }),
     ),
-    dispatchService: tracked(
-      new DispatchService({
-        tasks: tasksService,
-        incidents: incidentsService,
-        inventory: inventoryService,
-        hostPackages,
-        auditLog,
-        databaseHandle,
-        wake: () => {
-          void autohealWorker.run().catch(logged);
-          void repairWorker.run().catch(logged);
-        },
-      }),
-    ),
+    dispatchService,
     widgetKeysService,
     jarvis: tracked(
       new JarvisService(
@@ -909,12 +911,18 @@ export function createControlPlaneServices(
         secretBox,
         auditLog,
         inventoryService,
+        dispatchService,
+        homeAssistant,
+        tasksService,
+        hostControl,
         publicBaseUrl,
         clock,
       ),
     ),
   };
   hostsService.onRename((hostId, before, after) => services.jarvis.rememberOldName(hostId, before, after));
+  homeAssistant.onState((state) => services.jarvis.read(state.entity_id, state.state));
+  jobsService.onFinished((job, succeeded) => services.jarvis.jobFinished(job, succeeded));
   lifecycle.onPause(() => {
     metricRollups.flush();
     topology.reset();

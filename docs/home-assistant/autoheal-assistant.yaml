@@ -1,0 +1,268 @@
+blueprint:
+  name: Autoheal asks before updating
+  description: >-
+    Says or shows what Autoheal sends, and asks its questions on a voice satellite or a phone: an update, or a newer
+    version, goes ahead only when someone says yes. Each answer goes into a Text helper that Autoheal reads, so Home
+    Assistant never has to reach Autoheal. What it sends and what it reads back:
+    https://github.com/aiulian25/autoheal/blob/main/docs/home-assistant/README.md
+  domain: automation
+  source_url: https://github.com/aiulian25/autoheal/blob/main/docs/home-assistant/autoheal-assistant.yaml
+  input:
+    webhook_id:
+      name: Webhook ID
+      description: From step 2 on Autoheal's assistant card, by its Copy button. Keep it secret.
+      selector:
+        text:
+          type: password
+    answer_box:
+      name: Answer box
+      description: A Text helper of its own, for Autoheal to read. Any name.
+      selector:
+        entity:
+          filter:
+            - domain: input_text
+    satellite:
+      name: Voice satellite
+      description: Where messages are said and questions asked aloud. Leave empty for none.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: assist_satellite
+    phone:
+      name: Phone
+      description: Gets what is not said aloud, and questions with two buttons. Leave empty for none.
+      default: ""
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+    quiet_from:
+      name: Quiet from
+      description: Nothing is said aloud between these times. A phone still gets it.
+      default: "22:00:00"
+      selector:
+        time: {}
+    quiet_until:
+      name: Quiet until
+      default: "08:00:00"
+      selector:
+        time: {}
+    only_when_home:
+      name: Aloud only when someone is home
+      description: Nothing is said aloud while nobody is in the home zone. A phone still gets it.
+      default: false
+      selector:
+        boolean: {}
+    yes_words:
+      name: Words for yes
+      default: ["yes", "yes please", "go ahead", "do it"]
+      selector:
+        text:
+          multiple: true
+    no_words:
+      name: Words for no
+      default: ["no", "not now", "no thanks", "leave it"]
+      selector:
+        text:
+          multiple: true
+    yes_button:
+      name: Phone button for yes
+      default: Update
+      selector:
+        text: {}
+    no_button:
+      name: Phone button for no
+      default: Not now
+      selector:
+        text: {}
+    thanks:
+      name: Said after an answer
+      description: Said on the satellite while Autoheal acts on the answer. Leave empty to say nothing.
+      default: One moment.
+      selector:
+        text: {}
+
+mode: parallel
+max: 10
+
+triggers:
+  - trigger: webhook
+    webhook_id: !input webhook_id
+    allowed_methods: [POST]
+    local_only: true
+    id: message
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: button
+
+variables:
+  satellite: !input satellite
+  phone: !input phone
+  thanks: !input thanks
+  only_when_home: !input only_when_home
+
+actions:
+  # A phone's button, pressed whenever: the answer, with the code of the question it came with.
+  - if:
+      - condition: trigger
+        id: button
+    then:
+      - condition: template
+        value_template: >-
+          {{ trigger.event.data.action is string
+          and trigger.event.data.action is match('AUTOHEAL_(YES|NO)_[A-Za-z0-9_-]{22}$') }}
+      - action: input_text.set_value
+        target:
+          entity_id: !input answer_box
+        data:
+          value: >-
+            autoheal {{ trigger.event.data.action.split('_')[1] | lower }} {{ trigger.event.data.action.split('_', 2)[2] }}
+            {{ now().timestamp() | int }} phone
+      - stop: Answered on the phone
+
+  # Anything else is a message from Autoheal: what to say, what to write, and for a question its code.
+  - condition: template
+    value_template: >-
+      {{ trigger.json is mapping and trigger.json.id is string
+      and trigger.json.say is string and trigger.json.text is string }}
+  - variables:
+      asking: "{{ trigger.json.tier == 'ask' and trigger.json.code is string }}"
+      replying: "{{ trigger.json.tier == 'reply' }}"
+      # Only a satellite that can start a conversation can ask; the others say it, and the phone takes the answer.
+      can_ask: "{{ satellite != '' and (state_attr(satellite, 'supported_features') | int(0)) | bitwise_and(2) > 0 }}"
+      notify: "{{ 'notify.mobile_app_' ~ (device_attr(phone, 'name') | slugify) if phone != '' else '' }}"
+
+  # Nowhere to say it: Home Assistant's own notifications show it.
+  - if:
+      - condition: template
+        value_template: "{{ satellite == '' and phone == '' }}"
+    then:
+      - &show_here
+        action: persistent_notification.create
+        data:
+          title: Autoheal
+          message: "{{ trigger.json.text }}"
+          notification_id: "autoheal-{{ trigger.json.id }}"
+      - &heard
+        action: input_text.set_value
+        target:
+          entity_id: !input answer_box
+        data:
+          value: "autoheal heard {{ trigger.json.id }} {{ now().timestamp() | int }}"
+      - stop: Shown in Home Assistant
+
+  # Aloud, when it is the time and the place, and the satellite is free.
+  - if:
+      - condition: template
+        value_template: "{{ satellite != '' and is_state(satellite, 'idle') }}"
+      - condition: template
+        value_template: "{{ not only_when_home or states('zone.home') | int(0) > 0 }}"
+      - condition: not
+        conditions:
+          - condition: time
+            after: !input quiet_from
+            before: !input quiet_until
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ asking and can_ask }}"
+        then:
+          - action: assist_satellite.ask_question
+            data:
+              entity_id: "{{ satellite }}"
+              question: "{{ trigger.json.say }}"
+              answers:
+                - id: "yes"
+                  sentences: !input yes_words
+                - id: "no"
+                  sentences: !input no_words
+            response_variable: answer
+            # Nobody answering raises an error: the run goes on, and the phone gets the buttons.
+            continue_on_error: true
+          - if:
+              - condition: template
+                value_template: "{{ answer is defined and answer.id in ['yes', 'no'] }}"
+            then:
+              - action: input_text.set_value
+                target:
+                  entity_id: !input answer_box
+                data:
+                  # The room as Autoheal reads it: letters, digits, spaces and . ' - only, 30 at most.
+                  value: >-
+                    {%- set room = ((area_name(satellite) or '') | regex_replace("[^\w .'-]|_", ""))[:30] | trim -%}
+                    autoheal {{ answer.id }} {{ trigger.json.code }} {{ now().timestamp() | int }}
+                    voice{{ ' ' ~ room if room else '' }}
+              - if:
+                  - condition: template
+                    value_template: "{{ thanks != '' }}"
+                then:
+                  - action: assist_satellite.announce
+                    target:
+                      entity_id: "{{ satellite }}"
+                    data:
+                      message: "{{ thanks }}"
+                      preannounce: false
+                    continue_on_error: true
+              - stop: Answered aloud
+        else:
+          - action: assist_satellite.announce
+            target:
+              entity_id: "{{ satellite }}"
+            data:
+              message: "{{ trigger.json.say }}"
+            continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ asking and phone != '' }}"
+        then:
+          - &ask_on_phone
+            action: "{{ notify }}"
+            data:
+              title: Autoheal
+              message: "{{ trigger.json.text }}"
+              data:
+                tag: "autoheal-{{ trigger.json.id }}"
+                actions:
+                  - action: "AUTOHEAL_YES_{{ trigger.json.code }}"
+                    title: !input yes_button
+                  - action: "AUTOHEAL_NO_{{ trigger.json.code }}"
+                    title: !input no_button
+            continue_on_error: true
+      - *heard
+      - stop: Said aloud
+
+  # Not aloud now: a phone gets it.
+  - if:
+      - condition: template
+        value_template: "{{ phone != '' }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ asking }}"
+        then:
+          - *ask_on_phone
+        else:
+          - action: "{{ notify }}"
+            data:
+              title: Autoheal
+              message: "{{ trigger.json.text }}"
+              data:
+                tag: "autoheal-{{ trigger.json.id }}"
+            continue_on_error: true
+      - *heard
+      - stop: Shown on the phone
+
+  # Not aloud now, and no phone. A reply answers someone now: shown here at once. Anything else waits an hour.
+  - if:
+      - condition: template
+        value_template: "{{ replying }}"
+    then:
+      - *show_here
+      - *heard
+      - stop: Reply shown in Home Assistant
+  - action: input_text.set_value
+    target:
+      entity_id: !input answer_box
+    data:
+      value: "autoheal later {{ trigger.json.id }} {{ now().timestamp() | int }}"

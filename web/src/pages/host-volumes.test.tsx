@@ -54,7 +54,7 @@ const VOLUMES = [
   }),
   volume({ name: "autoheal-guard-370", nameless: false, own: true }),
 ];
-const host = { id: "h1", label: "DeltaAv1", dryRun: false, containerAccess: true } as HostView;
+const host = { id: "h1", label: "OrionBx3", dryRun: false, containerAccess: true } as HostView;
 const job = (overrides: Partial<JobView>) =>
   ({ id: "j1", status: "pending", outcome: null, output: null, ...overrides }) as JobView;
 

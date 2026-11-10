@@ -85,7 +85,13 @@ export const COMMON_TEXT = {
       notAnswering: "Home Assistant not answering",
       off: "Home Assistant off",
     },
-    jarvis: { connected: "Jarvis connected", notHeard: "Jarvis not heard from", paused: "Jarvis paused" },
+    jarvis: {
+      // What the person calls it, or this.
+      assistant: "Assistant",
+      connected: (name: string) => `${name} connected`,
+      notHeard: (name: string) => `${name} not heard from`,
+      paused: (name: string) => `${name} paused`,
+    },
     router: { connected: "Router connected", notAnswering: "Router not answering" },
   },
   // The pages each section of the menu holds, as tabs.

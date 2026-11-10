@@ -1,53 +1,150 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lt, type InferSelectModel } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, max, ne, type InferSelectModel } from "drizzle-orm";
 import { z } from "zod";
-import { API_ERRORS } from "../../shared/api.js";
+import { API_ERRORS, type ApiErrorCode, type ContainerView } from "../../shared/api.js";
 import {
+  AGENT_AUTOHEAL,
+  APP_VERSION,
   AUDIT_ACTIONS,
   HOST_STATE,
   HOST_STATUS_ACTIVE,
   JARVIS_KEY_SCOPE,
+  JOB_ACTION,
+  MILLISECONDS_PER_MINUTE,
+  ROLE_ADMIN,
   SETTING_KEYS,
   TARGET_INTEGRATION,
+  TASK_ACTIVITY,
   TASK_RESOURCE,
+  USER_STATUS_ACTIVE,
 } from "../../shared/constants.js";
 import {
+  JARVIS_ADDRESS,
+  JARVIS_ANSWER,
+  JARVIS_ANSWER_HOW,
+  JARVIS_KIND,
   JARVIS_LIMITS,
+  JARVIS_NAME,
   JARVIS_STATUS,
+  JARVIS_TEST_OUTCOME,
+  JARVIS_TIER,
+  assistantSetupLinks,
+  jarvisOutcome,
+  jarvisQuestion,
+  jarvisReplies,
   jarvisSay,
+  jarvisTestQuestionWords,
+  jarvisTestWords,
+  jarvisVersionQuestion,
   jarvisSetup,
   jarvisText,
   matchSpoken,
   spokenList,
   spokenKey,
+  spokenTo,
   type JarvisSummary,
   safeName,
   type JarvisConnected,
   type JarvisMessage,
+  type JarvisOpenQuestionView,
+  type JarvisReplies,
+  type JarvisStatus,
+  type JarvisTestQuestionView,
   type JarvisView,
 } from "../../shared/jarvis.js";
+import { describeError } from "../../shared/errors.js";
+import { imageTag } from "../../shared/image-reference.js";
 import { log } from "../../shared/log.js";
+import type { DispatchService } from "../agent/dispatch-service.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { hosts, jarvisItems, tasks } from "../database/schema.js";
+import { hosts, jarvisItems, tasks, users, widgetKeys } from "../database/schema.js";
 import type { SecretBox } from "../database/secret-box.js";
 import { DomainError } from "../domain-error.js";
+import type { HomeAssistantConnection } from "../home-assistant/home-assistant-inventory.js";
+import type { HostControlService } from "../host-control/host-control-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
+import type { JobRow } from "../jobs/job-views.js";
 import type { IntegrationsService } from "../settings/integrations-service.js";
 import type { SettingsStore } from "../settings/settings-store.js";
+import { tagOfNewerVersionKey } from "../tasks/detectors.js";
+import type { TaskAuthor, TasksService } from "../tasks/tasks-service.js";
 import type { WidgetKeysService } from "../widget/widget-keys-service.js";
-import { isBuildContainer, planJarvis, type JarvisCandidate } from "./jarvis-filter.js";
+import {
+  isBuildContainer,
+  kindOf,
+  memberKey,
+  memberOf,
+  planJarvis,
+  type JarvisCandidate,
+  type JarvisPlanned,
+  type JarvisQuestion,
+} from "./jarvis-filter.js";
+import {
+  answerSchema,
+  ENDED_UNANSWERED,
+  OPEN_TO_ANSWERS,
+  outcomeOf,
+  refusalWords,
+  sameCode,
+  type AssistantAnswer,
+} from "./assistant-answers.js";
+import { ANSWER_BOX_DOMAIN, LINE_PREFIX, LINE_VERB, parseAssistantLine, type AssistantLine } from "./assistant-line.js";
 import { fleetSummary, hostSummary } from "./jarvis-summary.js";
+import { TestQuestion } from "./test-question.js";
 
 const WEBHOOK_PATH = "/api/webhook/";
 const JSON_HEADERS = { "content-type": "application/json" };
 const TEST_KIND = "test";
+const KEY_LABEL = "Assistant";
 const LIVE_STATUSES = [JARVIS_STATUS.waiting, JARVIS_STATUS.sent];
+const OPEN_STATUSES = [...LIVE_STATUSES, JARVIS_STATUS.asked];
 
 const aliasesSchema = z.record(z.string(), z.array(z.string()));
-const storedSchema = z.object({ webhookId: z.string(), keyId: z.string(), paused: z.boolean() });
+const storedSchema = z.object({
+  webhookId: z.string(),
+  keyId: z.string(),
+  paused: z.boolean(),
+  // Updates, and newer versions, a person could say yes to are asked about rather than told.
+  askUpdates: z.boolean().optional(),
+  askVersions: z.boolean().optional(),
+  // How it addresses people, once in each spoken sentence; null for not at all. Absent from a connection made before
+  // it could be chosen, which keeps the "sir" it always said.
+  address: z.string().nullable().optional(),
+  // What the person calls it; null for none. Absent from a connection made before it could be chosen: "Jarvis".
+  name: z.string().nullable().optional(),
+  // The last test question's answer. Until there is one, nothing is asked: nobody could answer it.
+  testAnswered: z
+    .object({
+      said: z.enum(Object.values(JARVIS_ANSWER)),
+      how: z.enum(Object.values(JARVIS_ANSWER_HOW)),
+      seconds: z.number(),
+      at: z.number(),
+    })
+    .nullable()
+    .optional(),
+  // When a line about the test question was last read: a word from the house, as any line is.
+  testLineAt: z.number().nullable().optional(),
+});
 type Stored = z.infer<typeof storedSchema>;
+const isProven = (stored: Stored | null) => (stored?.testAnswered ?? null) !== null;
 type Item = InferSelectModel<typeof jarvisItems>;
+type Answer = Extract<AssistantLine, { code: string }>;
+
+const AUTOHEAL: TaskAuthor = { kind: "agent", agent: AGENT_AUTOHEAL };
+// The jobs a yes starts: an update's, or a newer version's tag change. Their end is what came of it.
+const STARTED_BY_A_YES: readonly string[] = [JOB_ACTION.update, JOB_ACTION.changeTag];
+
+interface Switches {
+  updates: boolean;
+  versions: boolean;
+}
+
+// A newer version's tags, as its question names them.
+const tagsOf = ({ from, to }: JarvisMessage) => (from === undefined || to === undefined ? null : { from, to });
+
+// A line counts once: one no later than the last counted about its message, as a restart restores, is ignored.
+const isNewLine = (item: Item, at: number | null) => at === null || item.lastLineAt === null || at > item.lastLineAt;
 
 export type JarvisSend = (url: string, body: unknown) => Promise<boolean>;
 
@@ -68,8 +165,11 @@ const sendOverHttp: JarvisSend = async (url, body) => {
  */
 export class JarvisService {
   private test: { nonce: string; startedAt: number } | null = null;
+  private testQuestion: TestQuestion | null = null;
   private lastTestMilliseconds: number | null = null;
   private sending = false;
+  private lineWindow = { startedAt: 0, lines: 0 };
+  private linesDropped = 0;
 
   constructor(
     private readonly databaseHandle: DatabaseHandle,
@@ -79,6 +179,10 @@ export class JarvisService {
     private readonly secretBox: SecretBox,
     private readonly auditLog: AuditLog,
     private readonly inventory: Pick<InventoryService, "hosts" | "containers">,
+    private readonly handOver: Pick<DispatchService, "takesUpdate" | "takesTag" | "dispatch">,
+    private readonly homeAssistant: Pick<HomeAssistantConnection, "connected">,
+    private readonly tasks: Pick<TasksService, "addActivity">,
+    private readonly hostControl: Pick<HostControlService, "ignoreVersions">,
     private readonly dashboard: string,
     private readonly clock: () => number = Date.now,
     private readonly send: JarvisSend = sendOverHttp,
@@ -96,14 +200,24 @@ export class JarvisService {
       .limit(JARVIS_LIMITS.recentShown)
       .all();
     const waiting = database.select().from(jarvisItems).where(eq(jarvisItems.status, JARVIS_STATUS.waiting)).all();
+    const homeAssistant = this.integrations.homeAssistant();
     return {
-      homeAssistantSet: this.integrations.homeAssistant() !== null,
+      homeAssistantSet: homeAssistant !== null,
       connected: stored !== null,
       paused: stored?.paused ?? false,
-      setup: webhookId === null ? null : jarvisSetup(this.dashboard, webhookId, this.machineNames()),
+      setup: webhookId === null ? null : jarvisSetup(this.dashboard, webhookId, this.machineNames(), this.address()),
+      address: this.address(),
+      name: this.name(),
+      webhookId,
+      links: homeAssistant === null ? null : assistantSetupLinks(homeAssistant.url, APP_VERSION),
+      homeAssistantConnected: this.homeAssistant.connected(),
+      testQuestion: this.testQuestionView(stored),
+      asking: { ready: isProven(stored), updates: stored?.askUpdates === true, versions: stored?.askVersions === true },
+      open: this.openQuestions(),
       testing: this.testOpen(),
       lastTestMilliseconds: this.lastTestMilliseconds,
-      lastHeardAt: stored === null ? null : this.keys.lastUsed(stored.keyId),
+      ...this.lastHeard(stored),
+      linesDropped: this.linesDropped,
       waiting: waiting.length,
       notConfirmed: this.notConfirmed(),
       summary: this.summary("").text,
@@ -119,16 +233,21 @@ export class JarvisService {
     if (this.integrations.homeAssistant() === null) throw new DomainError(API_ERRORS.integrationNotSet);
     this.revokeKey(actor);
     const webhookId = `autoheal-${randomBytes(JARVIS_LIMITS.webhookIdBytes).toString("base64url")}`;
-    const created = this.keys.create(actor, "Jarvis", JARVIS_KEY_SCOPE);
+    const created = this.keys.create(actor, KEY_LABEL, JARVIS_KEY_SCOPE);
     this.store.write(SETTING_KEYS.jarvis, {
       webhookId: this.secretBox.seal(webhookId),
       keyId: created.key.id,
       paused: false,
+      address: null,
+      name: null,
+      testAnswered: null,
+      testLineAt: null,
     } satisfies Stored);
+    this.testQuestion = null;
     this.audit(actor, AUDIT_ACTIONS.integrationSaved);
     const view = this.view();
     return {
-      view: { ...view, setup: jarvisSetup(this.dashboard, webhookId, this.machineNames()) },
+      view: { ...view, setup: jarvisSetup(this.dashboard, webhookId, this.machineNames(), this.address()) },
       secret: created.secret,
     };
   }
@@ -137,7 +256,38 @@ export class JarvisService {
     this.revokeKey(actor);
     this.store.remove(SETTING_KEYS.jarvis);
     this.test = null;
+    this.testQuestion = null;
     this.audit(actor, AUDIT_ACTIONS.integrationRemoved);
+  }
+
+  /** How it addresses people from now on: a few words said once in each sentence, or none when empty. */
+  setAddress(actor: Actor, address: string) {
+    const stored = this.connection();
+    if (stored === null) throw new DomainError(API_ERRORS.integrationNotSet);
+    this.store.write(SETTING_KEYS.jarvis, { ...stored, address: address === "" ? null : address } satisfies Stored);
+    this.audit(actor, AUDIT_ACTIONS.integrationSaved);
+  }
+
+  /** What the person calls it from now on, as the card shows it; none when empty. */
+  setName(actor: Actor, name: string) {
+    const stored = this.connection();
+    if (stored === null) throw new DomainError(API_ERRORS.integrationNotSet);
+    this.store.write(SETTING_KEYS.jarvis, { ...stored, name: name === "" ? null : name } satisfies Stored);
+    this.audit(actor, AUDIT_ACTIONS.integrationSaved);
+  }
+
+  /** What is asked rather than told. Each turns on only once a test question was answered; off, any time. */
+  setAsking(actor: Actor, asking: { updates: boolean; versions: boolean }) {
+    const stored = this.connection();
+    if (stored === null) throw new DomainError(API_ERRORS.integrationNotSet);
+    const turnsOn = (asking.updates && stored.askUpdates !== true) || (asking.versions && stored.askVersions !== true);
+    if (turnsOn && !isProven(stored)) throw new DomainError(API_ERRORS.assistantNotTested);
+    this.store.write(SETTING_KEYS.jarvis, {
+      ...stored,
+      askUpdates: asking.updates,
+      askVersions: asking.versions,
+    } satisfies Stored);
+    this.audit(actor, AUDIT_ACTIONS.integrationSaved);
   }
 
   pause(actor: Actor, paused: boolean) {
@@ -154,17 +304,83 @@ export class JarvisService {
     const nonce = randomBytes(JARVIS_LIMITS.nonceBytes).toString("hex");
     this.test = { nonce, startedAt: this.clock() };
     this.lastTestMilliseconds = null;
-    const delivered = await this.send(url, { kind: TEST_KIND, nonce }).catch(() => false);
+    const message = { id: nonce, kind: TEST_KIND, tier: JARVIS_TIER.say, nonce, ...jarvisTestWords(this.address()) };
+    const delivered = await this.send(url, message).catch(() => false);
     if (!delivered) this.test = null;
     return { delivered };
   }
 
+  /**
+   * The card's test question, asked as any question is. Until it is answered nothing is asked, as an answer might not
+   * come back: only its answer, by voice or by phone, proves the way back.
+   */
+  async startTestQuestion() {
+    const url = this.webhookUrl();
+    const stored = this.connection();
+    if (url === null || stored === null) throw new DomainError(API_ERRORS.integrationNotSet);
+    const test = new TestQuestion(this.clock());
+    this.testQuestion = test;
+    this.store.write(SETTING_KEYS.jarvis, { ...stored, testAnswered: null } satisfies Stored);
+    const message = {
+      id: test.id,
+      kind: TEST_KIND,
+      tier: JARVIS_TIER.ask,
+      nonce: test.id,
+      code: test.code,
+      ...jarvisTestQuestionWords(this.address()),
+    };
+    test.delivered = await this.send(url, message).catch(() => false);
+    return { delivered: test.delivered };
+  }
+
   /** Jarvis's answer: to a test, or that a message arrived. Anything else is ignored. */
   heard(nonce: string) {
-    this.confirm(nonce);
-    if (!this.testOpen() || this.test!.nonce !== nonce) return;
-    this.lastTestMilliseconds = this.clock() - this.test!.startedAt;
-    this.test = null;
+    this.confirm(nonce, null);
+    this.answerTest(nonce);
+    this.testQuestion?.hear(nonce);
+  }
+
+  /**
+   * A line Home Assistant wrote into a Text helper: `heard`, as its key's call says it, or `later`. Each counts once,
+   * by the time it carries; anything else is left alone, and past thirty a minute they are not read, only counted.
+   */
+  read(entityId: string, text: string) {
+    const isLine = entityId.startsWith(ANSWER_BOX_DOMAIN) && text.startsWith(LINE_PREFIX);
+    if (!isLine || this.connection() === null) return;
+    if (!this.withinLineRate()) {
+      this.linesDropped += 1;
+      return;
+    }
+    const line = parseAssistantLine(text);
+    if (line === null) return;
+    if ("code" in line) {
+      this.answer(line);
+      this.soon();
+      return;
+    }
+    if (line.id === this.testQuestion?.id) this.keepTestLine(line.at);
+    if (line.verb === LINE_VERB.later) {
+      this.putOff(line.id, line.at);
+      this.testQuestion?.postpone(line.id);
+      return;
+    }
+    this.confirm(line.id, line.at);
+    this.answerTest(line.id);
+    this.testQuestion?.hear(line.id);
+  }
+
+  /** A job's end. An update a yes started counts toward its question; once each has ended, what came of it is told. */
+  jobFinished(job: JobRow, succeeded: boolean) {
+    const { taskId } = job;
+    if (!STARTED_BY_A_YES.includes(job.action) || taskId === null) return;
+    for (const question of this.itemsWith(JARVIS_STATUS.accepted)) {
+      const answer = this.answerOf(question);
+      if (answer === null || !this.startedBy(question, answer, job)) continue;
+      const outcomes = { ...answer.outcomes, [taskId]: succeeded };
+      this.keepAnswer(question, { ...answer, outcomes });
+      if (this.taskIdsOf(question).every((member) => member in outcomes)) this.tellOutcome(question, outcomes);
+    }
+    this.soon();
   }
 
   /** How the servers are, or the one machine asked about, in fixed words a model has no part in. */
@@ -172,20 +388,22 @@ export class JarvisService {
     const hosts = this.activeHosts();
     const containers = this.inventory.containers();
     const tasks = this.candidates();
-    if (about.trim() === "") return fleetSummary(hosts, containers, tasks);
+    const address = this.address();
+    const toYou = spokenTo(address);
+    if (about.trim() === "") return fleetSummary(hosts, containers, tasks, address);
     const aliases = this.aliases();
     const found = matchSpoken(
       about,
       hosts.map((host) => ({ target: host, names: [host.label, ...(aliases[host.id] ?? [])] })),
     );
-    if (found.length === 1) return hostSummary(found[0]!, containers, tasks);
+    if (found.length === 1) return hostSummary(found[0]!, containers, tasks, address);
     if (found.length === 0) {
       const heard = safeName(about);
-      return { say: `I know no machine called ${heard}, sir.`, text: `No machine called ${heard}.` };
+      return { say: `I know no machine called ${heard}${toYou}.`, text: `No machine called ${heard}.` };
     }
     const names = found.map(({ label }) => safeName(label));
     return {
-      say: `Did you mean ${spokenList(names).replace(/ and /, " or ")}, sir?`,
+      say: `Did you mean ${spokenList(names).replace(/ and /, " or ")}${toYou}?`,
       text: `Which: ${names.join(", ")}?`,
     };
   }
@@ -237,6 +455,8 @@ export class JarvisService {
       this.forgetOld();
       const candidates = this.candidates();
       this.dropWhatEnded(candidates);
+      this.retireWhatWasAskedEnough();
+      this.tellOverdueOutcomes();
       this.sendAgainWhatWasNotConfirmed();
       this.plan(candidates);
       await this.sendWaiting(url);
@@ -246,76 +466,450 @@ export class JarvisService {
   }
 
   private plan(candidates: readonly JarvisCandidate[]) {
-    const database = this.databaseHandle.database;
     const now = this.clock();
-    const said = database
+    const items = this.databaseHandle.database
       .select()
       .from(jarvisItems)
-      .where(inArray(jarvisItems.status, [...LIVE_STATUSES, JARVIS_STATUS.told, JARVIS_STATUS.unconfirmed]))
-      .all()
-      .map((item) => {
-        const unconfirmed = item.status === JARVIS_STATUS.unconfirmed;
-        return {
-          groupKey: item.groupKey,
-          // What never reached anyone may be told again once the repeat wait is over.
-          fingerprint: unconfirmed ? "" : item.fingerprint,
-          tier: this.messageOf(item).tier,
-          at: item.sentAt ?? item.createdAt,
-          counted: !unconfirmed,
-        };
-      });
-    for (const planned of planJarvis(candidates, said, now)) {
-      const facts = { kind: planned.kind, host: safeName(planned.hostLabel), names: planned.names.map(safeName) };
-      const id = randomUUID();
-      const message: JarvisMessage = {
-        id,
-        kind: planned.kind,
-        tier: planned.tier,
-        host: facts.host,
-        names: facts.names,
-        say: jarvisSay(facts),
-        text: jarvisText(facts),
+      .where(ne(jarvisItems.status, JARVIS_STATUS.dropped))
+      .all();
+    const said = items.map((item) => {
+      const unconfirmed = item.status === JARVIS_STATUS.unconfirmed;
+      return {
+        groupKey: item.groupKey,
+        // What never reached anyone may be told again once the repeat wait is over.
+        fingerprint: unconfirmed ? "" : item.fingerprint,
+        tier: this.messageOf(item).tier,
+        at: item.sentAt ?? item.createdAt,
+        counted: !unconfirmed,
       };
-      database
-        .insert(jarvisItems)
-        .values({
-          id,
-          groupKey: planned.groupKey,
-          fingerprint: planned.fingerprint,
-          taskIdsJson: JSON.stringify(planned.taskIds),
-          messageJson: JSON.stringify(message),
-          status: JARVIS_STATUS.waiting,
-          createdAt: now,
-        })
-        .run();
+    });
+    const questions = items.flatMap((item) => this.asQuestion(item, now));
+    for (const planned of planJarvis(candidates, said, now, questions)) {
+      if (planned.again !== undefined) {
+        this.askAgain(planned.again);
+        continue;
+      }
+      this.add(planned, now);
     }
+  }
+
+  private asQuestion(item: Item, now: number): JarvisQuestion[] {
+    const members = this.membersOf(item);
+    if (members === null) return [];
+    const waitIsOver = item.nextAskAt !== null && item.nextAskAt <= now;
+    const due = item.status === JARVIS_STATUS.asked && item.asks < JARVIS_LIMITS.asksAtMost && waitIsOver;
+    return [{ id: item.id, groupKey: item.groupKey, members, status: item.status, sentAt: item.sentAt, due }];
+  }
+
+  private add(planned: JarvisPlanned, now: number) {
+    const facts = { kind: planned.kind, host: safeName(planned.hostLabel), names: planned.names.map(safeName) };
+    const asking = planned.tier === JARVIS_TIER.ask;
+    const tags = planned.kind === JARVIS_KIND.newerVersion ? this.versionTags(planned) : null;
+    const id = randomUUID();
+    const message: JarvisMessage = {
+      id,
+      kind: planned.kind,
+      tier: planned.tier,
+      host: facts.host,
+      names: facts.names,
+      ...this.wordsOf(facts, planned.tier, tags, false, this.address()),
+      ...(tags ?? {}),
+    };
+    this.databaseHandle.database
+      .insert(jarvisItems)
+      .values({
+        id,
+        groupKey: planned.groupKey,
+        fingerprint: planned.fingerprint,
+        taskIdsJson: JSON.stringify(planned.taskIds),
+        messageJson: JSON.stringify(message),
+        status: JARVIS_STATUS.waiting,
+        createdAt: now,
+        membersJson: asking ? JSON.stringify(planned.members) : null,
+        codeSealed: asking ? this.newCode() : null,
+      })
+      .run();
+  }
+
+  // The same question with the same code; the last time, it says it will not ask again.
+  private askAgain(id: string) {
+    const database = this.databaseHandle.database;
+    const item = database.select().from(jarvisItems).where(eq(jarvisItems.id, id)).get();
+    if (item === undefined) return;
+    const message = this.messageOf(item);
+    const lastAsking = item.asks + 1 >= JARVIS_LIMITS.asksAtMost;
+    database
+      .update(jarvisItems)
+      .set({
+        status: JARVIS_STATUS.waiting,
+        messageJson: JSON.stringify({
+          ...message,
+          ...this.wordsOf(message, JARVIS_TIER.ask, tagsOf(message), lastAsking, this.address()),
+        }),
+        nextAskAt: null,
+        attempts: 0,
+      })
+      .where(eq(jarvisItems.id, id))
+      .run();
   }
 
   private async sendWaiting(url: string) {
     const database = this.databaseHandle.database;
-    const waiting = database.select().from(jarvisItems).where(eq(jarvisItems.status, JARVIS_STATUS.waiting)).all();
+    const now = this.clock();
+    const waiting = database
+      .select()
+      .from(jarvisItems)
+      .where(eq(jarvisItems.status, JARVIS_STATUS.waiting))
+      .all()
+      .filter(({ nextAskAt }) => nextAskAt === null || nextAskAt <= now);
     for (const item of waiting) {
-      const delivered = await this.send(url, this.messageOf(item)).catch((error: unknown) => {
+      const message = this.outgoing(item);
+      if (message === null) {
+        database.update(jarvisItems).set({ status: JARVIS_STATUS.dropped }).where(eq(jarvisItems.id, item.id)).run();
+        continue;
+      }
+      const delivered = await this.send(url, message).catch((error: unknown) => {
         log(`Jarvis could not be reached: ${error instanceof Error ? error.name : "unknown"}`);
         return false;
       });
       if (!delivered) return;
-      database
-        .update(jarvisItems)
-        .set({ status: JARVIS_STATUS.sent, sentAt: this.clock(), attempts: item.attempts + 1 })
-        .where(eq(jarvisItems.id, item.id))
-        .run();
+      this.markSent(item);
     }
+  }
+
+  // A line Home Assistant wrote while it was on its way stands: heard, put off or answered, it is not marked sent over
+  // that. When it went out is kept either way: what was told is shown by it.
+  private markSent(item: Item) {
+    const database = this.databaseHandle.database;
+    const itself = eq(jarvisItems.id, item.id);
+    const noLineSince =
+      item.lastLineAt === null ? isNull(jarvisItems.lastLineAt) : eq(jarvisItems.lastLineAt, item.lastLineAt);
+    database.update(jarvisItems).set({ sentAt: this.clock() }).where(itself).run();
+    database
+      .update(jarvisItems)
+      .set({ status: JARVIS_STATUS.sent, attempts: item.attempts + 1 })
+      .where(and(itself, eq(jarvisItems.status, JARVIS_STATUS.waiting), noLineSince))
+      .run();
+  }
+
+  // A question goes out with its code. One whose code cannot be opened (another backup passphrase sealed it) could
+  // never be answered, so it is not asked.
+  private outgoing(item: Item): JarvisMessage | null {
+    const message = this.messageOf(item);
+    if (item.codeSealed === null) return message;
+    const code = this.secretBox.open(item.codeSealed);
+    return code === null ? null : { ...message, code };
   }
 
   private dropWhatEnded(candidates: readonly JarvisCandidate[]) {
     const open = new Set(candidates.map(({ taskId }) => taskId));
+    const askable = new Set(
+      candidates.flatMap(({ taskId, ask }) => (ask?.askable === true ? [memberKey(taskId, ask.brings)] : [])),
+    );
     const database = this.databaseHandle.database;
-    for (const item of database.select().from(jarvisItems).where(inArray(jarvisItems.status, LIVE_STATUSES)).all()) {
-      const taskIds = z.array(z.string()).parse(JSON.parse(item.taskIdsJson));
-      if (taskIds.some((taskId) => open.has(taskId))) continue;
+    for (const item of database.select().from(jarvisItems).where(inArray(jarvisItems.status, OPEN_STATUSES)).all()) {
+      if (!this.hasEnded(item, open, askable)) continue;
       database.update(jarvisItems).set({ status: JARVIS_STATUS.dropped }).where(eq(jarvisItems.id, item.id)).run();
     }
+  }
+
+  // A statement ends with the last of its tasks. A question ends as soon as one of its updates is no longer one a yes
+  // would take as it was asked: done another way, a newer image out, or not the hand-over's any more.
+  private hasEnded(item: Item, open: ReadonlySet<string>, askable: ReadonlySet<string>) {
+    if (this.messageOf(item).tier === JARVIS_TIER.reply) return false;
+    const members = this.membersOf(item);
+    if (members !== null) return members.some((member) => !askable.has(member));
+    return this.taskIdsOf(item).every((taskId) => !open.has(taskId));
+  }
+
+  // Asked as often as it may be, and its last wait is over: it is not asked again, and stays on the dashboard.
+  private retireWhatWasAskedEnough() {
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status: JARVIS_STATUS.retired })
+      .where(
+        and(
+          eq(jarvisItems.status, JARVIS_STATUS.asked),
+          gte(jarvisItems.asks, JARVIS_LIMITS.asksAtMost),
+          lte(jarvisItems.nextAskAt, this.clock()),
+        ),
+      )
+      .run();
+  }
+
+  // An answer, by its question's code, checked in this order before anything is done.
+  private answer(line: Answer) {
+    if (this.testQuestion?.owns(line.code)) {
+      this.keepTestLine(line.at);
+      this.answerTestQuestion(this.testQuestion, line);
+      return;
+    }
+    const replies = jarvisReplies(this.address());
+    const question = this.questionWithCode(line.code);
+    if (question === null || !isNewLine(question, line.at)) return;
+    if (ENDED_UNANSWERED.includes(question.status)) {
+      this.reply(question, replies.noLongerOpen);
+      return;
+    }
+    if (!OPEN_TO_ANSWERS.includes(question.status)) return;
+    const stored = this.connection()!;
+    if (stored.paused) {
+      this.refuse(question, line);
+      return;
+    }
+    const connector = this.connector(stored);
+    if (connector === null) {
+      this.reply(question, replies.notAdmin);
+      this.refuse(question, line);
+      return;
+    }
+    if (line.verb === LINE_VERB.no) {
+      this.settle(question, line, connector, JARVIS_STATUS.declined);
+      this.ignoreVersion(question, connector);
+      return;
+    }
+    this.takeYes(question, line, connector, replies);
+  }
+
+  // A yes: exactly the updates it was asked about, if they still are as asked and their host could do them now.
+  private takeYes(question: Item, line: Answer, connector: Actor, replies: JarvisReplies) {
+    const message = this.messageOf(question);
+    const candidates = this.candidates();
+    const changed = this.changeSince(question, candidates, replies);
+    if (changed !== null) {
+      this.settleWithout(question, line, JARVIS_STATUS.dropped);
+      this.reply(question, changed);
+      return;
+    }
+    const first = candidates.find(({ taskId }) => taskId === this.taskIdsOf(question)[0])!;
+    const host = this.activeHosts().find(({ id }) => id === first.hostId);
+    if (host?.state !== HOST_STATE.online) {
+      this.reply(question, replies.hostSilent(message.host));
+      this.refuse(question, line);
+      return;
+    }
+    if (host.dryRun === true) {
+      this.reply(question, replies.hostReports(message.host));
+      this.refuse(question, line);
+      return;
+    }
+    const refusal = this.handOverAll(question, connector, first);
+    if (refusal !== null) {
+      this.reply(question, refusalWords(refusal, message.host, replies));
+      this.refuse(question, line);
+      return;
+    }
+    this.settle(question, line, connector, JARVIS_STATUS.accepted);
+    const tags = tagsOf(message);
+    const said =
+      tags === null
+        ? replies.updating(message.host, message.names)
+        : replies.moving({ host: message.host, name: message.names[0]!, to: tags.to });
+    this.reply(question, said);
+  }
+
+  // Each update as it was asked about: its task open, with the same newer image. Otherwise, what a yes is told.
+  private changeSince(question: Item, candidates: readonly JarvisCandidate[], replies: JarvisReplies) {
+    const brings = new Map(candidates.map(({ taskId, ask }) => [taskId, ask?.brings ?? null]));
+    const members = (this.membersOf(question) ?? []).map(memberOf);
+    const now = members.map(({ taskId, brings: asked }) => ({ asked, current: brings.get(taskId) ?? null }));
+    if (now.some(({ current }) => current === null)) return replies.gone;
+    return now.some(({ asked, current }) => current !== asked) ? replies.newerOut : null;
+  }
+
+  // The dashboard's own hand-over, as whoever connected the assistant: all of the question's updates or none, or its
+  // newer version, its tag changed where the container's files write it.
+  private handOverAll(question: Item, connector: Actor, first: JarvisCandidate): ApiErrorCode | null {
+    const version = first.ask !== undefined && kindOf(first.detectorKey) === JARVIS_KIND.newerVersion;
+    const tags = version ? [{ hostId: first.hostId, container: first.resource ?? "", tag: first.ask!.brings }] : [];
+    const updates = version ? [] : this.taskIdsOf(question);
+    try {
+      this.handOver.dispatch(connector, { updates, packages: [], incidents: [], tags });
+      return null;
+    } catch (error) {
+      if (error instanceof DomainError) return error.code;
+      throw error;
+    }
+  }
+
+  // A no to a newer version ignores that version, as Ignore this version on the dashboard does: a later one is asked.
+  private ignoreVersion(question: Item, connector: Actor) {
+    const { kind, names } = this.messageOf(question);
+    const [member] = (this.membersOf(question) ?? []).map(memberOf);
+    if (kind !== JARVIS_KIND.newerVersion || member === undefined) return;
+    const task = this.databaseHandle.database
+      .select({ hostId: tasks.hostId })
+      .from(tasks)
+      .where(eq(tasks.id, member.taskId))
+      .get();
+    if (task?.hostId == null) return;
+    try {
+      this.hostControl.ignoreVersions(connector, task.hostId, [{ container: names[0]!, version: member.brings }]);
+    } catch (error) {
+      // Its container is gone: there is no version of it left to ignore.
+      if (!(error instanceof DomainError)) throw error;
+    }
+  }
+
+  // Statements in their fixed words; a question about updates, or about one newer version with its tags.
+  private wordsOf(
+    facts: Pick<JarvisMessage, "kind" | "host" | "names">,
+    tier: JarvisMessage["tier"],
+    tags: { from: string; to: string } | null,
+    lastAsking: boolean,
+    address: string | null,
+  ) {
+    if (tier !== JARVIS_TIER.ask) return { say: jarvisSay(facts, address), text: jarvisText(facts) };
+    if (tags === null) return jarvisQuestion(facts, lastAsking, address);
+    return jarvisVersionQuestion({ host: facts.host, name: facts.names[0]!, ...tags }, lastAsking, address);
+  }
+
+  // The tag a container runs, and the newer one its question is about, as its runner reported them.
+  private versionTags(planned: JarvisPlanned) {
+    const [member] = (planned.members ?? []).map(memberOf);
+    const container = this.inventory
+      .containers()
+      .find(({ hostId, name }) => hostId === planned.hostId && name === planned.names[0]);
+    if (member === undefined || container === undefined) return null;
+    return { from: imageTag(container.image), to: member.brings };
+  }
+
+  // Taken: kept with the question, said on each of its tasks, and in the audit log as whoever connected it.
+  private settle(question: Item, line: Answer, connector: Actor, status: JarvisStatus) {
+    const said = { answer: line.verb, how: line.how, room: line.room };
+    const answer: AssistantAnswer = { ...said, by: connector.username, at: this.clock(), outcomes: {} };
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status, answerJson: JSON.stringify(answer), lastLineAt: line.at })
+      .where(eq(jarvisItems.id, question.id))
+      .run();
+    const author: TaskAuthor = { kind: "user", actor: connector };
+    this.taskIdsOf(question).forEach((taskId) =>
+      this.tasks.addActivity(taskId, TASK_ACTIVITY.assistantAnswered, author, said),
+    );
+    const { host, names } = this.messageOf(question);
+    this.auditLog.recordUserAction(
+      connector,
+      AUDIT_ACTIONS.assistantAnswered,
+      { kind: TARGET_INTEGRATION, id: "jarvis" },
+      { ...said, host, containers: names },
+    );
+  }
+
+  private settleWithout(question: Item, line: Answer, status: JarvisStatus) {
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status, lastLineAt: line.at })
+      .where(eq(jarvisItems.id, question.id))
+      .run();
+  }
+
+  // Not taken: its code is used up, and it is asked again with a new one once a yes could be carried out.
+  private refuse(question: Item, line: Answer) {
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status: JARVIS_STATUS.asked, nextAskAt: this.clock(), codeSealed: this.newCode(), lastLineAt: line.at })
+      .where(eq(jarvisItems.id, question.id))
+      .run();
+  }
+
+  // Autoheal's word on an answer: sent at once, never counted against the day, never sent twice.
+  private reply(about: Item, said: { say: string; text: string }) {
+    const { kind, host, names } = this.messageOf(about);
+    const id = randomUUID();
+    const message: JarvisMessage = { id, kind, tier: JARVIS_TIER.reply, host, names, ...said };
+    this.databaseHandle.database
+      .insert(jarvisItems)
+      .values({
+        id,
+        groupKey: `${JARVIS_TIER.reply}:${about.id}`,
+        fingerprint: id,
+        taskIdsJson: about.taskIdsJson,
+        messageJson: JSON.stringify(message),
+        status: JARVIS_STATUS.waiting,
+        createdAt: this.clock(),
+      })
+      .run();
+  }
+
+  // An update job started after its question's yes, about one of its tasks, and not counted yet.
+  private startedBy(question: Item, answer: AssistantAnswer, job: JobRow) {
+    return (
+      this.taskIdsOf(question).includes(job.taskId!) && job.createdAt >= answer.at && !(job.taskId! in answer.outcomes)
+    );
+  }
+
+  private tellOutcome(question: Item, outcomes: Readonly<Record<string, boolean>>) {
+    const { host, names } = this.messageOf(question);
+    this.reply(question, jarvisOutcome(host, outcomeOf(names, this.taskIdsOf(question), outcomes), this.address()));
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status: JARVIS_STATUS.done })
+      .where(eq(jarvisItems.id, question.id))
+      .run();
+  }
+
+  // A while after a yes, what came of it is told, done or not.
+  private tellOverdueOutcomes() {
+    const due = this.clock() - JARVIS_LIMITS.outcomeWaitMilliseconds;
+    for (const question of this.itemsWith(JARVIS_STATUS.accepted)) {
+      const answer = this.answerOf(question);
+      if (answer !== null && answer.at <= due) this.tellOutcome(question, answer.outcomes);
+    }
+  }
+
+  private questionWithCode(code: string): Item | null {
+    const questions = this.databaseHandle.database
+      .select()
+      .from(jarvisItems)
+      .where(isNotNull(jarvisItems.codeSealed))
+      .all();
+    return questions.find((item) => sameCode(this.secretBox.open(item.codeSealed!), code)) ?? null;
+  }
+
+  // Whoever connected the assistant: a yes acts as them, and only while they are an active admin.
+  private connector(stored: Stored): Actor | null {
+    const user = this.databaseHandle.database
+      .select({ userId: users.id, username: users.username, role: users.role, status: users.status })
+      .from(widgetKeys)
+      .innerJoin(users, eq(users.id, widgetKeys.createdBy))
+      .where(eq(widgetKeys.id, stored.keyId))
+      .get();
+    if (user === undefined || user.role !== ROLE_ADMIN || user.status !== USER_STATUS_ACTIVE) return null;
+    return { userId: user.userId, username: user.username, ip: "", requestId: stored.keyId };
+  }
+
+  // Sends what waits now, and lets the next question go, without waiting for the next tick.
+  private soon() {
+    void this.tick().catch((error: unknown) => log(`Jarvis could not send: ${describeError(error)}`));
+  }
+
+  private newCode() {
+    return this.secretBox.seal(randomBytes(JARVIS_LIMITS.codeBytes).toString("base64url"));
+  }
+
+  private itemsWith(status: JarvisStatus) {
+    return this.databaseHandle.database.select().from(jarvisItems).where(eq(jarvisItems.status, status)).all();
+  }
+
+  private answerOf(item: Item): AssistantAnswer | null {
+    return item.answerJson === null ? null : answerSchema.parse(JSON.parse(item.answerJson));
+  }
+
+  private keepAnswer(item: Item, answer: AssistantAnswer) {
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ answerJson: JSON.stringify(answer) })
+      .where(eq(jarvisItems.id, item.id))
+      .run();
+  }
+
+  private taskIdsOf(item: Item): string[] {
+    return z.array(z.string()).parse(JSON.parse(item.taskIdsJson));
+  }
+
+  private membersOf(item: Item): string[] | null {
+    return item.membersJson === null ? null : z.array(z.string()).parse(JSON.parse(item.membersJson));
   }
 
   private machineNames() {
@@ -331,12 +925,138 @@ export class JarvisService {
     return this.store.read(SETTING_KEYS.jarvisAliases, aliasesSchema) ?? {};
   }
 
-  private confirm(id: string) {
+  // Heard: a statement is told; a question was asked once more, and waits a day before it is asked again.
+  private confirm(id: string, at: number | null) {
+    const item = this.liveItem(id);
+    if (item === undefined || !isNewLine(item, at)) return;
+    const database = this.databaseHandle.database;
+    const lastLineAt = at ?? item.lastLineAt;
+    if (item.membersJson === null) {
+      database.update(jarvisItems).set({ status: JARVIS_STATUS.told, lastLineAt }).where(eq(jarvisItems.id, id)).run();
+      return;
+    }
+    database
+      .update(jarvisItems)
+      .set({
+        status: JARVIS_STATUS.asked,
+        asks: item.asks + 1,
+        nextAskAt: this.clock() + JARVIS_LIMITS.repeatMilliseconds,
+        lastLineAt,
+      })
+      .where(eq(jarvisItems.id, id))
+      .run();
+    this.taskIdsOf(item).forEach((taskId) =>
+      this.tasks.addActivity(taskId, TASK_ACTIVITY.assistantAsked, AUTOHEAL, { asking: item.asks + 1 }),
+    );
+  }
+
+  // Not now: quiet hours, nobody home, the satellite busy. Nothing is counted, and it goes out again in an hour. A
+  // reply answered someone then: an hour later it would only mislead, so it is not sent again.
+  private putOff(id: string, at: number) {
+    const item = this.liveItem(id);
+    if (item === undefined || !isNewLine(item, at)) return;
+    const again =
+      this.messageOf(item).tier === JARVIS_TIER.reply
+        ? { status: JARVIS_STATUS.unconfirmed }
+        : { status: JARVIS_STATUS.waiting, nextAskAt: this.clock() + JARVIS_LIMITS.laterMilliseconds, attempts: 0 };
     this.databaseHandle.database
       .update(jarvisItems)
-      .set({ status: JARVIS_STATUS.told })
-      .where(and(eq(jarvisItems.id, id), inArray(jarvisItems.status, LIVE_STATUSES)))
+      .set({ ...again, lastLineAt: at })
+      .where(eq(jarvisItems.id, id))
       .run();
+  }
+
+  // Its lines are kept with the connection, not a message: they outlast the next test question and a restart.
+  private keepTestLine(at: number) {
+    const stored = this.connection();
+    if (stored === null) return;
+    // An older line, as a restarted Home Assistant restores, says nothing newer.
+    const kept = stored.testLineAt ?? null;
+    if (kept !== null && kept >= at) return;
+    this.store.write(SETTING_KEYS.jarvis, { ...stored, testLineAt: at } satisfies Stored);
+  }
+
+  // The test question proves the way back: from its answer on, what the ticks turn on is asked.
+  private answerTestQuestion(test: TestQuestion, line: Answer) {
+    const answered = test.answer(line.verb, line.how, this.clock());
+    const stored = this.connection();
+    if (answered === null || stored === null) return;
+    this.store.write(SETTING_KEYS.jarvis, {
+      ...stored,
+      testAnswered: { ...answered, at: this.clock() },
+    } satisfies Stored);
+  }
+
+  private testQuestionView(stored: Stored | null): JarvisTestQuestionView | null {
+    if (this.testQuestion !== null) return this.testQuestion.view(this.clock());
+    const answered = stored?.testAnswered ?? null;
+    if (answered === null) return null;
+    const { said, how, seconds } = answered;
+    return { outcome: JARVIS_TEST_OUTCOME.answered, answer: { said, how, seconds } };
+  }
+
+  // Heard, and waiting for their answer: newest first.
+  private openQuestions(): JarvisOpenQuestionView[] {
+    return this.databaseHandle.database
+      .select()
+      .from(jarvisItems)
+      .where(and(eq(jarvisItems.status, JARVIS_STATUS.asked), isNotNull(jarvisItems.membersJson)))
+      .orderBy(desc(jarvisItems.sentAt))
+      .all()
+      .map((item) => {
+        const { host, names, from, to } = this.messageOf(item);
+        return { id: item.id, host, names, from: from ?? null, to: to ?? null, askedAt: item.sentAt!, asks: item.asks };
+      });
+  }
+
+  // As set on its card, or none; a connection from before that could be chosen is called Jarvis, as it always was.
+  private name(): string | null {
+    const stored = this.connection();
+    if (stored === null) return null;
+    return stored.name === undefined ? JARVIS_NAME.before : stored.name;
+  }
+
+  // As set on its card, or none; a connection from before that could be chosen keeps the "sir" it always said.
+  private address(): string | null {
+    const stored = this.connection();
+    if (stored === null) return null;
+    return stored.address === undefined ? JARVIS_ADDRESS.before : stored.address;
+  }
+
+  private liveItem(id: string) {
+    return this.databaseHandle.database
+      .select()
+      .from(jarvisItems)
+      .where(and(eq(jarvisItems.id, id), inArray(jarvisItems.status, LIVE_STATUSES)))
+      .get();
+  }
+
+  private answerTest(nonce: string) {
+    if (!this.testOpen() || this.test!.nonce !== nonce) return;
+    this.lastTestMilliseconds = this.clock() - this.test!.startedAt;
+    this.test = null;
+  }
+
+  // More lines in a minute than a house writes are not read: a loop in an automation cannot keep Autoheal busy.
+  private withinLineRate() {
+    const now = this.clock();
+    if (now - this.lineWindow.startedAt >= MILLISECONDS_PER_MINUTE) this.lineWindow = { startedAt: now, lines: 0 };
+    this.lineWindow.lines += 1;
+    return this.lineWindow.lines <= JARVIS_LIMITS.ratePerMinute;
+  }
+
+  // The last word from Home Assistant: a call on its key, or a line in its answer box, whichever came last.
+  private lastHeard(stored: Stored | null) {
+    const byKey = stored === null ? null : this.keys.lastUsed(stored.keyId);
+    const byMessage =
+      this.databaseHandle.database
+        .select({ at: max(jarvisItems.lastLineAt) })
+        .from(jarvisItems)
+        .get()?.at ?? null;
+    const lines = [byMessage, stored?.testLineAt ?? null].filter((at): at is number => at !== null);
+    const byLine = lines.length === 0 ? null : Math.max(...lines);
+    const heardByAnswerBox = byLine !== null && (byKey === null || byLine > byKey);
+    return { lastHeardAt: heardByAnswerBox ? byLine : byKey, heardByAnswerBox };
   }
 
   // Only once Jarvis has confirmed something: an automation from before it could confirm would say it all again.
@@ -351,7 +1071,9 @@ export class JarvisService {
       .where(and(eq(jarvisItems.status, JARVIS_STATUS.sent), lt(jarvisItems.sentAt, before)))
       .all();
     for (const item of overdue) {
-      const status = item.attempts >= JARVIS_LIMITS.sendsAtMost ? JARVIS_STATUS.unconfirmed : JARVIS_STATUS.waiting;
+      // A reply is about the moment it answers: late, it would only mislead.
+      const sentEnough = item.attempts >= JARVIS_LIMITS.sendsAtMost || this.messageOf(item).tier === JARVIS_TIER.reply;
+      const status = sentEnough ? JARVIS_STATUS.unconfirmed : JARVIS_STATUS.waiting;
       database.update(jarvisItems).set({ status }).where(eq(jarvisItems.id, item.id)).run();
     }
   }
@@ -371,7 +1093,22 @@ export class JarvisService {
 
   private candidates(): JarvisCandidate[] {
     const now = this.clock();
-    const images = new Map(this.inventory.containers().map(({ hostId, name, image }) => [`${hostId}/${name}`, image]));
+    const containers = new Map(
+      this.inventory.containers().map((container) => [`${container.hostId}/${container.name}`, container]),
+    );
+    const online = new Set(
+      this.activeHosts()
+        .filter(({ state }) => state === HOST_STATE.online)
+        .map(({ id }) => id),
+    );
+    const stored = this.connection();
+    const connected = stored !== null && this.connector(stored) !== null ? stored : null;
+    const proven = isProven(connected);
+    const switches = {
+      updates: proven && connected?.askUpdates === true,
+      versions: proven && connected?.askVersions === true,
+    };
+    const reachable = this.homeAssistant.connected();
     return this.databaseHandle.database
       .select({
         taskId: tasks.id,
@@ -383,6 +1120,7 @@ export class JarvisService {
         resourceKind: tasks.resourceKind,
         createdAt: tasks.createdAt,
         snoozedUntil: tasks.snoozedUntil,
+        assigneeAgent: tasks.assigneeAgent,
       })
       .from(tasks)
       .innerJoin(hosts, eq(hosts.id, tasks.hostId))
@@ -391,9 +1129,39 @@ export class JarvisService {
       .filter((row) => row.detectorKey !== null && (row.snoozedUntil === null || row.snoozedUntil <= now))
       .filter((row) => {
         if (row.resourceKind !== TASK_RESOURCE.container || row.resource === null) return true;
-        return !isBuildContainer(row.resource, images.get(`${row.hostId}/${row.resource}`) ?? null);
+        return !isBuildContainer(row.resource, containers.get(`${row.hostId}/${row.resource}`)?.image ?? null);
       })
-      .map((row) => ({ ...row, hostId: row.hostId!, detectorKey: row.detectorKey! }));
+      .map(({ assigneeAgent, ...row }) => {
+        const candidate = { ...row, hostId: row.hostId!, detectorKey: row.detectorKey! };
+        const container = containers.get(`${row.hostId}/${row.resource}`);
+        const asked = this.askedAbout(candidate, container, assigneeAgent === null, switches);
+        if (asked === null) return candidate;
+        return { ...candidate, ask: { ...asked, ready: reachable && online.has(candidate.hostId) } };
+      });
+  }
+
+  /**
+   * What a yes would bring, for an update or a newer version: asked about when questions of its kind are on, it waits
+   * on a person, and the dashboard's own hand-over would take it. Null for anything only told.
+   */
+  private askedAbout(
+    candidate: Omit<JarvisCandidate, "ask">,
+    container: ContainerView | undefined,
+    waitsOnPerson: boolean,
+    switches: Switches,
+  ) {
+    const kind = kindOf(candidate.detectorKey);
+    if (kind === JARVIS_KIND.newerVersion) {
+      const tag = tagOfNewerVersionKey(candidate.detectorKey);
+      const request = { hostId: candidate.hostId, container: candidate.resource ?? "", tag };
+      return { brings: tag, askable: switches.versions && waitsOnPerson && this.handOver.takesTag(request) };
+    }
+    const digest = container?.update.remoteDigest ?? null;
+    if (kind !== JARVIS_KIND.containerUpdates || digest === null) return null;
+    return {
+      brings: digest,
+      askable: switches.updates && waitsOnPerson && this.handOver.takesUpdate(candidate.taskId),
+    };
   }
 
   private forgetOld() {

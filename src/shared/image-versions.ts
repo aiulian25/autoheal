@@ -6,6 +6,17 @@ interface TagVersion {
   numbers: readonly bigint[];
 }
 
+// A run of digits that is a real day: 20260805 is, 20261305 is not.
+function isDate(run: string): boolean {
+  const parts = TAG_VERSION.dateRun.exec(run);
+  if (parts === null) return false;
+  const [year, month, day] = parts.slice(1).map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+const markOf = (run: string) => (isDate(run) ? TAG_VERSION.datePlaceholder : TAG_VERSION.placeholder);
+
 /**
  * "2.7.0.5723-ls166" → shape "#.#.#.#-ls#" with 2, 7, 0, 5723 and 166. A tag with no number (latest, stable) or one
  * holding a commit hash is no version: only its digest can say whether it moved.
@@ -13,7 +24,7 @@ interface TagVersion {
 function tagVersion(tag: string): TagVersion | null {
   const runs = tag.match(TAG_VERSION.numberRun) ?? [];
   if (runs.length === 0 || TAG_VERSION.commitLike.test(tag)) return null;
-  return { shape: tag.replace(TAG_VERSION.numberRun, TAG_VERSION.placeholder), numbers: runs.map(BigInt) };
+  return { shape: tag.replace(TAG_VERSION.numberRun, markOf), numbers: runs.map(BigInt) };
 }
 
 // Left to right, the first number that differs decides; tags of one shape always have as many numbers.

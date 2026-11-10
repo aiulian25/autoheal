@@ -13,9 +13,11 @@ import {
   type TaskCommentView,
   type TaskCreateRequest,
   type TaskDetailView,
+  type TaskAssistantView,
   type TaskSummaryView,
   type TimelineTaskView,
 } from "../../shared/api.js";
+import { JARVIS_ANSWER_HOW } from "../../shared/jarvis.js";
 import {
   AGENT_AUTOHEAL,
   AGENT_NAMES,
@@ -113,6 +115,11 @@ const PRIORITY_ORDER = sql.join(
 );
 // What an assessment's activity keeps: Ollama's decision, null when it could not be asked.
 const assessed = z.object({ decision: z.enum(UPDATE_ASSESSMENTS).nullable() });
+const assistantSaid = z.object({
+  answer: z.enum(["yes", "no"]).optional(),
+  how: z.enum(Object.values(JARVIS_ANSWER_HOW)).optional(),
+});
+const ASSISTANT_ACTIVITY = [TASK_ACTIVITY.assistantAsked, TASK_ACTIVITY.assistantAnswered];
 const activityView = (entry: typeof taskActivity.$inferSelect): TaskActivityView => ({
   id: entry.id,
   kind: entry.kind as TaskActivityKind,
@@ -849,6 +856,7 @@ export class TasksService {
       .limit(limit)
       .all();
     const advice = this.adviceOf(rows.map(({ task }) => task.id));
+    const assistant = this.assistantOf(rows.map(({ task }) => task.id));
     const now = this.clock();
     return rows.map(({ task, assigneeName, hostLabel }) => ({
       id: task.id,
@@ -869,6 +877,7 @@ export class TasksService {
       occurrences: task.occurrences,
       checkedOut: task.checkedOutBy !== null,
       advice: advice.get(task.id) ?? null,
+      assistant: assistant.get(task.id) ?? null,
       snoozedUntil: task.snoozedUntil !== null && task.snoozedUntil > now ? task.snoozedUntil : null,
       incidentId: task.incidentId,
       createdAt: task.createdAt,
@@ -897,6 +906,25 @@ export class TasksService {
       }
     }
     return advice;
+  }
+
+  // The assistant's latest word on each of these tasks: asked about it, or the answer it heard.
+  private assistantOf(taskIds: readonly string[]): Map<string, TaskAssistantView> {
+    if (taskIds.length === 0) {
+      return new Map();
+    }
+    const latest = new Map<string, TaskAssistantView>();
+    const said = this.database
+      .select({ taskId: taskActivity.taskId, dataJson: taskActivity.dataJson, at: taskActivity.createdAt })
+      .from(taskActivity)
+      .where(and(inArray(taskActivity.taskId, [...taskIds]), inArray(taskActivity.kind, ASSISTANT_ACTIVITY)))
+      .orderBy(asc(taskActivity.id))
+      .all();
+    for (const { taskId, dataJson, at } of said) {
+      const data = assistantSaid.safeParse(JSON.parse(dataJson)).data;
+      latest.set(taskId, { answer: data?.answer ?? null, how: data?.how ?? null, at });
+    }
+    return latest;
   }
 
   private commentsOf(taskId: string): TaskCommentView[] {

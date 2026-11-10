@@ -25,7 +25,7 @@ const WITH_ONE: OllamaServersView = {
   extras: [
     {
       id: SERVER,
-      name: "Delta3640",
+      name: "Orion2480",
       url: "http://192.168.10.178:11434",
       model: "big:30b",
       contextTokens: 32_768,
@@ -92,7 +92,7 @@ describe("the servers in the Ollama card", () => {
   it("adds one by its address, offering that server's models with the first already picked", async () => {
     show();
     fireEvent.click(await screen.findByRole("button", { name: text.addServer }));
-    fireEvent.change(screen.getByLabelText(new RegExp(`^${text.serverName}`)), { target: { value: "Delta3640" } });
+    fireEvent.change(screen.getByLabelText(new RegExp(`^${text.serverName}`)), { target: { value: "Orion2480" } });
     const address = screen.getByLabelText(new RegExp(`^${text.address}`));
     fireEvent.change(address, { target: { value: "http://192.168.10.178:11434" } });
     fireEvent.blur(address);
@@ -103,14 +103,14 @@ describe("the servers in the Ollama card", () => {
     expect(sent[1]).toMatchObject({
       method: "POST",
       url: API_ROUTES.ollamaServers,
-      body: { name: "Delta3640", url: "http://192.168.10.178:11434", model: "fresh:7b", contextTokens: 16_384 },
+      body: { name: "Orion2480", url: "http://192.168.10.178:11434", model: "fresh:7b", contextTokens: 16_384 },
     });
   });
 
   it("ticks hosts at once, and says who is left on the default", async () => {
     view = WITH_ONE;
     show();
-    const row = await screen.findByRole("region", { name: "Delta3640" });
+    const row = await screen.findByRole("region", { name: "Orion2480" });
     expect(await screen.findByText("The default server watches: Rowan.")).toBeTruthy();
     fireEvent.click(await within(row).findByRole("checkbox", { name: "Rowan" }));
     await waitFor(() =>
@@ -125,14 +125,14 @@ describe("the servers in the Ollama card", () => {
   it("switches its model with a click, and warns of plain http", async () => {
     view = WITH_ONE;
     show();
-    const row = await screen.findByRole("region", { name: "Delta3640" });
+    const row = await screen.findByRole("region", { name: "Orion2480" });
     expect(within(row).getByText(/^Plain http\./)).toBeTruthy();
     fireEvent.click(within(row).getByRole("radio", { name: /small:4b/ }));
     await waitFor(() =>
       expect(sent.at(-1)).toMatchObject({
         method: "PUT",
         url: apiPath(API_ROUTES.ollamaServer, { serverId: SERVER }),
-        body: { name: "Delta3640", model: "small:4b", contextTokens: 32_768 },
+        body: { name: "Orion2480", model: "small:4b", contextTokens: 32_768 },
       }),
     );
   });
@@ -148,7 +148,7 @@ describe("the servers in the Ollama card", () => {
     show();
     await screen.findByRole("checkbox", { name: "Alder" });
     fireEvent.click(await screen.findByRole("button", { name: text.removeServer }));
-    expect(screen.getByRole("group", { name: "Remove Delta3640? Alder will go back to the default." })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Remove Orion2480? Alder will go back to the default." })).toBeTruthy();
     expect(sent.some(({ method }) => method === "DELETE")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
     await waitFor(() => expect(sent.at(-1)?.method).toBe("DELETE"));
@@ -158,7 +158,7 @@ describe("the servers in the Ollama card", () => {
     view = WITH_ONE;
     homeAssistantConfigured = true;
     show();
-    const row = await screen.findByRole("region", { name: "Delta3640" });
+    const row = await screen.findByRole("region", { name: "Orion2480" });
     expect(await screen.findByText("The default server watches: Rowan, Home Assistant.")).toBeTruthy();
     fireEvent.click(await within(row).findByRole("checkbox", { name: text.homeAssistant }));
     await waitFor(() =>
@@ -167,7 +167,7 @@ describe("the servers in the Ollama card", () => {
     cleanup();
     view = { ...WITH_ONE, reviewServerId: SERVER };
     show();
-    const again = await screen.findByRole("region", { name: "Delta3640" });
+    const again = await screen.findByRole("region", { name: "Orion2480" });
     const tick = (await within(again).findByRole("checkbox", { name: text.homeAssistant })) as HTMLInputElement;
     await waitFor(() => expect(tick.checked).toBe(true));
     fireEvent.click(tick);
@@ -179,7 +179,7 @@ describe("the servers in the Ollama card", () => {
   it("offers no Home Assistant tick when it is not set up", async () => {
     view = WITH_ONE;
     show();
-    const row = await screen.findByRole("region", { name: "Delta3640" });
+    const row = await screen.findByRole("region", { name: "Orion2480" });
     await within(row).findByRole("checkbox", { name: "Alder" });
     expect(within(row).queryByRole("checkbox", { name: text.homeAssistant })).toBeNull();
   });

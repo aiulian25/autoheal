@@ -14,7 +14,9 @@ import {
   renderAttention,
   dragged,
   sentHandOver,
+  updateTask,
 } from "../../test-support/attention-page.js";
+import { timeOfDay } from "../../format.js";
 
 describe("handing work to the Ollama agent", () => {
   afterEach(() => {
@@ -43,6 +45,20 @@ describe("handing work to the Ollama agent", () => {
     });
     expect(await screen.findByText("Handed 2 items to Ollama.")).toBeTruthy();
     expect(screen.getAllByRole("checkbox").some((box) => (box as HTMLInputElement).checked)).toBe(false);
+  });
+
+  it("shows in its row what the assistant asked about an update, and the answer it heard", async () => {
+    const at = Date.UTC(2026, 10, 10, 20, 6);
+    const asked = { ...updateTask("quantum", null), assistant: { answer: null, how: null, at } };
+    const answered = {
+      ...updateTask("radicale", null),
+      assistant: { answer: "yes" as const, how: "voice" as const, at },
+    };
+    const noticed = [asked, answered].map((task) => ({ kind: "task" as const, task }));
+    serve("admin", { ...board, noticed }, { homeAssistant: null }, heldPackages);
+    renderAttention("admin");
+    expect(await screen.findByText("Asked the assistant")).toBeTruthy();
+    expect(screen.getByText(`Yes, by voice, ${timeOfDay(at)}`)).toBeTruthy();
   });
 
   it("lists a newer version with the host's updates, and hands it to the agent with the rest", async () => {
@@ -83,7 +99,7 @@ describe("handing work to the Ollama agent", () => {
         extras: [
           {
             id: "s1",
-            name: "Delta3640",
+            name: "Orion2480",
             url: "http://delta",
             model: "big:30b",
             contextTokens: 1,
@@ -101,14 +117,14 @@ describe("handing work to the Ollama agent", () => {
       serve("admin", board, { homeAssistant: null }, heldPackages, withDell(true));
       renderAttention("admin");
       const agent = await agentCard();
-      expect(await within(agent).findByText("Delta3640")).toBeTruthy();
+      expect(await within(agent).findByText("Orion2480")).toBeTruthy();
       expect(within(agent).getByText("big:30b")).toBeTruthy();
       expect(within(agent).getByText("1 host")).toBeTruthy();
       expect(within(agent).getByText("2 of 2 answering")).toBeTruthy();
       expect(screen.getByText(TEXT.attention.agent.ready)).toBeTruthy();
       const quantum = (await screen.findByRole("checkbox", { name: "Update quantum" })).closest("li")!;
       fireEvent.dragStart(quantum, { dataTransfer: dragged() });
-      expect(await within(agent).findByText("Goes to Delta3640")).toBeTruthy();
+      expect(await within(agent).findByText("Goes to Orion2480")).toBeTruthy();
       fireEvent.dragEnd(quantum);
       expect(await within(agent).findByText(TEXT.attention.agent.dropTarget)).toBeTruthy();
     });
@@ -193,6 +209,30 @@ describe("handing work to the Ollama agent", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Select all (4)" }));
     await waitFor(() => expect(folded.open).toBe(true));
+    // Its head follows: the way to the host's updates, as an open group's.
+    expect(await within(folded).findByRole("link", { name: "Review on Rowan" })).toBeTruthy();
+  });
+
+  it("says an open group is open in its head, though a person opened it and nothing is ticked", async () => {
+    const rowan = { ...alder, id: "h2", label: "Rowan" };
+    serve(
+      "admin",
+      board,
+      { homeAssistant: null },
+      { packages: [], automatic: [] },
+      {
+        [API_ROUTES.hosts]: [alder, rowan],
+        [apiPath(API_ROUTES.hostPackages, { hostId: "h2" })]: heldPackages,
+      },
+    );
+    renderAttention("admin");
+    const folded = (await screen.findByText("Review", { selector: "summary span" })).closest("details")!;
+
+    // As the browser does on a click on its summary.
+    folded.open = true;
+
+    expect(await within(folded).findByRole("link", { name: "Review on Rowan" })).toBeTruthy();
+    expect(within(folded).queryByText("Review", { selector: "summary span" })).toBeNull();
   });
 
   it("leads each update to its own place on the host: a container's row, the host's updates", async () => {

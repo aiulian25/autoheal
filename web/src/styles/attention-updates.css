@@ -220,11 +220,11 @@
   padding-inline: 14px;
 }
 
+/* Nothing in it paints to its edges, so nothing is clipped: a row's Ignore menu opens past the card's foot. */
 .update-group {
   background: var(--surface);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-large);
-  overflow: hidden;
 }
 
 .update-group > summary {

@@ -14,7 +14,7 @@ const laptop: SshKeyView = {
   madeByAutoheal: false,
   createdBy: "admin",
   createdAt: 1,
-  hosts: ["mini", "delta3640"],
+  hosts: ["mini", "orion2480"],
 };
 const made: MadeSshKeyView = {
   key: { ...laptop, id: "k2", name: "spare", madeByAutoheal: true, publicLine: "ssh-ed25519 AAAAspare", hosts: [] },
@@ -49,7 +49,7 @@ it("lists the keys and the hosts using each, makes one without showing its priva
     </QueryClientProvider>,
   );
 
-  expect(await screen.findByText(text.usedBy(["mini", "delta3640"]))).toBeTruthy();
+  expect(await screen.findByText(text.usedBy(["mini", "orion2480"]))).toBeTruthy();
   expect(screen.getByText("SHA256:laptop")).toBeTruthy();
 
   fireEvent.change(screen.getByRole("textbox", { name: text.makeName }), { target: { value: "spare" } });

@@ -6,6 +6,7 @@ import {
   type ContainerView,
   type HostPackagesView,
   type HostView,
+  type TaskAssistantView,
   type TaskSummaryView,
   type UpdateRunView,
 } from "../../../../src/shared/api.js";
@@ -33,6 +34,7 @@ import { IgnoreMenu, useIgnoreVersions } from "../../components/newer-versions.j
 import { imageTag } from "../../../../src/shared/image-reference.js";
 import { Icon, type IconName } from "../../components/icons.js";
 import { TEXT } from "../../constants.js";
+import { timeOfDay } from "../../format.js";
 import { hostUpdatesQuery } from "../../queries.js";
 import { runLine } from "../../update-runs.js";
 import { Grip } from "./attention-parts.js";
@@ -157,6 +159,17 @@ export function AdviceBadge({ advice }: { advice: UpdateAssessment | null }) {
   }
   const safe = advice === UPDATE_ASSESSMENT.update;
   return <span className={safe ? "badge good" : "badge warning"}>{TEXT.attention.advice[advice]}</span>;
+}
+
+/** What the assistant in Home Assistant asked about it, and the answer it heard: "Yes, by voice, 20:06". */
+export function AssistantBadge({ assistant }: { assistant?: TaskAssistantView | null }) {
+  if (!assistant) {
+    return null;
+  }
+  const words = TEXT.attention.assistant;
+  const said =
+    assistant.answer === null ? words.asked : words.answered(assistant.answer, assistant.how, timeOfDay(assistant.at));
+  return <span className="badge">{said}</span>;
 }
 
 // Under the button: how a run goes, or how it would.

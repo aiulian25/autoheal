@@ -149,8 +149,8 @@ export const SETTINGS_TEXT = {
       `Saved settings for ${names} could not be read. Environment values or defaults are in use. Save the affected settings again, or restore them from a verified configuration backup.`,
     settingNames: {
       "integration.gotify": "Gotify",
-      "integration.jarvis": "Jarvis",
-      "integration.jarvis_aliases": "Jarvis names",
+      "integration.jarvis": "Assistant",
+      "integration.jarvis_aliases": "Assistant's names for machines",
       "integration.ntfy": "ntfy",
       "integration.home_assistant": "Home Assistant",
       "integration.webhook": "Webhook",
@@ -215,7 +215,7 @@ export const SETTINGS_TEXT = {
       addServer: "Add another Ollama",
       cancelAdd: "Cancel",
       serverName: "Name",
-      serverNamePlaceholder: "The machine it runs on, such as Delta3640",
+      serverNamePlaceholder: "The machine it runs on, such as Orion2480",
       defaultNamePlaceholder: "Default",
       defaultNameHint: "What it is called here, such as the machine it runs on. Blank is Default.",
       nameLabel: "Name",
@@ -297,7 +297,7 @@ export const SETTINGS_TEXT = {
       liveStats: "Live stats kept",
       databaseBackup: "Database backup",
       everySeconds: (seconds: number) => `every ${seconds} seconds`,
-      everyHours: (hours: number) => `every ${hours} hours`,
+      everyHours: (hours: number) => (hours === 1 ? "every hour" : `every ${hours} hours`),
       minutes: (minutes: number) => `${minutes} minutes`,
       daily: "daily",
     },
@@ -340,7 +340,10 @@ export const SETTINGS_TEXT = {
         WidgetKeyScope,
         string
       >,
-      shortScopes: { widget: "Homepage", metrics: "Metrics", jarvis: "Jarvis" } satisfies Record<AnyKeyScope, string>,
+      shortScopes: { widget: "Homepage", metrics: "Metrics", jarvis: "Assistant" } satisfies Record<
+        AnyKeyScope,
+        string
+      >,
       create: "Create key",
     },
     proxies: {

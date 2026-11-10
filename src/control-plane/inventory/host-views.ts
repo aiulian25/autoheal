@@ -199,6 +199,7 @@ export function containerViewsOf(
         checkedAt: update?.checkedAt ?? null,
         policy: policyOf(byItself),
         remote: update?.remote ?? null,
+        remoteDigest: update?.remoteDigest ?? null,
         reason: update?.reason ?? null,
         provenance: update?.provenance ?? null,
         newerTag: update?.newerTag ?? null,

@@ -7,7 +7,7 @@ const servers = (reachable = true): OllamaServersView => ({
   extras: [
     {
       id: "s1",
-      name: "Delta3640",
+      name: "Orion2480",
       url: "http://delta",
       model: "big",
       contextTokens: 1,
@@ -39,7 +39,7 @@ describe("the servers on the landing page", () => {
     const { lines, state } = fleetOf(PRIMARY, servers(), HOSTS);
     expect(lines.map(({ name, hosts }) => [name, hosts])).toEqual([
       [null, 2],
-      ["Delta3640", 1],
+      ["Orion2480", 1],
     ]);
     expect(state).toBe("all");
   });
@@ -66,14 +66,14 @@ describe("a default with a name", () => {
 
 describe("who answers for a host", () => {
   it("is its own server, or the default while that is down", () => {
-    expect(answeringFor(servers(), "h2")).toBe("Delta3640");
+    expect(answeringFor(servers(), "h2")).toBe("Orion2480");
     expect(answeringFor(servers(), "h1")).toBeNull();
     expect(answeringFor(servers(false), "h2")).toBeNull();
     expect(answeringFor(servers(), null)).toBeNull();
   });
 
   it("counts each server once, however many hosts go there", () => {
-    expect(serversFor(servers(), ["h2", "h2"])).toEqual(["Delta3640"]);
-    expect(serversFor(servers(), ["h2", "h1", "h3"])).toEqual(["Delta3640", null]);
+    expect(serversFor(servers(), ["h2", "h2"])).toEqual(["Orion2480"]);
+    expect(serversFor(servers(), ["h2", "h1", "h3"])).toEqual(["Orion2480", null]);
   });
 });

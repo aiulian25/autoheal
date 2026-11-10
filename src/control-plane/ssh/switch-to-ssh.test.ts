@@ -48,7 +48,7 @@ describe("switching a runner host to SSH", () => {
   beforeEach(async () => {
     setup = await startEmbeddedSshHost([runningContainer("paperless"), oldRunner()]);
     const { admin, controlPlane } = setup;
-    const enrolled = (await admin.post(API_ROUTES.hosts, { label: "delta3640" })).json<EnrolledHostView>();
+    const enrolled = (await admin.post(API_ROUTES.hosts, { label: "orion2480" })).json<EnrolledHostView>();
     hostId = enrolled.host.id;
     token = runnerTokenOf(enrolled);
     // What its .env said, as its runner reports it.
@@ -88,7 +88,7 @@ describe("switching a runner host to SSH", () => {
     });
     expect(pending.statusCode, pending.body).toBe(200);
     const { pendingId, label } = pending.json<PendingSshHostView>();
-    expect(label).toBe("delta3640");
+    expect(label).toBe("orion2480");
     const confirmed = await admin.post(apiPath(API_ROUTES.sshHostConfirm, { pendingId }));
     expect(confirmed.statusCode, confirmed.body).toBe(200);
     return confirmed.json<HostView>();
@@ -109,7 +109,7 @@ describe("switching a runner host to SSH", () => {
     const switched = await switchIt();
     expect(switched).toMatchObject({
       id: hostId,
-      label: "delta3640",
+      label: "orion2480",
       kind: HOST_KIND.ssh,
       enrolledAt: before.enrolledAt,
     });

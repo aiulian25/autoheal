@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { API_ROUTES, apiPath, type HostImagesView, type HostView, type JobView } from "../../../src/shared/api.js";
 import { BYTES_PER_KILOBYTE, JOB_ACTION } from "../../../src/shared/constants.js";
 import type { UnusedImage } from "../../../src/shared/protocol.js";
@@ -18,6 +18,10 @@ const hostImagesQuery = (hostId: string) => ({
 });
 
 const sizeText = (sizeBytes: number) => bytes(sizeBytes, BYTES_PER_KILOBYTE);
+// Where its question shows: under the buttons above the list, or else under the row of the image it was asked for.
+const ASKED_ABOVE = "above";
+// Tick, image, size, unused since and remove: the row a question for one image spans.
+const REMOVABLE_COLUMNS = 5;
 
 /** What this host may read from a private registry, so an image it cannot read is understandable. */
 const scopesFor = (credentials: RegistryCredentialView[] | undefined, hostId: string) =>
@@ -64,6 +68,7 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
   const query = hostImagesQuery(host.id);
   const view = useQuery({ ...query, refetchInterval: (current) => refreshOf(current.state.data) });
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [askedFrom, setAskedFrom] = useState<string | null>(null);
   const credentials = useQuery({ ...registryCredentialsQuery, enabled: admin });
   const remove = useMutation({
     mutationFn: (images: readonly UnusedImage[]) =>
@@ -90,12 +95,13 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
     setSelected((current) =>
       current.has(id) ? new Set([...current].filter((other) => other !== id)) : new Set([...current, id]),
     );
-  const confirmRemove = (picked: readonly UnusedImage[]) => {
+  const confirmRemove = (picked: readonly UnusedImage[], from: string) => {
     const kept = picked.filter((image) => image.keptByUpdate).length;
     const question =
       picked.length === 1
         ? TEXT.hostImages.confirmOne(nameOf(picked[0]!), host.label, kept > 0)
         : TEXT.hostImages.confirmMany(picked.length, sizeText(totalOf(picked)), host.label, kept);
+    setAskedFrom(from);
     asking.confirm(question, () => remove.mutate(picked));
   };
   return (
@@ -118,15 +124,21 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
           <button
             type="button"
             disabled={chosen.length === 0 || remove.isPending}
-            onClick={() => confirmRemove(chosen)}
+            onClick={() => confirmRemove(chosen, ASKED_ABOVE)}
           >
             {TEXT.hostImages.removeSelected(chosen.length)}
           </button>
-          <button type="button" className="danger" disabled={remove.isPending} onClick={() => confirmRemove(images)}>
+          <button
+            type="button"
+            className="danger"
+            disabled={remove.isPending}
+            onClick={() => confirmRemove(images, ASKED_ABOVE)}
+          >
             {TEXT.hostImages.removeAll}
           </button>
         </div>
       )}
+      {askedFrom === ASKED_ABOVE && asking.question}
       {images.length > 0 && (
         <div className="table-wrap host-images">
           <table>
@@ -151,40 +163,48 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
             <tbody>
               {images.map((image) => {
                 const name = nameOf(image);
+                const askedHere = askedFrom === image.id && asking.question !== null;
                 return (
-                  <tr key={image.id}>
-                    {canRemove && (
+                  <Fragment key={image.id}>
+                    <tr>
+                      {canRemove && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selected.has(image.id)}
+                            onChange={() => toggle(image.id)}
+                            aria-label={TEXT.hostImages.selectOne(name)}
+                          />
+                        </td>
+                      )}
                       <td>
-                        <input
-                          type="checkbox"
-                          checked={selected.has(image.id)}
-                          onChange={() => toggle(image.id)}
-                          aria-label={TEXT.hostImages.selectOne(name)}
-                        />
+                        <div className="mono">{name}</div>
+                        <div className="mono small muted">{shortImageId(image.id)}</div>
+                        {image.keptByUpdate && <div className="small muted">{TEXT.hostImages.kept}</div>}
                       </td>
-                    )}
-                    <td>
-                      <div className="mono">{name}</div>
-                      <div className="mono small muted">{shortImageId(image.id)}</div>
-                      {image.keptByUpdate && <div className="small muted">{TEXT.hostImages.kept}</div>}
-                    </td>
-                    <td>{sizeText(image.sizeBytes)}</td>
-                    <td>
-                      <TimeAgo timestamp={image.unusedSince} />
-                    </td>
-                    {canRemove && (
+                      <td>{sizeText(image.sizeBytes)}</td>
                       <td>
-                        <button
-                          type="button"
-                          disabled={remove.isPending}
-                          onClick={() => confirmRemove([image])}
-                          aria-label={TEXT.hostImages.removeOne(name)}
-                        >
-                          {TEXT.hostImages.remove}
-                        </button>
+                        <TimeAgo timestamp={image.unusedSince} />
                       </td>
+                      {canRemove && (
+                        <td>
+                          <button
+                            type="button"
+                            disabled={remove.isPending}
+                            onClick={() => confirmRemove([image], image.id)}
+                            aria-label={TEXT.hostImages.removeOne(name)}
+                          >
+                            {TEXT.hostImages.remove}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                    {askedHere && (
+                      <tr>
+                        <td colSpan={REMOVABLE_COLUMNS}>{asking.question}</td>
+                      </tr>
                     )}
-                  </tr>
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -192,7 +212,6 @@ export function HostImages({ host, admin }: { host: HostView; admin: boolean }) 
         </div>
       )}
       {data.lastRemoval !== null && <LatestJob job={data.lastRemoval} />}
-      {asking.question}
       <ErrorNotice error={remove.error} />
     </section>
   );

@@ -19,7 +19,23 @@ function Card({ onRemove, onName }: { onRemove: () => void; onName: (name: strin
 }
 
 describe("a question asked in place", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    // jsdom has none: a test that watches scrolling puts one in.
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
+  it("comes into view as it is asked, only as far as it needs to", () => {
+    const scrolled = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrolled;
+    render(<Card onRemove={vi.fn()} onName={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    expect(scrolled).toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveBeenCalledWith({ block: "nearest" });
+    expect(scrolled.mock.contexts[0]).toBe(screen.getByRole("group", { name: "Remove the key?" }));
+  });
 
   it("acts only once yes is said where the button is, and not at all on no", () => {
     const onRemove = vi.fn();

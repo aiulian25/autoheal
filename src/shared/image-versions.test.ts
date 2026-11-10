@@ -29,6 +29,15 @@ describe("newer tags of any image, knowing nothing of it", () => {
     expect(newerTags("1.0.0", ["9f8e7d6c5b"])).toEqual([]);
   });
 
+  it("reads eight digits that are a real day as a date, so dates meet only dates", () => {
+    expect(newerTags("3", ["20260805", "4"])).toEqual(["4"]);
+    expect(newerTags("20260805", ["20260901", "20251231", "4"])).toEqual(["20260901"]);
+    expect(newerTags("9", ["10"])).toEqual(["10"]);
+    expect(newerTags("2024.7.0", ["2026.11.0"])).toEqual(["2026.11.0"]);
+    // Eight digits that are no day stay a number.
+    expect(newerTags("12345678", ["12345679"])).toEqual(["12345679"]);
+  });
+
   it("compares numbers too long for a plain number exactly", () => {
     expect(newerTags("20240101123045678901", ["20240101123045678902"])).toEqual(["20240101123045678902"]);
   });

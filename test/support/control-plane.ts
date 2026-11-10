@@ -108,6 +108,11 @@ export async function startTestControlPlane({
     webAssetsDirectory,
   });
   extendApp(app);
+  // A made-up Home Assistant is retried every few milliseconds for as long as its connection lives: left running, the
+  // retries outlive the test, and their lines the test file. A shutdown or a restore has stopped it already.
+  app.addHook("onClose", async () => {
+    if (!databaseHandle.restore.busy) services.homeAssistant.stop();
+  });
   await app.ready();
   const runnerApp = await buildRunnerServer(null, services);
   await runnerApp.ready();

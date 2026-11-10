@@ -81,9 +81,9 @@ function furnish(home: FakeHomeAssistant) {
   home.addDevice({ id: "mini", name: "Mini", area_id: "server_room" });
   home.addEntity("mini", "ping", "sensor.mini_cpu", "unavailable");
   home.addEntity("mini", "ping", "sensor.mini_memory", "unavailable");
-  home.addDevice({ id: "ds923", name: "DS923" });
-  home.addEntity("ds923", "synology_dsm", "update.ds923_dsm_update", "on");
-  home.addEntity("ds923", "synology_dsm", "binary_sensor.ds923_security", "off", { device_class: "problem" });
+  home.addDevice({ id: "ds224", name: "DS224" });
+  home.addEntity("ds224", "synology_dsm", "update.ds923_dsm_update", "on");
+  home.addEntity("ds224", "synology_dsm", "binary_sensor.ds923_security", "off", { device_class: "problem" });
   home.addDevice({ id: "lamp", name: "Desk lamp" });
   home.addEntity("lamp", "tplink", "light.desk_lamp", "off");
 }
@@ -191,6 +191,27 @@ describe("the Home Assistant inventory", () => {
     await eventually(() => inventory.view().status.connected && inventory.view().zigbee[1]!.available === false);
   });
 
+  it("passes on each state as it is read at a connect and as it changes, whatever its listener does", async () => {
+    const seen: string[] = [];
+    home.setState("input_text.autoheal_answers", "autoheal heard a 1");
+    const listening = new HomeAssistantInventory(
+      new HomeAssistantClient({ url: home.url(), token: home.token }),
+      QUICK_RETRIES,
+      Date.now,
+      (state) => {
+        seen.push(`${state.entity_id}=${state.state}`);
+        if (state.entity_id === "input_text.broken") throw new Error("a listener that fails");
+      },
+    );
+    await listening.connect();
+    expect(seen).toContain("input_text.autoheal_answers=autoheal heard a 1");
+    home.setState("input_text.broken", "x");
+    home.setState("input_text.autoheal_answers", "autoheal later a 2");
+    await eventually(() => seen.includes("input_text.autoheal_answers=autoheal later a 2"));
+    expect(listening.view().status.connected).toBe(true);
+    listening.stop();
+  });
+
   it("reads the safety devices' own alarm, battery, fault and online sensors", () => {
     expect(inventory.view().safety).toEqual([
       {
@@ -212,7 +233,7 @@ describe("the Home Assistant inventory", () => {
     const watched = inventory.view().watched;
     expect(watched.map(({ integration, name }) => `${integration}/${name}`)).toEqual([
       "ping/Mini",
-      "synology_dsm/DS923",
+      "synology_dsm/DS224",
       "uptime_kuma/CommaFeed",
     ]);
     expect(watched[0]).toMatchObject({ available: false, problems: [], area: "Server Room" });

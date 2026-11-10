@@ -67,7 +67,7 @@ describe("several Ollama servers, each watching chosen hosts", () => {
   const fromRunner = (url: string, payload: object, token = runnerToken) =>
     controlPlane.runnerApp.inject({ method: "POST", url, payload, headers: { authorization: `Bearer ${token}` } });
   const servers = async () => (await admin.get(API_ROUTES.ollamaServers)).json<OllamaServersView>();
-  const body = () => ({ name: "Delta3640", url: second.url(), model: MODEL, contextTokens: 32_768 });
+  const body = () => ({ name: "Orion2480", url: second.url(), model: MODEL, contextTokens: 32_768 });
   const added = async () => (await admin.post(API_ROUTES.ollamaServers, body())).json<{ id: string }>().id;
   const assign = (serverId: string, hostIds: string[]) =>
     admin.put(apiPath(API_ROUTES.ollamaServerHosts, { serverId }), { hostIds });
@@ -135,7 +135,7 @@ describe("several Ollama servers, each watching chosen hosts", () => {
     expect(fallback.requests).toHaveLength(1);
     const audit = (await admin.get(API_ROUTES.audit)).json<AuditEventView[]>();
     expect(audit.find((event) => event.action === "ollama.server_removed")?.details).toEqual({
-      name: "Delta3640",
+      name: "Orion2480",
       hostsMovedToDefault: [hostId],
     });
   });
@@ -166,7 +166,7 @@ describe("several Ollama servers, each watching chosen hosts", () => {
     const taken = await admin.post(API_ROUTES.ollamaServers, { ...body(), name: "Mini" });
     expect(taken.json()).toEqual({ error: "ollama_server_name_taken" });
     await added();
-    const takenByServer = await admin.put(API_ROUTES.ollamaDefaultName, { name: "Delta3640" });
+    const takenByServer = await admin.put(API_ROUTES.ollamaDefaultName, { name: "Orion2480" });
     expect(takenByServer.json()).toEqual({ error: "ollama_server_name_taken" });
     await admin.put(API_ROUTES.ollamaDefaultName, { name: "  " });
     expect((await servers()).defaultName).toBeNull();
@@ -205,7 +205,7 @@ describe("several Ollama servers, each watching chosen hosts", () => {
         history: () => [],
         homeAssistant: null,
         ollama: status(true),
-        ollamaExtras: [{ id, name: "Delta3640", status: status(reachable), hostIds: [hostId] }],
+        ollamaExtras: [{ id, name: "Orion2480", status: status(reachable), hostIds: [hostId] }],
         owner: null,
         packagePlan: () => null,
         unusedImages: () => [],
@@ -213,7 +213,7 @@ describe("several Ollama servers, each watching chosen hosts", () => {
       }) as unknown as Parameters<typeof detect>[0];
     const key = `ollama-server:${id}`;
     const down = detect(inputs(false)).problems.find((problem) => problem.key === key);
-    expect(down?.title).toContain("Delta3640");
+    expect(down?.title).toContain("Orion2480");
     expect(down?.description).toContain("HP");
     const back = detect(inputs(true));
     expect(back.problems.some((problem) => problem.key === key)).toBe(false);

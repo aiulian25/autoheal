@@ -40,7 +40,7 @@ const pending: PendingSshHostView = {
   docker: { socket: true, usable: true },
 };
 const newHost = (overrides: Partial<HostView> = {}) =>
-  ({ id: "h3", label: "DS923", state: "never_seen", ...overrides }) as HostView;
+  ({ id: "h3", label: "DS224", state: "never_seen", ...overrides }) as HostView;
 const AN_HOUR = 3_600_000;
 const enrolledWith = (installCommand: string, joinCodeExpiresAt = Date.now() + AN_HOUR): EnrolledHostView => ({
   host: newHost(),
@@ -194,7 +194,7 @@ describe("connecting a new host from the tile at the end of the host grid", () =
       [`POST ${API_ROUTES.hosts}`]: enrolled,
     });
     const dialog = await openDialog();
-    type(dialog, /^Name/, "DS923");
+    type(dialog, /^Name/, "DS224");
     fireEvent.change(dialog.getByRole("combobox", { name: new RegExp(`^${text.connection}`) }), {
       target: { value: "runner" },
     });
@@ -206,9 +206,9 @@ describe("connecting a new host from the tile at the end of the host grid", () =
 
     expect(await dialog.findByText(enrolled.installCommand)).toBeTruthy();
     expect(sent(fetch, "POST", API_ROUTES.hosts)).toEqual([
-      { label: "DS923", address: settings.runnerAddress, nasFolder: "/volume1/docker/autoheal" },
+      { label: "DS224", address: settings.runnerAddress, nasFolder: "/volume1/docker/autoheal" },
     ]);
-    expect(dialog.getByText(TEXT.hosts.add.waiting("DS923"))).toBeTruthy();
+    expect(dialog.getByText(TEXT.hosts.add.waiting("DS224"))).toBeTruthy();
     expect(dialog.getByText(TEXT.hosts.add.worksUntil(timeOfDay(enrolled.joinCodeExpiresAt)))).toBeTruthy();
     expect(dialog.queryByRole("button", { name: TEXT.hosts.add.makeAgain })).toBeNull();
     // This image can be downloaded, so there is no copying to do.
@@ -220,7 +220,7 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     );
 
     rerender([newHost({ state: "online" })]);
-    expect(await dialog.findByText(TEXT.hosts.add.connected("DS923"))).toBeTruthy();
+    expect(await dialog.findByText(TEXT.hosts.add.connected("DS224"))).toBeTruthy();
     // Its code is used now: nothing says until when it works.
     expect(dialog.queryByText(TEXT.hosts.add.worksUntil(timeOfDay(enrolled.joinCodeExpiresAt)))).toBeNull();
     fireEvent.click(dialog.getByRole("button", { name: text.done }));

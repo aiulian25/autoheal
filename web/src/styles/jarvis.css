@@ -42,3 +42,57 @@
     grid-column: 1 / -1;
   }
 }
+
+/* The three setup steps: each its words, then its one button. */
+.jarvis-steps {
+  margin-top: var(--space-3);
+}
+
+.jarvis-steps h4 {
+  margin: 0;
+}
+
+.jarvis-steps ol {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.jarvis-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.jarvis-steps li > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.jarvis-step {
+  flex: 1 1 18rem;
+}
+
+.jarvis-webhook {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.jarvis-asking {
+  border: 0;
+  padding: 0;
+  margin: var(--space-3) 0 0;
+}
+
+.jarvis-asking legend {
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+
+.jarvis-own {
+  margin-top: var(--space-3);
+}

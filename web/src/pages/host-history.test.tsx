@@ -19,7 +19,7 @@ function openHistory(fetch: (url: string) => Promise<Response>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <HostHistory host={{ id: "h1", label: "DeltaAv1" } as HostView} />
+      <HostHistory host={{ id: "h1", label: "OrionBx3" } as HostView} />
     </QueryClientProvider>,
   );
   const fold = screen.getByText(TEXT.metrics.statsHistory).closest("details")!;
@@ -39,7 +39,7 @@ it("folds the stats history away under the dials, and reads it only once it is o
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <HostHistory host={{ id: "h1", label: "DeltaAv1" } as HostView} />
+      <HostHistory host={{ id: "h1", label: "OrionBx3" } as HostView} />
     </QueryClientProvider>,
   );
   const fold = screen.getByText(TEXT.metrics.statsHistory).closest("details")!;

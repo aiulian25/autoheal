@@ -1,10 +1,13 @@
-// A read-only registry for the drill: serves one image, saved by `docker save` as an OCI layout, under any tag.
+// A read-only registry for the drills: serves one image, saved by `docker save` as an OCI layout, under any tag.
+// Older images named after the port are still served by digest, as a registry keeps the versions it had.
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 
-const [root, port] = process.argv.slice(2);
+const [root, port, ...older] = process.argv.slice(2);
 const tagged = JSON.parse(readFileSync(`${root}/index.json`, "utf8")).manifests[0];
-const blobPath = (digest) => `${root}/blobs/${digest.replace(":", "/")}`;
+const blobPath = (digest) =>
+  [root, ...older].map((folder) => `${folder}/blobs/${digest.replace(":", "/")}`).find((path) => existsSync(path)) ??
+  null;
 const ROUTE = /^\/v2\/.+\/(manifests|blobs)\/([^/]+)$/;
 
 createServer((request, response) => {

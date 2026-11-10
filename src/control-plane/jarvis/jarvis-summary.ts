@@ -6,6 +6,7 @@ import {
   safeName,
   spokenList,
   spokenName,
+  spokenTo,
   type JarvisSummary,
 } from "../../shared/jarvis.js";
 import { isCounted } from "../inventory/host-views.js";
@@ -59,9 +60,10 @@ function concerns(containers: readonly ContainerView[], tasks: readonly JarvisCa
 }
 
 const NOTHING = "Nothing needs you.";
-const withConcerns = (opening: string, facts: Facts): JarvisSummary => ({
-  say: [opening, ...(facts.say.length === 0 ? [NOTHING] : facts.say)].join(" "),
-  text: [opening.replace(", sir", ""), ...(facts.text.length === 0 ? [NOTHING] : facts.text)].join(" "),
+// The opening said in the form of address, and written without it.
+const withConcerns = (opening: JarvisSummary, facts: Facts): JarvisSummary => ({
+  say: [opening.say, ...(facts.say.length === 0 ? [NOTHING] : facts.say)].join(" "),
+  text: [opening.text, ...(facts.text.length === 0 ? [NOTHING] : facts.text)].join(" "),
 });
 
 /** All the machines, in a couple of sentences. */
@@ -69,6 +71,7 @@ export function fleetSummary(
   hosts: readonly HostView[],
   allContainers: readonly ContainerView[],
   tasks: readonly JarvisCandidate[],
+  address: string | null,
 ): JarvisSummary {
   const active = hosts.filter(({ state }) => state !== HOST_STATE.revoked);
   const up = active.filter(isUp);
@@ -76,17 +79,17 @@ export function fleetSummary(
   const known = new Set(up.map(({ id }) => id));
   const containers = counted(allContainers).filter(({ hostId }) => known.has(hostId));
   const counts = `${running(containers)} of ${of(containers.length, "container", "containers")} running`;
-  const machines =
+  const machines = (toYou: string) =>
     down.length === 0
-      ? `${active.length === 1 ? "The 1 machine is" : `All ${active.length} machines are`} up, sir, with ${counts}.`
-      : `${up.length} of ${of(active.length, "machine is", "machines are")} up, sir, with ${counts}.`;
+      ? `${active.length === 1 ? "The 1 machine is" : `All ${active.length} machines are`} up${toYou}, with ${counts}.`
+      : `${up.length} of ${of(active.length, "machine is", "machines are")} up${toYou}, with ${counts}.`;
   const facts = concerns(containers, tasks, true);
   if (down.length > 0) {
     const verb = down.length === 1 ? "is" : "are";
     facts.say.unshift(`${spokenList(down)} ${verb} not answering.`);
     facts.text.unshift(`${down.join(", ")} ${verb} not answering.`);
   }
-  return withConcerns(machines, facts);
+  return withConcerns({ say: machines(spokenTo(address)), text: machines("") }, facts);
 }
 
 /** One machine. */
@@ -94,11 +97,13 @@ export function hostSummary(
   host: HostView,
   allContainers: readonly ContainerView[],
   tasks: readonly JarvisCandidate[],
+  address: string | null,
 ): JarvisSummary {
   const name = safeName(host.label);
   const spoken = spokenName(name);
+  const toYou = spokenTo(address);
   if (!isUp(host)) {
-    return { say: `${spoken} is not answering, sir.`, text: `${name} is not answering.` };
+    return { say: `${spoken} is not answering${toYou}.`, text: `${name} is not answering.` };
   }
   const containers = counted(allContainers).filter(({ hostId }) => hostId === host.id);
   const counts = `${running(containers)} of ${of(containers.length, "container", "containers")} running`;
@@ -107,6 +112,8 @@ export function hostSummary(
     tasks.filter(({ hostId }) => hostId === host.id),
     false,
   );
-  const summary = withConcerns(`${spoken} is up, sir, with ${counts}.`, facts);
-  return { say: summary.say, text: summary.text.replace(spoken, name) };
+  return withConcerns(
+    { say: `${spoken} is up${toYou}, with ${counts}.`, text: `${name} is up, with ${counts}.` },
+    facts,
+  );
 }

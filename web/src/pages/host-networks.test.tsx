@@ -47,7 +47,7 @@ const NETWORKS = [
 ];
 const host = {
   id: "h1",
-  label: "DeltaAv1",
+  label: "OrionBx3",
   dryRun: false,
   containerAccess: true,
 } as HostView;

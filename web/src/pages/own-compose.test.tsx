@@ -12,7 +12,7 @@ const CHECK = apiPath(API_ROUTES.hostInstallOwnCheck, { hostId: "h1" });
 const INSTALL = apiPath(API_ROUTES.hostInstallOwn, { hostId: "h1" });
 const host = {
   id: "h1",
-  label: "DeltaAv1",
+  label: "OrionBx3",
   kind: "ssh",
   hostDeploy: true,
   health: { address: "10.0.0.9" },

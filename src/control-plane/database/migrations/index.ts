@@ -43,6 +43,7 @@ import { reportTrimmedMigration } from "./0069-report-trimmed.js";
 import { joinCodesMigration } from "./0070-join-codes.js";
 import { clockOffsetMigration } from "./0071-clock-offset.js";
 import { runnerUpdateMigration } from "./0072-runner-update.js";
+import { jarvisQuestionsMigration } from "./0073-jarvis-questions.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -152,6 +153,7 @@ export const MIGRATIONS: readonly Migration[] = [
   joinCodesMigration,
   clockOffsetMigration,
   runnerUpdateMigration,
+  jarvisQuestionsMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

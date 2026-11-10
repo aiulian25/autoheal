@@ -659,6 +659,16 @@ export const jarvisItems = sqliteTable("jarvis_items", {
   createdAt: integer("created_at").notNull(),
   sentAt: integer("sent_at"),
   attempts: integer("attempts").notNull().default(0),
+  // A question only: each update it asks about as taskId@digest, how often it was heard, when it is asked again,
+  // and its code, sealed. Null and 0 for what is told.
+  membersJson: text("members_json"),
+  asks: integer("asks").notNull().default(0),
+  nextAskAt: integer("next_ask_at"),
+  codeSealed: text("code_sealed"),
+  // When the last line counted about it was written, by Home Assistant's clock: an older one is not counted again.
+  lastLineAt: integer("last_line_at"),
+  // The answer a question got, by whom and how, and how each update it started ended.
+  answerJson: text("answer_json"),
 });
 
 export const widgetKeys = sqliteTable("widget_keys", {

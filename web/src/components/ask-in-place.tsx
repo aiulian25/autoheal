@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { TEXT } from "../constants.js";
 
 interface Question {
@@ -12,7 +12,12 @@ interface Question {
 
 function InPlaceQuestion({ question, onDone }: { question: Question; onDone: () => void }) {
   const [answer, setAnswer] = useState(question.initial ?? "");
+  const asked = useRef<HTMLFormElement>(null);
   const asksName = question.initial !== null;
+  // Wherever a card puts it, a question asked out of sight would go unseen: it comes just far enough into view.
+  useEffect(() => {
+    asked.current?.scrollIntoView?.({ block: "nearest" });
+  }, []);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const given = answer.trim();
@@ -21,7 +26,14 @@ function InPlaceQuestion({ question, onDone }: { question: Question; onDone: () 
     question.go(given);
   };
   return (
-    <form className="ask-in-place row" role="group" aria-label={question.text} aria-live="polite" onSubmit={submit}>
+    <form
+      ref={asked}
+      className="ask-in-place row"
+      role="group"
+      aria-label={question.text}
+      aria-live="polite"
+      onSubmit={submit}
+    >
       {asksName ? (
         <label>
           {question.text}

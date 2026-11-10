@@ -11,8 +11,11 @@ import {
 } from "../../shared/constants.js";
 import {
   JARVIS_LIMITS,
+  jarvisAddressSchema,
   jarvisAliasesSchema,
+  jarvisAskingSchema,
   jarvisHeardSchema,
+  jarvisNameSchema,
   jarvisPauseSchema,
   jarvisSummaryQuerySchema,
 } from "../../shared/jarvis.js";
@@ -46,12 +49,25 @@ export function registerJarvisRoutes(app: FastifyInstance, services: ControlPlan
     jarvis.pause(actorOf(request), parseBody(jarvisPauseSchema, request.body).paused);
     return reply.code(HTTP_STATUS.noContent).send();
   });
+  app.put(API_ROUTES.jarvisAddress, admin, async (request, reply) => {
+    jarvis.setAddress(actorOf(request), parseBody(jarvisAddressSchema, request.body).address);
+    return reply.code(HTTP_STATUS.noContent).send();
+  });
+  app.put(API_ROUTES.jarvisName, admin, async (request, reply) => {
+    jarvis.setName(actorOf(request), parseBody(jarvisNameSchema, request.body).name);
+    return reply.code(HTTP_STATUS.noContent).send();
+  });
+  app.put(API_ROUTES.jarvisAsking, admin, async (request, reply) => {
+    jarvis.setAsking(actorOf(request), parseBody(jarvisAskingSchema, request.body));
+    return reply.code(HTTP_STATUS.noContent).send();
+  });
   app.put(API_ROUTES.jarvisAliases, admin, async (request, reply) => {
     const { hostId, aliases } = parseBody(jarvisAliasesSchema, request.body);
     jarvis.setAliases(actorOf(request), hostId, aliases);
     return reply.code(HTTP_STATUS.noContent).send();
   });
   app.post(API_ROUTES.jarvisTest, admin, async () => jarvis.startTest());
+  app.post(API_ROUTES.jarvisTestQuestion, admin, async () => jarvis.startTestQuestion());
 
   app.get(API_ROUTES.jarvisStatus, machine, async (request) => {
     requireKey(request.headers[WIDGET_KEY_HEADER]);

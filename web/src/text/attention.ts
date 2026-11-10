@@ -140,6 +140,12 @@ export const ATTENTION_TEXT = {
       `Install ${count === 1 ? "it" : "them"} in Home Assistant: Settings → System → Updates.`,
     hostPackage: (security: boolean) => (security ? "Host package · security fix" : "Host package"),
     goesInTonight: (start: string, end: string) => `Goes in tonight, ${start} to ${end}`,
+    // The assistant in Home Assistant asked about an update: then the answer it heard, how, and when.
+    assistant: {
+      asked: "Asked the assistant",
+      answered: (answer: "yes" | "no", how: string | null, time: string) =>
+        `${answer === "yes" ? "Yes" : "No"}${how === null ? "" : `, by ${how}`}, ${time}`,
+    },
     advice: { update: "Ollama: safe to apply", hold: "Ollama: hold it for you" } satisfies Record<
       UpdateAssessment,
       string
@@ -152,7 +158,7 @@ export const ATTENTION_TEXT = {
     nothingHealed: "Nothing needed healing.",
     comingUp: "Coming up",
     imageCheck: "Image update check",
-    everyHours: (hours: number) => `every ${hours} hours`,
+    everyHours: (hours: number) => (hours === 1 ? "every hour" : `every ${hours} hours`),
     hostPackages: "Host packages",
     tonightAt: (time: string) => `tonight ${time}`,
     databaseBackup: "Database backup",
@@ -266,6 +272,9 @@ export const ATTENTION_TEXT = {
       released: () => "let go of it",
       dispatched: () => "handed it to the Ollama agent",
       reported: () => "had Ollama look into why it failed",
+      assistant_asked: () => "asked about it through the assistant",
+      assistant_answered: (data: Record<string, unknown>) =>
+        `answered ${String(data.answer)} through the assistant (${String(data.how)}${data.room ? `, ${String(data.room)}` : ""})`,
     } satisfies Record<TaskActivityKind, (data: Record<string, unknown>) => string>,
   },
 } as const;

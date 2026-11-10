@@ -11,7 +11,7 @@ import { HostDials } from "./host-stats.js";
 const NOW = Date.now();
 const host: HostView = {
   id: "h1",
-  label: "DeltaAv1",
+  label: "OrionBx3",
   state: "online",
   tokenHint: "hint",
   enrolledAt: 1,
@@ -92,12 +92,12 @@ describe("reboot and shut down, on a host's page", () => {
   it("asks once, in place, then reboots; a shutdown says it stays off; a cancel asks nothing", async () => {
     const fetch = show(<PowerButtons host={host} />);
     fireEvent.click(screen.getByRole("button", { name: POWER_TEXT.reboot }));
-    expect(screen.getByText(POWER_TEXT.confirm.reboot("DeltaAv1", 33))).toBeTruthy();
+    expect(screen.getByText(POWER_TEXT.confirm.reboot("OrionBx3", 33))).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: POWER_TEXT.cancel }));
     expect(posted(fetch)).toEqual([]);
 
     fireEvent.click(screen.getByRole("button", { name: POWER_TEXT.shutdown }));
-    expect(screen.getByText(POWER_TEXT.confirm.shutdown("DeltaAv1"))).toBeTruthy();
+    expect(screen.getByText(POWER_TEXT.confirm.shutdown("OrionBx3"))).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: POWER_TEXT.confirm.go.shutdown }));
     await waitFor(() => expect(posted(fetch)).toEqual([{ action: "shutdown" }]));
   });
@@ -126,7 +126,7 @@ describe("the strip that follows a reboot or a shutdown", () => {
 
   it("follows a reboot: offline after going down, with how long it has been quiet", () => {
     show(<PowerStrip host={{ ...host, power: power({}) }} />);
-    const strip = screen.getByRole("status", { name: POWER_TEXT.title.reboot("DeltaAv1") });
+    const strip = screen.getByRole("status", { name: POWER_TEXT.title.reboot("OrionBx3") });
     expect(stepsOf(strip)).toEqual(["Asked:done", "Going down:done", "Offline:active", "Starting:-", "Ready:-"]);
     // About 20 s, as long as the test took to get here.
     expect(within(strip).getByText(/^Offline\. No answer for 2\d s: Autoheal keeps asking\.$/)).toBeTruthy();
@@ -137,7 +137,7 @@ describe("the strip that follows a reboot or a shutdown", () => {
     show(
       <PowerStrip host={{ ...host, power: power({ phase: POWER_PHASE.ready, finishedAt: NOW - 30_000 + 72_000 }) }} />,
     );
-    const strip = screen.getByRole("status", { name: POWER_TEXT.title.ready("DeltaAv1") });
+    const strip = screen.getByRole("status", { name: POWER_TEXT.title.ready("OrionBx3") });
     expect(stepsOf(strip).every((step) => step.endsWith(":done"))).toBe(true);
     expect(within(strip).getByText(/^Back in 1 minute\. 33 of 33 containers running\.$/)).toBeTruthy();
   });
@@ -148,12 +148,12 @@ describe("the strip that follows a reboot or a shutdown", () => {
         host={{ ...host, power: power({ action: "shutdown", phase: POWER_PHASE.off, finishedAt: NOW - 10_000 }) }}
       />,
     );
-    const strip = screen.getByRole("status", { name: POWER_TEXT.title.off("DeltaAv1") });
+    const strip = screen.getByRole("status", { name: POWER_TEXT.title.off("OrionBx3") });
     expect(within(strip).getByText(/by admin\. No alarm while it stays off/)).toBeTruthy();
     cleanup();
     const refusal = "Not rebooting: a Proxmox backup is running on this node.";
     show(<PowerStrip host={{ ...host, power: power({ phase: POWER_PHASE.failed, outcome: refusal }) }} />);
-    expect(screen.getByRole("status", { name: POWER_TEXT.title.failed("DeltaAv1") }).textContent).toContain(refusal);
+    expect(screen.getByRole("status", { name: POWER_TEXT.title.failed("OrionBx3") }).textContent).toContain(refusal);
   });
 
   it("shows on the badge and over the dials while the host is away", () => {
@@ -164,6 +164,6 @@ describe("the strip that follows a reboot or a shutdown", () => {
       </>,
     );
     expect(screen.getByText(POWER_TEXT.badge.offline).closest(".badge")!.className).toContain("badge-moving");
-    expect(screen.getByText(POWER_TEXT.away.offline("DeltaAv1"))).toBeTruthy();
+    expect(screen.getByText(POWER_TEXT.away.offline("OrionBx3"))).toBeTruthy();
   });
 });

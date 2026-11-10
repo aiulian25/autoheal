@@ -92,7 +92,11 @@ export class AutohealWorker {
     const { tasks, jobs } = this.dependencies;
     const container = this.containerOf(task);
     // Nothing to do (yet): the update is gone, the host has not reported the container, or Ollama has not answered.
-    if (container === null || !hasUpdate(container) || !(await this.readyToDecide(task, container))) {
+    // A person's hand-over is their own decision: it waits for no word from Ollama.
+    if (container === null || !hasUpdate(container)) {
+      return;
+    }
+    if (!this.handedOver(task) && !(await this.readyToDecide(task, container))) {
       return;
     }
     if (!tasks.checkout(task.id, AGENT_AUTOHEAL)) {

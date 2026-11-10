@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   startTestControlPlane,
   type TestClient,
@@ -495,6 +495,28 @@ describe("container actions", () => {
         "Ollama calls it safe to apply: A document app; the update looks routine.",
       ]);
       expect((await takeWork()).jobs).toEqual([]);
+    });
+
+    it("takes a person's hand-over of an update waiting for Ollama's word at once", async () => {
+      const task = await whoamiTask();
+      // This control plane has no Ollama to ask: the update waits for its word.
+      const worker = controlPlane.services.autohealWorker;
+      await worker.run();
+      expect((await takeWork()).jobs).toEqual([]);
+      const handed = await admin.post(API_ROUTES.agentDispatch, {
+        updates: [task.id],
+        packages: [],
+        incidents: [],
+        tags: [],
+      });
+      expect(handed.statusCode).toBe(200);
+      await worker.run();
+      const jobs = await vi.waitFor(async () => {
+        const taken = (await takeWork()).jobs;
+        expect(taken).toHaveLength(1);
+        return taken;
+      });
+      expect(jobs).toEqual([expect.objectContaining({ action: "update", containerName: "whoami" })]);
     });
 
     it("waits for Ollama's word when it cannot be asked, then hands the update to a person, never going ahead alone", async () => {

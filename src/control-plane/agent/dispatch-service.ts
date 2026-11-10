@@ -63,6 +63,17 @@ interface TagHandOver {
   tag: string;
 }
 
+// Whether a check lets it through: a refusal is the answer, anything else is a fault.
+function accepts(check: () => unknown): boolean {
+  try {
+    check();
+    return true;
+  } catch (error) {
+    if (error instanceof DomainError) return false;
+    throw error;
+  }
+}
+
 const isOpen = (task: TaskRow) => (OPEN_TASK_STATUSES as readonly string[]).includes(task.status);
 const isContainerUpdate = (task: TaskRow) =>
   (JSON.parse(task.labelsJson) as string[]).includes(TASK_LABEL.update) &&
@@ -109,6 +120,16 @@ export class DispatchService {
       incidents: incidents.length,
       tags: tags.length,
     };
+  }
+
+  /** Whether a person's hand-over of this update would be taken now: the checks `dispatch` makes first, no more. */
+  takesUpdate(taskId: string): boolean {
+    return accepts(() => this.updateOf(taskId));
+  }
+
+  /** Whether a person's hand-over of this newer version would be taken now: the checks `dispatch` makes first. */
+  takesTag(request: AgentDispatchRequest["tags"][number]): boolean {
+    return accepts(() => this.tagOf(request));
   }
 
   // --- what may be handed over ---------------------------------------------------------------------

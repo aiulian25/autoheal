@@ -146,6 +146,24 @@ describe("a host's old images", () => {
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
   });
 
+  it("asks right under what was pressed: the buttons above the list, or the row of the one image", async () => {
+    serve({ images: [KEPT, NAMELESS, BUILT_HERE], lastRemoval: null });
+    show(<HostImages host={alder(false)} admin />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove all" }));
+    const all = screen.getByRole("group", {
+      name: "Remove 3 images (1.7 GB) from Alder? 1 of them is kept from an update, for going back by hand.",
+    });
+    expect(screen.getByRole("group", { name: TEXT.hostImages.actions }).nextElementSibling).toBe(all);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove cccccccccccc" }));
+    const one = screen.getByRole("group", { name: "Remove cccccccccccc from Alder?" });
+    const row = screen.getByRole("button", { name: "Remove cccccccccccc" }).closest("tr");
+    expect(row?.nextElementSibling?.contains(one)).toBe(true);
+    // One question at a time: the one above has gone.
+    expect(screen.queryByRole("group", { name: /Remove 3 images/ })).toBeNull();
+  });
+
   it("lets a viewer, or anyone on a host that only watches, read the list and pick nothing", async () => {
     serve({ images: [KEPT], lastRemoval: null });
     show(<HostImages host={alder(false)} admin={false} />);

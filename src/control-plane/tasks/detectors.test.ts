@@ -1034,7 +1034,7 @@ describe("detectors", () => {
       watched: [
         {
           id: "nas",
-          name: "Synology DS923+",
+          name: "Synology DS224+",
           integration: "synology_dsm",
           area: null,
           available: false,
@@ -1047,7 +1047,7 @@ describe("detectors", () => {
     later(5 * MINUTE);
     await detector.run();
     const [task] = await tasks();
-    expect(task).toMatchObject({ title: "Synology DS923+ (synology_dsm) reports a problem", priority: "medium" });
+    expect(task).toMatchObject({ title: "Synology DS224+ (synology_dsm) reports a problem", priority: "medium" });
     expect((await detail(task!.id)).description).toBe("Seen through Home Assistant: unavailable.");
   });
 

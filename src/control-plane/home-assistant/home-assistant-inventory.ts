@@ -68,6 +68,8 @@ export class HomeAssistantInventory {
     private readonly client: HomeAssistantClient,
     private readonly timing: HomeAssistantTiming = DEFAULT_TIMING,
     private readonly clock: () => number = Date.now,
+    // Each state as it is read at a connect and as it changes, for whoever reads Home Assistant's helpers.
+    private readonly onState: (state: StateEntry) => void = () => {},
   ) {
     this.retryDelay = timing.firstRetryMilliseconds;
   }
@@ -178,6 +180,7 @@ export class HomeAssistantInventory {
     ]);
     this.useRegistries(areas, devices, entities);
     this.states = new Map(states.map((state) => [state.entity_id, state]));
+    states.forEach((state) => this.passOn(state));
   }
 
   private async refreshRegistries() {
@@ -216,6 +219,16 @@ export class HomeAssistantInventory {
       return;
     }
     this.states.set(change.entity_id, change.new_state);
+    this.passOn(change.new_state);
+  }
+
+  // What a listener does with a state never reaches the socket: thrown there, it would end the whole process.
+  private passOn(state: StateEntry) {
+    try {
+      this.onState(state);
+    } catch (error) {
+      log(HOME_ASSISTANT_MESSAGES.notPassedOn(describeError(error)));
+    }
   }
 
   private lost(reason: string) {
@@ -257,13 +270,25 @@ export class HomeAssistantConnection {
   }
 
   private inventory: HomeAssistantInventory | null = null;
+  private readonly stateListeners: ((state: StateEntry) => void)[] = [];
 
-  constructor(private readonly makeInventory: (settings: HomeAssistantSettings) => HomeAssistantInventory) {}
+  constructor(
+    private readonly makeInventory: (
+      settings: HomeAssistantSettings,
+      onState: (state: StateEntry) => void,
+    ) => HomeAssistantInventory,
+  ) {}
+
+  /** Each state Home Assistant has, as it is read at every connect and as it changes, whichever inventory is live. */
+  onState(listener: (state: StateEntry) => void) {
+    this.stateListeners.push(listener);
+  }
 
   /** Follows `settings` from now on; the application starts it, and Settings restart it. */
   use(settings: HomeAssistantSettings | null) {
     this.inventory?.stop();
-    this.inventory = settings === null ? null : this.makeInventory(settings);
+    const passOn = (state: StateEntry) => this.stateListeners.forEach((listener) => listener(state));
+    this.inventory = settings === null ? null : this.makeInventory(settings, passOn);
   }
 
   start() {

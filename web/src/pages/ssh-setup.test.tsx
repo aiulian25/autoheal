@@ -72,7 +72,7 @@ function show(answers: Record<string, unknown | { status: number; body: unknown 
         <SwitchToSshSteps
           dashboardAddress="192.168.10.83"
           onCancelled={cancelled}
-          switching={{ hostId: "h3", label: "delta3640" }}
+          switching={{ hostId: "h3", label: "orion2480" }}
         />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -94,8 +94,8 @@ describe("switching a runner host to SSH, step by step", () => {
   it("switches a runner host to SSH under its own name, then says how to remove its runner", async () => {
     const fetch = show({
       [`GET ${API_ROUTES.sshKeys}`]: [key()],
-      [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: { ...pending(READY), label: "delta3640" },
-      [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "delta3640" },
+      [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: { ...pending(READY), label: "orion2480" },
+      [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "orion2480" },
     });
     expect(screen.getByText(text.switchExplanation)).toBeTruthy();
     // It keeps its name: none is asked.
@@ -111,7 +111,7 @@ describe("switching a runner host to SSH, step by step", () => {
     expect(screen.getByText(text.withDocker)).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: text.switchTrust }));
-    expect(await screen.findByText(text.switched("delta3640"))).toBeTruthy();
+    expect(await screen.findByText(text.switched("orion2480"))).toBeTruthy();
     expect(sent(fetch, "POST", apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" }))).toEqual([
       { address: "192.168.10.60", port: 22, user: "alex", keyId: "k1" },
     ]);
@@ -128,7 +128,7 @@ describe("switching a runner host to SSH, step by step", () => {
       [`GET ${API_ROUTES.sshKeys}`]: [],
       [`POST ${API_ROUTES.sshKeys}`]: key(),
       [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: pending({ socket: false, usable: false }),
-      [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "delta3640" },
+      [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "orion2480" },
     });
     fillWhere();
     fireEvent.change(await screen.findByRole("textbox", { name: text.privateKey }), {
@@ -138,7 +138,7 @@ describe("switching a runner host to SSH, step by step", () => {
     fireEvent.click(screen.getByRole("button", { name: text.useKey }));
     await waitFor(() =>
       expect(sent(fetch, "POST", API_ROUTES.sshKeys)).toEqual([
-        { name: "delta3640", privateKey: PRIVATE_KEY, passphrase: "its passphrase" },
+        { name: "orion2480", privateKey: PRIVATE_KEY, passphrase: "its passphrase" },
       ]),
     );
 
@@ -147,7 +147,7 @@ describe("switching a runner host to SSH, step by step", () => {
     // Nothing to install: it is added all the same.
     expect(document.body.textContent).not.toContain("get.docker.com");
     fireEvent.click(screen.getByRole("button", { name: text.switchTrust }));
-    expect(await screen.findByText(text.switched("delta3640"))).toBeTruthy();
+    expect(await screen.findByText(text.switched("orion2480"))).toBeTruthy();
   });
 
   it("says, without asking, how the user would reach Docker that is there but not theirs", async () => {
@@ -223,7 +223,7 @@ describe("switching a runner host to SSH, step by step", () => {
     ]) {
       expect(await screen.findByText(command)).toBeTruthy();
     }
-    expect(sent(fetch, "POST", API_ROUTES.sshKeysMake)).toEqual([{ name: "delta3640", passphrase: "made's own" }]);
+    expect(sent(fetch, "POST", API_ROUTES.sshKeysMake)).toEqual([{ name: "orion2480", passphrase: "made's own" }]);
     expect(document.body.textContent).not.toContain("the-secret-body");
 
     fireEvent.click(screen.getByRole("button", { name: text.download }));

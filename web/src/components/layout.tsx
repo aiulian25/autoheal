@@ -74,14 +74,17 @@ type Connection = { key: string; text: string; tone: "good" | "danger" | "off"; 
 
 const JARVIS_HEARD_MILLISECONDS = 5 * 60 * 1000;
 
-// It asks after Autoheal every minute, so long silence means it is not there, however connected it reads.
+// A house on its key asks after Autoheal every minute, so long silence means it is not there. A house on the
+// blueprint never calls: its answers come back over Autoheal's own connection, proven by an answered test question.
 function jarvisConnection(view: JarvisView, now: number): Connection {
   const key = "jarvis";
-  if (view.paused) return { key, text: TEXT.nav.jarvis.paused, tone: "off" };
+  const name = view.name ?? TEXT.nav.jarvis.assistant;
+  if (view.paused) return { key, text: TEXT.nav.jarvis.paused(name), tone: "off" };
   const heard = view.lastHeardAt !== null && now - view.lastHeardAt < JARVIS_HEARD_MILLISECONDS;
-  return heard
-    ? { key, text: TEXT.nav.jarvis.connected, tone: "good" }
-    : { key, text: TEXT.nav.jarvis.notHeard, tone: "danger" };
+  const answers = view.homeAssistantConnected && view.asking.ready;
+  return heard || answers
+    ? { key, text: TEXT.nav.jarvis.connected(name), tone: "good" }
+    : { key, text: TEXT.nav.jarvis.notHeard(name), tone: "danger" };
 }
 
 /** Everything connected to Autoheal, on every page, each with how it is doing. */

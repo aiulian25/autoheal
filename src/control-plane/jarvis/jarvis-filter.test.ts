@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { JARVIS_LIMITS, jarvisSay, jarvisSetup, matchSpoken, spokenName } from "../../shared/jarvis.js";
+import {
+  JARVIS_LIMITS,
+  jarvisQuestion,
+  jarvisSay,
+  jarvisVersionQuestion,
+  jarvisSetup,
+  matchSpoken,
+  spokenName,
+  type JarvisStatus,
+} from "../../shared/jarvis.js";
 import type { ContainerView, HostView } from "../../shared/api.js";
-import { isBuildContainer, planJarvis, type JarvisCandidate } from "./jarvis-filter.js";
+import {
+  isBuildContainer,
+  planJarvis,
+  type JarvisCandidate,
+  type JarvisPlanned,
+  type JarvisQuestion,
+} from "./jarvis-filter.js";
 import { fleetSummary } from "./jarvis-summary.js";
 
 const NOW = 1_800_000_000_000;
@@ -11,7 +26,7 @@ const candidate = (detectorKey: string, overrides: Partial<JarvisCandidate> = {}
   detectorKey,
   priority: "medium",
   hostId: "h1",
-  hostLabel: "DeltaAv1",
+  hostLabel: "OrionBx3",
   resource: null,
   createdAt: NOW - HOUR,
   ...overrides,
@@ -105,15 +120,15 @@ describe("what Jarvis is told", () => {
 
   it("works out which machine was meant from what was heard", () => {
     const targets = [
-      { target: "delta", names: ["Delta3640"] },
-      { target: "av", names: ["DeltaAv1"] },
+      { target: "orion", names: ["Orion2480"] },
+      { target: "bx", names: ["OrionBx3"] },
       { target: "rowan", names: ["Rowan", "Tower", "the laptop"] },
       { target: "cedar1", names: ["cedar1"] },
       { target: "cedar2", names: ["cedar2"] },
     ];
-    expect(matchSpoken("delta thirty six forty", targets)).toEqual(["delta"]);
-    expect(matchSpoken("Delta 3640", targets)).toEqual(["delta"]);
-    expect(matchSpoken("delta a v one", targets)).toEqual(["av"]);
+    expect(matchSpoken("orion twenty four eighty", targets)).toEqual(["orion"]);
+    expect(matchSpoken("Orion 2480", targets)).toEqual(["orion"]);
+    expect(matchSpoken("orion b x three", targets)).toEqual(["bx"]);
     expect(matchSpoken("The Laptop", targets)).toEqual(["rowan"]);
     expect(matchSpoken("tower", targets)).toEqual(["rowan"]);
     expect(matchSpoken("rowen", targets)).toEqual(["rowan"]);
@@ -150,31 +165,170 @@ describe("what Jarvis is told", () => {
         container("parked", "exited", "ignore"),
       ],
       [],
+      null,
     );
     expect(say).toContain("with 1 of 2 containers running");
   });
 
   it("gives each machine its own sentence, under all its names and with no wildcard", () => {
-    const setup = jarvisSetup("https://a", "w", [
-      { label: "Rowan", aliases: ["rowen", "the-laptop"] },
-      { label: "Delta3640", aliases: [] },
-    ]);
+    const setup = jarvisSetup(
+      "https://a",
+      "w",
+      [
+        { label: "Rowan", aliases: ["rowen", "the-laptop"] },
+        { label: "Orion2480", aliases: [] },
+      ],
+      "sir",
+    );
     expect(setup).toContain("id: rowan");
     expect(setup).toContain("- (how is|how's) (rowan|rowen|the laptop) [doing]");
-    expect(setup).toContain("- (how is|how's) (delta3640|delta thirty six forty) [doing]");
+    expect(setup).toContain("- (how is|how's) (orion2480|orion twenty four eighty) [doing]");
     expect(setup).not.toContain("(how is|how's) {machine}");
+    // Any house fills in its own: none of the house it was first written for.
+    expect(setup).toContain('rooms: "assist_satellite.YOUR_SATELLITE"');
+    expect(setup).not.toMatch(/speak_here|alias: Jarvis|jarvis_key/);
+    expect(setup).toContain('"Autoheal is not answering, sir."');
+    expect(jarvisSetup("https://a", "w", [], null)).toContain('"Autoheal is not answering."');
+    expect(jarvisSetup("https://a", "w", [], "ma'am")).toContain(`"Autoheal is not answering, ma'am."`);
   });
 
   it("says names as they are read", () => {
-    expect(spokenName("Delta3640")).toBe("Delta thirty six forty");
-    expect(spokenName("DeltaAv1")).toBe("Delta A v one");
+    expect(spokenName("Orion2480")).toBe("Orion twenty four eighty");
+    expect(spokenName("OrionBx3")).toBe("Orion B x three");
     expect(spokenName("home-media-manager")).toBe("home media manager");
     expect(spokenName("OLLAMA-WEBUI")).toBe("ollama webui");
-    expect(jarvisSay({ kind: "container_updates", host: "Rowan", names: ["sonarr"] })).toBe(
-      "An update is waiting for sonarr on Rowan, sir.",
+    const sonarr = { kind: "container_updates" as const, host: "Rowan", names: ["sonarr"] };
+    expect(jarvisSay(sonarr, "sir")).toBe("An update is waiting for sonarr on Rowan, sir.");
+    // A connection with no form of address says the same, plainly.
+    expect(jarvisSay(sonarr, null)).toBe("An update is waiting for sonarr on Rowan.");
+    expect(jarvisSay({ ...sonarr, names: ["a", "b", "c", "d"] }, null)).toBe(
+      "4 containers on Rowan have updates waiting.",
     );
-    expect(jarvisSay({ kind: "container_updates", host: "Rowan", names: ["a", "b", "c", "d"] })).toContain(
-      "4 containers",
+  });
+});
+
+describe("what Jarvis asks", () => {
+  const digest = (letter: string) => `sha256:${letter.repeat(64)}`;
+  const update = (name: string, overrides: Partial<NonNullable<JarvisCandidate["ask"]>> = {}, hostId = "h1") =>
+    candidate(`update:${hostId}:${name}`, {
+      taskId: `${hostId}-${name}`,
+      hostId,
+      resource: name,
+      priority: "low",
+      ask: { brings: digest("a"), askable: true, ready: true, ...overrides },
+    });
+  const onRow = (planned: JarvisPlanned, status: JarvisStatus, overrides: Partial<JarvisQuestion> = {}) => ({
+    id: "q1",
+    groupKey: planned.groupKey,
+    members: planned.members!,
+    status,
+    sentAt: NOW - HOUR,
+    due: false,
+    ...overrides,
+  });
+  const four = ["whoami", "gitea", "umami", "adminer"].map((name) => update(name));
+
+  it("asks about an update a yes would take, and tells the rest as it always has", () => {
+    const planned = planJarvis([update("whoami"), update("gitea", { askable: false })], [], NOW);
+    expect(planned.map(({ tier, names }) => [tier, names])).toEqual([
+      ["say", ["gitea"]],
+      ["ask", ["whoami"]],
+    ]);
+  });
+
+  it("names three at most, holds the rest while it is open, and asks about them once it is answered", () => {
+    const [first] = planJarvis(four, [], NOW);
+    expect(first).toMatchObject({ tier: "ask", names: ["adminer", "gitea", "umami"] });
+    expect(planJarvis(four, [], NOW, [onRow(first!, "asked")])).toEqual([]);
+    const [next] = planJarvis(four, [], NOW, [onRow(first!, "declined")]);
+    expect(next).toMatchObject({ tier: "ask", names: ["whoami"] });
+  });
+
+  it("asks again about an update only once its newer image changed", () => {
+    const [first] = planJarvis([update("whoami")], [], NOW);
+    const answered = [onRow(first!, "declined")];
+    expect(planJarvis([update("whoami")], [], NOW, answered)).toEqual([]);
+    const [again] = planJarvis([update("whoami", { brings: digest("b") })], [], NOW, answered);
+    expect(again).toMatchObject({ tier: "ask", names: ["whoami"], members: [`h1-whoami@${digest("b")}`] });
+    expect(again!.fingerprint).not.toBe(first!.fingerprint);
+  });
+
+  it("puts one question at a time, and none it could not carry out at once", () => {
+    const [elsewhere] = planJarvis([update("forgejo", {}, "h2")], [], NOW);
+    const justSent = onRow(elsewhere!, "sent", { sentAt: NOW - JARVIS_LIMITS.hearMilliseconds + 1 });
+    expect(planJarvis([update("whoami")], [], NOW, [justSent])).toEqual([]);
+    const unheard = { ...justSent, sentAt: NOW - JARVIS_LIMITS.hearMilliseconds };
+    expect(planJarvis([update("whoami")], [], NOW, [unheard])).toHaveLength(1);
+    // Not now, and not told either: it is asked once its host and Home Assistant are there.
+    expect(planJarvis([update("whoami", { ready: false })], [], NOW)).toEqual([]);
+  });
+
+  it("asks a due question again before a new one, once each of its updates could be carried out", () => {
+    const [first] = planJarvis([update("whoami")], [], NOW);
+    const due = [onRow(first!, "asked", { due: true })];
+    const [again] = planJarvis([update("whoami"), update("forgejo", {}, "h2")], [], NOW, due);
+    expect(again).toMatchObject({ again: "q1", names: ["whoami"] });
+    const [instead] = planJarvis([update("whoami", { ready: false }), update("forgejo", {}, "h2")], [], NOW, due);
+    expect(instead).toMatchObject({ names: ["forgejo"] });
+    expect(instead!.again).toBeUndefined();
+  });
+
+  it("asks about a newer version on its own, never tells one, and holds it for no update question", () => {
+    const version = candidate("newer-version:h1:gitea:3.5", {
+      taskId: "h1-gitea-3.5",
+      resource: "gitea",
+      priority: "low",
+      ask: { brings: "3.5", askable: true, ready: true },
+    });
+    expect(planJarvis([version], [], NOW)).toEqual([
+      expect.objectContaining({
+        kind: "newer_version",
+        tier: "ask",
+        names: ["gitea"],
+        groupKey: "ask:newer_version:h1:gitea",
+      }),
+    ]);
+    expect(planJarvis([{ ...version, ask: { brings: "3.5", askable: false, ready: true } }], [], NOW)).toEqual([]);
+    const [updates] = planJarvis([update("whoami")], [], NOW);
+    const [asked] = planJarvis([update("whoami"), version], [], NOW, [onRow(updates!, "asked")]);
+    expect(asked).toMatchObject({ kind: "newer_version", names: ["gitea"] });
+  });
+
+  it("shares the day's allowance with what is told", () => {
+    const full = Array.from({ length: JARVIS_LIMITS.perDay }, (_, index) => ({
+      groupKey: `g${index}`,
+      fingerprint: `f${index}`,
+      tier: "ask" as const,
+      at: NOW - HOUR,
+      counted: true,
+    }));
+    expect(planJarvis([update("whoami"), candidate("reboot:h1")], full, NOW)).toEqual([]);
+    expect(planJarvis([update("whoami"), candidate("host-silent:h1")], full, NOW).map(({ kind }) => kind)).toEqual([
+      "host_silent",
+    ]);
+  });
+
+  it("asks in words that let the owner answer, and says when it asks for the last time", () => {
+    expect(jarvisQuestion({ host: "Rowan", names: ["sonarr"] }, false, "sir")).toEqual({
+      say: "An update is waiting for sonarr on Rowan, sir. Shall I update it?",
+      text: "Rowan: an update is waiting: sonarr. Update it?",
+    });
+    const last = jarvisQuestion({ host: "OrionBx3", names: ["gitea", "whoami"] }, true, "sir");
+    expect(last.say).toBe(
+      "Two updates are waiting on Orion B x three, sir: gitea and whoami. Shall I update them? I will not ask again.",
     );
+    expect(last.text).toBe("OrionBx3: 2 updates are waiting: gitea, whoami. Update them? I will not ask again.");
+    expect(jarvisQuestion({ host: "OrionBx3", names: ["gitea", "whoami"] }, false, null).say).toBe(
+      "Two updates are waiting on Orion B x three: gitea and whoami. Shall I update them?",
+    );
+    expect(jarvisVersionQuestion({ host: "Rowan", name: "gitea", from: "3.4", to: "3.5" }, false, "sir").say).toBe(
+      "Version 3.5 of gitea is out, and Rowan runs 3.4, sir. Shall I move it to 3.5?",
+    );
+    expect(
+      jarvisVersionQuestion({ host: "Rowan", name: "gitea", from: "1.21-rootless", to: "1.22-rootless" }, true, "sir"),
+    ).toEqual({
+      say: "A newer version of gitea is out on Rowan, sir. Shall I move to it? I will not ask again.",
+      text: "Rowan: gitea can move from 1.21-rootless to 1.22-rootless. Move it? I will not ask again.",
+    });
   });
 });

@@ -218,6 +218,7 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
     "This credential was sealed with another backup passphrase, so it cannot be read. Give it again.",
   integration_token_required: "Give its token: a token is needed, and a changed address needs it again.",
   integration_not_set: "Set it up first.",
+  assistant_not_tested: "Answer a test question first.",
   host_packages_not_allowed:
     "This host does not allow that: HOST_PACKAGES=check lets you do it from here, and apply lets Autoheal do it by itself.",
   host_packages_unsupported: "Autoheal cannot reach this host's packages: see why under OS updates.",

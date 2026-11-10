@@ -1,5 +1,6 @@
 import { MaintenanceBadge } from "../../components/maintenance-dialog.js";
 import { useQueries } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router";
 import {
   hasNewerVersion,
@@ -25,6 +26,7 @@ import {
   UpdateTile,
   UpdateLine,
   AdviceBadge,
+  AssistantBadge,
   NewerRows,
   PackageRows,
   footNote,
@@ -52,15 +54,17 @@ function UpdateGroup({
     .map(containerOf)
     .filter((name): name is string => name !== null);
   const count = group.tasks.length + (group.packages?.packages.length ?? 0) + group.newer.length;
+  // Open as the page opens it, or as a person did: its head says which, whoever opened it.
+  const [expanded, setExpanded] = useState(open);
   return (
-    <details className="update-group" open={open}>
+    <details className="update-group" open={open} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>
         <span>
           <strong>{group.host.label}</strong>
           {TEXT.separator}
           {TEXT.attention.waiting(count)}
         </span>
-        {open ? (
+        {expanded ? (
           <Link to={hostSectionLink(group.host.id, HOST_SECTIONS.updates)}>
             {TEXT.attention.reviewOn(group.host.label)}
           </Link>
@@ -95,6 +99,7 @@ function UpdateGroup({
               </span>
               <MaintenanceBadge hostId={group.host.id} containerName={name ?? undefined} />
               <AdviceBadge advice={task.advice} />
+              <AssistantBadge assistant={task.assistant} />
               <Link className="small update-review" to={taskPlaceLink(task) ?? hostLink(group.host.id)}>
                 {TEXT.attention.review}
               </Link>

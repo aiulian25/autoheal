@@ -86,12 +86,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
   rememberCsrfToken(null);
 });
+// A connection made before it could be named, so called Jarvis: heard on its key, with no test question answered.
+const ON_ITS_KEY = {
+  connected: true,
+  paused: false,
+  name: "Jarvis",
+  homeAssistantConnected: true,
+  asking: { ready: false },
+};
+
 it("lists what is connected on every page, Jarvis and the router among them", async () => {
   show();
   await screen.findByRole("list", { name: "Connections" });
   expect(screen.queryByText(/Jarvis/)).toBeNull();
   act(() => {
-    client.setQueryData(jarvisQuery.queryKey, { connected: true, paused: false, lastHeardAt: Date.now() });
+    client.setQueryData(jarvisQuery.queryKey, { ...ON_ITS_KEY, lastHeardAt: Date.now() });
     client.setQueryData(routerSettingsQuery.queryKey, { configured: true });
     client.setQueryData(networkOverviewQuery.queryKey, { connected: true });
   });
@@ -104,13 +113,41 @@ it("lists what is connected on every page, Jarvis and the router among them", as
   expect(screen.getByText("Jarvis connected")).toBeTruthy();
 
   act(() => {
-    client.setQueryData(jarvisQuery.queryKey, { connected: true, paused: false, lastHeardAt: 1 });
+    client.setQueryData(jarvisQuery.queryKey, { ...ON_ITS_KEY, lastHeardAt: 1 });
   });
   await screen.findByText("Jarvis not heard from");
   act(() => {
-    client.setQueryData(jarvisQuery.queryKey, { connected: true, paused: true, lastHeardAt: 1 });
+    client.setQueryData(jarvisQuery.queryKey, { ...ON_ITS_KEY, paused: true, lastHeardAt: 1 });
   });
   await screen.findByText("Jarvis paused");
+});
+
+it("calls an assistant on the blueprint connected by what comes back to Autoheal, as it never calls", async () => {
+  show();
+  await screen.findByRole("list", { name: "Connections" });
+  const onTheBlueprint = {
+    connected: true,
+    paused: false,
+    name: null,
+    lastHeardAt: null,
+    homeAssistantConnected: true,
+  };
+  act(() => {
+    client.setQueryData(jarvisQuery.queryKey, { ...onTheBlueprint, asking: { ready: true } });
+  });
+  await screen.findByText("Assistant connected");
+  act(() => {
+    client.setQueryData(jarvisQuery.queryKey, { ...onTheBlueprint, asking: { ready: false } });
+  });
+  await screen.findByText("Assistant not heard from");
+  act(() => {
+    client.setQueryData(jarvisQuery.queryKey, {
+      ...onTheBlueprint,
+      homeAssistantConnected: false,
+      asking: { ready: true },
+    });
+  });
+  await screen.findByText("Assistant not heard from");
 });
 
 it("does not call a configured notification channel sending or healthy before any observed attempt", async () => {

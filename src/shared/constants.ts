@@ -1573,6 +1573,9 @@ export const TASK_ACTIVITY = {
   // A person handed it to the Ollama agent on Attention; and Ollama's report when what it did failed.
   dispatched: "dispatched",
   reported: "reported",
+  // The assistant in Home Assistant asked a person about it, and what they answered there.
+  assistantAsked: "assistant_asked",
+  assistantAnswered: "assistant_answered",
 } as const;
 export type TaskActivityKind = (typeof TASK_ACTIVITY)[keyof typeof TASK_ACTIVITY];
 // Autoheal holds a task while it works on it; a hold older than this belongs to a run that died.
@@ -2785,6 +2788,9 @@ export const IMAGE_REFERENCE = { tagSeparator: ":", pathSeparator: "/", localHos
 export const TAG_VERSION = {
   numberRun: /\d+/g,
   placeholder: "#",
+  // Eight digits that are a real day (20260805) are a date, kept on a line of its own: no tag holds the mark.
+  dateRun: /^(\d{4})(\d{2})(\d{2})$/,
+  datePlaceholder: "@",
   commitLike: /(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}/i,
 } as const;
 // What a container's ignored version says when every new version of it is ignored: no tag is written so.
@@ -3243,6 +3249,7 @@ export const HOME_ASSISTANT_MESSAGES = {
   connected: (version: string) => `Home Assistant ${version} connected`,
   lost: (reason: string) => `Home Assistant connection lost (${reason}); retrying`,
   failed: (reason: string) => `Home Assistant unreachable (${reason}); retrying`,
+  notPassedOn: (reason: string) => `A Home Assistant state could not be passed on (${reason})`,
   tokenRefused:
     "Home Assistant refused the token. Replace the file in HOME_ASSISTANT_TOKEN_FILE and restart; " +
     "Autoheal does not retry with a refused token, so it cannot get this address banned.",
@@ -3353,6 +3360,7 @@ export const AUDIT_ACTIONS = {
   stackRestartStarted: "container.stack_restart_started",
   hostActionRequested: "host.action_requested",
   agentDispatched: "agent.dispatched",
+  assistantAnswered: "assistant.answered",
   hostUpdatesSaved: "settings.host_updates_saved",
   trustedProxiesSaved: "settings.trusted_proxies_saved",
   terminalOpened: "container.terminal_opened",

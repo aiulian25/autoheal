@@ -96,7 +96,7 @@ export const ADMIN_TEXT = {
       save: "Save plan",
       paused: "Paused",
       manual: "Manual captures",
-      every: (hours: number) => `Every ${hours} hours`,
+      every: (hours: number) => (hours === 1 ? "Every hour" : `Every ${hours} hours`),
       keep: (count: number) => `Keep ${count} backups`,
       capture: "Capture application backup",
       pause: "Pause plan",

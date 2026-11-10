@@ -1,3 +1,4 @@
+import type { JarvisAnswerHow } from "./jarvis.js";
 import type { ImageProvenance } from "./image-provenance.js";
 import type { VolumeReport } from "./volumes.js";
 import type { NetworkReport } from "./networks.js";
@@ -175,7 +176,11 @@ export const API_ROUTES = {
   jarvis: "/api/settings/jarvis",
   jarvisConnect: "/api/settings/jarvis/connect",
   jarvisPause: "/api/settings/jarvis/pause",
+  jarvisAddress: "/api/settings/jarvis/address",
+  jarvisName: "/api/settings/jarvis/name",
+  jarvisAsking: "/api/settings/jarvis/asking",
   jarvisTest: "/api/settings/jarvis/test",
+  jarvisTestQuestion: "/api/settings/jarvis/test-question",
   // Home Assistant's own way in, on its own key.
   jarvisAliases: "/api/settings/jarvis/aliases",
   jarvisStatus: "/api/jarvis/status",
@@ -469,6 +474,8 @@ export const API_ERRORS = {
   // A new address needs its token again: a stored token never follows a changed address.
   integrationTokenRequired: "integration_token_required",
   integrationNotSet: "integration_not_set",
+  // Asking turned on before a test question was answered: nothing asked could be answered.
+  assistantNotTested: "assistant_not_tested",
   // One credential per registry and repository scope, so which one a pull uses is never a question of order.
   registryScopeTaken: "registry_scope_taken",
   // Only a sidecar runner can be updated on its own: the control plane's machine and SSH hosts move with it.
@@ -689,6 +696,8 @@ export interface ContainerUpdateView {
   policy: UpdatePolicy;
   // What the newer image says it is; null until its runner has read it, and with no update.
   remote: ImageLabels | null;
+  // The newer image's digest, as its runner's last check read it; null until checked. A yes covers that image only.
+  remoteDigest?: string | null;
   // Why its runner's last check failed; null when it did not.
   reason: string | null;
   // Who published the newer image, where a trust rule asks for proof; null where nothing asks.
@@ -1589,6 +1598,13 @@ export interface TaskResourceView {
   label: string;
 }
 
+export interface TaskAssistantView {
+  // Null while it waits for an answer.
+  answer: "yes" | "no" | null;
+  how: JarvisAnswerHow | null;
+  at: number;
+}
+
 export interface TaskSummaryView {
   id: string;
   number: number;
@@ -1608,6 +1624,8 @@ export interface TaskSummaryView {
   checkedOut: boolean;
   // On an image update: Ollama's latest word, apply or hold; null until asked, and on other tasks.
   advice: UpdateAssessment | null;
+  // The assistant in Home Assistant asked a person about it: the latest it heard, and when. Absent when it never did.
+  assistant?: TaskAssistantView | null;
   // Put off by a person until then: it waits among what was noticed. Null when it is not, or no longer.
   snoozedUntil: number | null;
   // The incident that opened it, or the newest one that joined it.

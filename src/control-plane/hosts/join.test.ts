@@ -90,16 +90,16 @@ describe("joining runners", () => {
   });
 
   it("gives a revoked host's name back, however it ended, and shows which it was", async () => {
-    const first = (await admin.post(API_ROUTES.hosts, { label: "DS923" })).json<EnrolledHostView>();
-    expect((await admin.post(API_ROUTES.hosts, { label: "DS923" })).statusCode).toBe(409);
+    const first = (await admin.post(API_ROUTES.hosts, { label: "DS224" })).json<EnrolledHostView>();
+    expect((await admin.post(API_ROUTES.hosts, { label: "DS224" })).statusCode).toBe(409);
     expect((await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId: first.host.id }))).statusCode).toBe(200);
 
-    const second = await admin.post(API_ROUTES.hosts, { label: "DS923" });
+    const second = await admin.post(API_ROUTES.hosts, { label: "DS224" });
     expect(second.statusCode, second.body).toBe(200);
     const all = (await admin.get(API_ROUTES.hosts)).json<HostView[]>();
     const gone = all.find(({ id }) => id === first.host.id);
-    expect(gone?.label ?? "").not.toBe("DS923");
-    expect(all.filter(({ label }) => label === "DS923").map(({ id }) => id)).toEqual([
+    expect(gone?.label ?? "").not.toBe("DS224");
+    expect(all.filter(({ label }) => label === "DS224").map(({ id }) => id)).toEqual([
       second.json<EnrolledHostView>().host.id,
     ]);
     // Revoked twice, it is not marked twice.
@@ -364,7 +364,7 @@ describe("joining runners", () => {
     });
 
     it("replaces a code not traded yet, and is made for a NAS with its folder", async () => {
-      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "DS923" })).json<EnrolledHostView>();
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "DS224" })).json<EnrolledHostView>();
       const renewed = (
         await admin.post(apiPath(API_ROUTES.hostJoinCode, { hostId: enrolled.host.id }), {
           nasFolder: "/volume1/docker/autoheal",
