@@ -19,6 +19,14 @@ const text = TEXT.totpSetup;
 const FIRST_PAGE_LOAD = { timeout: 5_000 };
 const CODES = ["made-up-code-one", "made-up-code-two"];
 const PASSPHRASE = "a made-up backup passphrase";
+// What the dashboard around the page reads: seeded first, and answered alike when it is read again. An answer of
+// another shape put an error page in place of home after Done, every time.
+const AROUND_THE_PAGE = [
+  { query: boardQuery, route: API_ROUTES.board, answer: { needsYou: [] } },
+  { query: ollamaQuery, route: API_ROUTES.ollama, answer: { reachable: true } },
+  { query: overviewQuery, route: API_ROUTES.overview, answer: { homeAssistant: null } },
+  { query: integrationsQuery, route: API_ROUTES.integrations, answer: [] },
+];
 const sessionWith = (totpEnabled: boolean): SessionView => ({
   user: { id: "u", username: "admin", role: "admin", mustChangePassword: false, totpEnabled },
   csrfToken: "csrf",
@@ -57,15 +65,12 @@ async function confirmedSetup(server: { session: SessionView | null }) {
         server.session = sessionWith(true);
         return json({ recoveryCodes: CODES, backupPassphrase: PASSPHRASE });
       }
-      return json([]);
+      return json(AROUND_THE_PAGE.find((each) => each.route === path)?.answer ?? []);
     }),
   );
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(SESSION_QUERY_KEY, sessionWith(false));
-  client.setQueryData(boardQuery.queryKey, { needsYou: [] });
-  client.setQueryData(ollamaQuery.queryKey, { reachable: true });
-  client.setQueryData(overviewQuery.queryKey, { homeAssistant: null });
-  client.setQueryData(integrationsQuery.queryKey, []);
+  for (const { query, answer } of AROUND_THE_PAGE) client.setQueryData(query.queryKey, answer);
   const router = createMemoryRouter(routes, { initialEntries: [PATHS.totpSetup] });
   render(
     <QueryClientProvider client={client}>
@@ -96,6 +101,8 @@ it("keeps the recovery codes and the backup passphrase until Done, though the se
   fireEvent.click(screen.getByRole("button", { name: text.done }));
   await waitFor(() => expect(router.state.location.pathname).toBe(PATHS.home));
   await waitFor(() => expect(screen.queryByText(PASSPHRASE)).toBeNull(), FIRST_PAGE_LOAD);
+  // Home is the dashboard itself, not an error page in its place.
+  expect(await screen.findByRole("navigation", { name: TEXT.nav.label })).toBeTruthy();
   // Saved: the setup page is no longer anyone's to see.
   await router.navigate(PATHS.totpSetup);
   await waitFor(() => expect(router.state.location.pathname).toBe(PATHS.home));

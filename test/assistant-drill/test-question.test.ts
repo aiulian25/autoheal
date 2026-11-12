@@ -30,8 +30,10 @@ const ANSWER_BOX = "input_text.autoheal_answers";
 const AUTOMATION = "autoheal_assistant_drill";
 const BLUEPRINT = "autoheal/autoheal-assistant.yaml";
 const PHONE = "Drill phone";
+// Registered as the companion app registers, with nothing that can push to it: what a phone reset or logged out leaves.
+const AWAY_PHONE = "Drill phone away";
 const NO_SATELLITE_HERE = "assist_satellite.not_in_this_house";
-const DRILL_MILLISECONDS = 5 * MILLISECONDS_PER_MINUTE;
+const DRILL_MILLISECONDS = 8 * MILLISECONDS_PER_MINUTE;
 const WAIT = { timeout: 30_000, interval: 250 };
 const STARTING_MILLISECONDS = 2 * MILLISECONDS_PER_MINUTE;
 const SECRET_BYTES = 18;
@@ -220,8 +222,26 @@ it.runIf(HOME_ASSISTANT !== "" && SERVE_ON !== "")(
       },
       adminToken,
     );
+    await homeAssistant(
+      "/api/mobile_app/registrations",
+      {
+        device_id: "drill-phone-0002",
+        app_id: "io.homeassistant.companion.android",
+        app_name: "Home Assistant",
+        app_version: "2026.11.0",
+        device_name: AWAY_PHONE,
+        manufacturer: "Drill",
+        model: "Drill",
+        os_name: "Android",
+        os_version: "16",
+        supports_encryption: false,
+        app_data: { push_websocket_channel: true },
+      },
+      adminToken,
+    );
     const devices = await admin.call<{ id: string; name: string }[]>("config/device_registry/list");
     const phone = devices.find(({ name }) => name === PHONE)!.id;
+    const awayPhone = devices.find(({ name }) => name === AWAY_PHONE)!.id;
     const channel = await socketOf(adminToken, (push) => pushes.push(push as Push));
     await channel.call("mobile_app/push_notification_channel", {
       webhook_id: registration.webhook_id,
@@ -339,6 +359,33 @@ it.runIf(HOME_ASSISTANT !== "" && SERVE_ON !== "")(
     await automation({ satellite: NO_SATELLITE_HERE });
     await asked();
     await expect.poll(async () => (await outcome())?.outcome, WAIT).toBe("put_off");
+
+    // A phone Home Assistant cannot reach, the only way there: its send fails and ends the run before heard, so
+    // nothing comes back and the question is not counted as asked.
+    await automation({ phone: awayPhone });
+    const awayFrom = lines.length;
+    await asked();
+    await vi.waitFor(async () => {
+      const runs = await admin.call<{ state: string; script_execution: string }[]>("trace/list", {
+        domain: "automation",
+        item_id: `${AUTOMATION}_${built}`,
+      });
+      expect(runs.at(-1)).toMatchObject({ state: "stopped", script_execution: "error" });
+    }, WAIT);
+    expect(lines.slice(awayFrom).some((line) => line.startsWith("autoheal heard "))).toBe(false);
+    controlPlane.clock.now += JARVIS_LIMITS.testQuestionMilliseconds;
+    await expect.poll(async () => (await outcome())?.outcome, WAIT).toBe("nothing_back");
+
+    // The same with a phone it can reach: taken, so heard, though nobody answers.
+    await automation({ phone });
+    const reachedFrom = lines.length;
+    await asked();
+    await vi.waitFor(
+      () => expect(lines.slice(reachedFrom).some((line) => line.startsWith("autoheal heard "))).toBe(true),
+      WAIT,
+    );
+    controlPlane.clock.now += JARVIS_LIMITS.testQuestionMilliseconds;
+    await expect.poll(async () => (await outcome())?.outcome, WAIT).toBe("not_answered");
 
     channel.close();
     admin.close();
