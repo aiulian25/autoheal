@@ -5,8 +5,8 @@ import Fastify from "fastify";
 import type { PassThrough } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES } from "../../shared/api.js";
-import { SSE_BUFFER_LIMIT_BYTES } from "../../shared/constants.js";
+import { API_ERRORS, API_ROUTES } from "../../shared/api.js";
+import { LIVE_KEEPALIVE_MILLISECONDS, SSE_BUFFER_LIMIT_BYTES } from "../../shared/constants.js";
 import { registerTerminalRoutes } from "../container-access/terminal-routes.js";
 import type { TerminalEvent, TerminalService } from "../container-access/terminal-service.js";
 import { sseWriter } from "./sse-writer.js";
@@ -14,6 +14,11 @@ import { registerLiveRoutes } from "../live/live-routes.js";
 import { LiveEvents } from "../live/live-events.js";
 
 type Handler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+
+const OWNER = { tokenHash: "owner", user: { id: "owner" } };
+// The same account, signed in on another device.
+const OWNER_ELSEWHERE = { tokenHash: "owner-elsewhere", user: { id: "owner" } };
+const PEER = { tokenHash: "peer", user: { id: "peer" } };
 
 /** Invoke the production route with a response that never consumes the payload. No network timing. */
 function streamFixture() {
@@ -33,14 +38,44 @@ function streamFixture() {
       return reply;
     },
   } as unknown as FastifyReply;
-  const open = async (path: string, params: object = {}) => {
-    await handlers.get(path)!({ authSession: { tokenHash: "owner" }, headers: {}, params } as FastifyRequest, reply);
+  const open = async (path: string, params: object = {}, authSession: object = OWNER) => {
+    await handlers.get(path)!({ authSession, headers: {}, params } as FastifyRequest, reply);
     return stream;
   };
   return { app, raw, open, reply };
 }
 
 afterEach(() => vi.useRealTimers());
+describe("live streams of one account", () => {
+  const STREAMS_EACH = 2;
+
+  it("holds an account to its share, tabs and devices together, and gives a closed stream's place back", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fixture = streamFixture();
+    const live = new LiveEvents();
+    const isLive = vi.fn(() => true);
+    registerLiveRoutes(fixture.app, live, { isLive }, STREAMS_EACH);
+    const subscribe = vi.spyOn(live, "subscribe");
+    const owners = [await fixture.open(API_ROUTES.live), await fixture.open(API_ROUTES.live, {}, OWNER_ELSEWHERE)];
+    await expect(fixture.open(API_ROUTES.live)).rejects.toMatchObject({ code: API_ERRORS.liveStreamsFull });
+    const peers = await fixture.open(API_ROUTES.live, {}, PEER);
+    vi.advanceTimersByTime(LIVE_KEEPALIVE_MILLISECONDS);
+    expect(isLive).toHaveBeenCalledTimes(STREAMS_EACH + 1);
+    expect(subscribe).toHaveBeenCalledTimes(STREAMS_EACH + 1);
+
+    owners[0]!.destroy();
+    await new Promise((resolve) => setImmediate(resolve));
+    const reopened = await fixture.open(API_ROUTES.live);
+    await expect(fixture.open(API_ROUTES.live, {}, OWNER_ELSEWHERE)).rejects.toMatchObject({
+      code: API_ERRORS.liveStreamsFull,
+    });
+    for (const stream of [owners[1]!, peers, reopened]) stream.destroy();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(vi.getTimerCount()).toBe(0);
+    expect(subscribe.mock.results.map(({ value }) => (value as () => boolean)())).toEqual([false, false, false, false]);
+  });
+});
+
 describe("slow SSE readers", () => {
   it("disconnects an unread live stream rather than buffering sustained events indefinitely", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });

@@ -374,6 +374,106 @@ describe("application writer orchestration", () => {
     expect(runtime.isBlocked("a")).toBe(true);
     expect(f.results.at(-1)).toMatchObject({ attempt: 1, recoveryRequired: true });
   });
+  describe("the volumes a copy passes through", () => {
+    const passing = (f: ReturnType<typeof setup>) =>
+      [...f.volumes.keys()].filter((name) => /^autoheal-application-(artifact|download)-/.test(name));
+    const failedVerification = async () => ({
+      exitCode: 1,
+      stdout: JSON.stringify({ ok: false }),
+      stderr: "",
+      truncated: false,
+    });
+
+    it("are not left when a capture's helper cannot be made ready", async () => {
+      const f = setup(),
+        runtime = f.runtime();
+      await runtime.initialize();
+      f.docker.runCommand = failedVerification;
+      await runtime.run(f.task);
+      expect(f.results.at(-1)?.ok).toBe(false);
+      expect(passing(f)).toEqual([]);
+    });
+
+    it("are not left by a capture whose helper will not stop, which still fails saying so", async () => {
+      const f = setup(),
+        runtime = f.runtime();
+      await runtime.initialize();
+      const stop = f.docker.stop;
+      f.docker.stop = async (id: string) => {
+        if (id.startsWith("autoheal-application-helper-")) throw new Error("the helper would not stop");
+        await stop(id);
+      };
+      await runtime.run(f.task);
+      expect(f.results.at(-1)).toMatchObject({ ok: false });
+      expect(passing(f)).toEqual([]);
+    });
+
+    it.each([
+      [
+        "the backup does not arrive",
+        (f: ReturnType<typeof setup>) => {
+          f.client.downloadApplicationBackup = async () => {
+            throw new Error("the control plane went away");
+          };
+        },
+      ],
+      [
+        "it cannot be put in",
+        (f: ReturnType<typeof setup>) => {
+          f.docker.putArchiveStream = async () => {
+            throw new Error("no space left");
+          };
+        },
+      ],
+      [
+        "its helper cannot be made",
+        (f: ReturnType<typeof setup>) => {
+          f.docker.create = async () => {
+            throw new Error("no such image");
+          };
+        },
+      ],
+    ])("are not left by a restore when %s", async (_what, breakIt) => {
+      const f = setup(),
+        runtime = f.runtime();
+      await runtime.initialize();
+      const expectedFingerprint = (await runtime.discover("a")).fingerprint;
+      breakIt(f);
+      await runtime.run({
+        ...f.task,
+        operation: "restore",
+        expectedFingerprint,
+        identity: "AGE-SECRET-KEY-" + "A".repeat(50),
+      });
+      expect(f.results.at(-1)?.ok).toBe(false);
+      expect(passing(f)).toEqual([]);
+    });
+
+    it("left by a removal that failed, are swept as the runner starts, but for work the journal holds", async () => {
+      const f = setup(),
+        runtime = f.runtime();
+      await runtime.initialize();
+      await runtime.journal.save({
+        version: 1,
+        id: f.task.id,
+        revision: 0,
+        operation: "restore",
+        artifactId: f.task.artifactId,
+        phase: "restoring",
+        members: [{ name: "a", id: "id-a", running: true }],
+        blocked: true,
+        result: null,
+      });
+      const left = (name: string, label: string, value: string) =>
+        f.volumes.set(name, { Name: name, Labels: { [label]: value } });
+      left("autoheal-application-artifact-old", "autoheal.application-backup.artifact", "old");
+      left("autoheal-application-download-old", "autoheal.application-backup.download", "old");
+      left(`autoheal-application-download-${f.task.id}`, "autoheal.application-backup.download", f.task.id);
+      await f.runtime().initialize();
+      expect(passing(f)).toEqual([`autoheal-application-download-${f.task.id}`]);
+    });
+  });
+
   it("settles a source stream error without hanging or starting a second copy", async () => {
     const f = setup(),
       runtime = f.runtime();

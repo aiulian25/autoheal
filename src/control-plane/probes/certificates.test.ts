@@ -15,10 +15,11 @@ import {
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
-import { RUNNER_ROUTES } from "../../shared/protocol.js";
+import { RUNNER_ROUTES, probeReportSchema } from "../../shared/protocol.js";
 import {
   CERTIFICATE_STATUS,
   PROBE_SCOPE,
+  PROBE_TEXT,
   certificateStatusOf,
   type ProbeBody,
   type ProbeCertificate,
@@ -68,6 +69,25 @@ describe("what a certificate means now", () => {
   it("says the name before the chain, as that is what to fix first", () => {
     expect(at(1_500 * DAY, { nameMatches: false, chainError: "X" })).toBe("wrong_name");
     expect(at(1_500 * DAY, { chainError: "X" })).toBe("untrusted");
+  });
+
+  // A whole number past what a date can hold (8.64e15 either way), short of where whole numbers stop being exact.
+  const UNREPRESENTABLE = -8_700_000_000_000_000;
+
+  it("words a kept date no calendar can hold as unreadable, still expired, throwing nothing", () => {
+    const kept = { ...certificate, validTo: UNREPRESENTABLE };
+    expect(at(1_500 * DAY, { validTo: UNREPRESENTABLE })).toBe(CERTIFICATE_STATUS.expired);
+    expect(PROBE_TEXT.certificate("Wiki", "Alder", CERTIFICATE_STATUS.expired, kept)).toContain("an unreadable date");
+    expect(PROBE_TEXT.certificateDetails(kept)).toContain("an unreadable date");
+  });
+
+  it("refuses a date no calendar can hold in what a runner reports", () => {
+    const report = { id: "probe", generation: "1", ok: true, latencyMilliseconds: 1, problem: null };
+    const { observedAt: _observedAt, firstSeenAt: _firstSeenAt, ...seen } = certificate;
+    expect(probeReportSchema.safeParse({ ...report, certificate: seen }).success).toBe(true);
+    expect(probeReportSchema.safeParse({ ...report, certificate: { ...seen, validTo: UNREPRESENTABLE } }).success).toBe(
+      false,
+    );
   });
 });
 

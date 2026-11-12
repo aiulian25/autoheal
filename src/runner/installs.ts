@@ -5,6 +5,7 @@ import {
   HOST_DEPLOY_REFUSALS,
   INSTALL_OUTCOMES,
   INSTALL_TEXT,
+  RUNNER_ANSWER_WAIT_MILLISECONDS,
   UPDATE_PHASE,
   UPDATE_VERIFY,
   VERIFY_PROBLEMS,
@@ -33,7 +34,7 @@ import type { HostFiles } from "./host-files.js";
 import { answerHostProfile } from "./host-profile.js";
 import { INSTALL_EXIT, checkScript, downScript, parseComposeScript, upScript, writeScript } from "./install-script.js";
 import { importCompose, type ComposeConfig } from "./compose-import.js";
-import { readProjectFile, readProjectPage, readProjectSettings } from "./project-page.js";
+import { PROJECT_FILE_TOO_LARGE, readProjectFile, readProjectPage, readProjectSettings } from "./project-page.js";
 import type { OwnCompose } from "./own-compose.js";
 import { parseImageReference, type RegistryClient } from "./registry-client.js";
 import { untilSettled } from "./settle-check.js";
@@ -139,12 +140,16 @@ export class Installs {
     if (address === null) return this.draft(image, recipe);
     const refused = (error: string): InstallAnswer => ({ error, draft: null, checks: [] });
     const { fetchImplementation } = this.dependencies;
-    const page = await readProjectPage(address, fetchImplementation, request.composeFile ?? null);
+    // The dashboard waits no longer than this for the answer: no read of the project's goes on past it.
+    const deadline = AbortSignal.timeout(RUNNER_ANSWER_WAIT_MILLISECONDS);
+    const page = await readProjectPage(address, fetchImplementation, request.composeFile ?? null, deadline);
     if (page.kind === "unknownSite") return refused(INSTALL_TEXT.unknownSite);
     if (page.kind === "composeOnly") return refused(INSTALL_TEXT.composeOnly);
+    if (page.kind === "composeTooLarge") return refused(COMPOSE_IMPORT.composeTooLarge);
+    if (page.kind === "variantGone") return refused(COMPOSE_IMPORT.variantGone(page.file));
     if (page.kind === "severalImages") return refused(INSTALL_TEXT.severalImages(page.images.join(", ")));
     if (page.kind === "found") return this.draft(page.hints.image, null, { address, hints: page.hints });
-    if (page.kind === "compose") return this.fromCompose(page.text, page, address);
+    if (page.kind === "compose") return this.fromCompose(page.text, page, address, deadline);
     for (const candidate of page.candidates) {
       const hints = { image: candidate, ports: [], volumes: [], environment: [], leftOut: [] };
       const found = await this.factsOf(candidate).catch(() => null);
@@ -158,6 +163,7 @@ export class Installs {
     text: string,
     page: Partial<Extract<ProjectPage, { kind: "compose" }>>,
     address: string | null,
+    deadline?: AbortSignal,
   ): Promise<InstallAnswer> {
     const refused = (error: string): InstallAnswer => ({ error, draft: null, checks: [] });
     const { docker, files, hostRoot, hostScript, settings, fetchImplementation } = this.dependencies;
@@ -166,7 +172,8 @@ export class Installs {
       page.owner === undefined || page.name === undefined
         ? null
         : { owner: page.owner, name: page.name, folder: page.folder ?? "" };
-    const projectSettings = source === null ? null : await readProjectSettings(source, fetchImplementation);
+    const projectSettings = source === null ? null : await readProjectSettings(source, fetchImplementation, deadline);
+    if (projectSettings === PROJECT_FILE_TOO_LARGE) return refused(COMPOSE_IMPORT.settingsTooLarge);
     const read = await hostScript(parseComposeScript(text, projectSettings), CHECK_TIMEOUT_MILLISECONDS);
     const start = read.output.indexOf("{");
     let config: ComposeConfig | null = null;
@@ -183,13 +190,21 @@ export class Installs {
         ),
       ),
     ];
+    // A preview reads so many of a project's settings files, holding so much of them, and no more.
+    if (source !== null && envNames.length > COMPOSE_IMPORT.envFilesRead) {
+      return refused(COMPOSE_IMPORT.tooManySettingsFiles(envNames.length));
+    }
     const envFiles: Record<string, string> = {};
+    let held = 0;
     if (source !== null) {
       for (const name of envNames) {
         const content =
           name === COMPOSE_IMPORT.settingsFile
             ? projectSettings
-            : await readProjectFile(source, name, fetchImplementation);
+            : await readProjectFile(source, name, fetchImplementation, deadline);
+        if (content === PROJECT_FILE_TOO_LARGE) return refused(COMPOSE_IMPORT.settingsTooLarge);
+        held += content?.length ?? 0;
+        if (held > COMPOSE_IMPORT.envCharacters) return refused(COMPOSE_IMPORT.settingsTooLarge);
         if (content !== null) envFiles[name] = content;
       }
     }
@@ -398,6 +413,9 @@ export class Installs {
     }
     if (taken.exitCode === INSTALL_EXIT.notTakenDown) {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notTakenDown(name, tail(taken.output)) };
+    }
+    if (taken.exitCode === INSTALL_EXIT.folderKept) {
+      return { succeeded: true, outcome: INSTALL_OUTCOMES.removedFolderKept(name, folder) };
     }
     if (taken.exitCode !== 0) {
       return { succeeded: false, outcome: INSTALL_OUTCOMES.notRemoved(name, tail(taken.output)) };

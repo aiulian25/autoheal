@@ -47,6 +47,7 @@ import {
 import { settingsOf } from "./container-settings.js";
 import type { ContainerSummary, DockerClient, ImageDetails } from "./docker-client.js";
 import { restartPolicyOf, type ContainerDetails } from "./incident-report.js";
+import { sharesRollbackData } from "./rollback-data.js";
 import type { HostScript } from "./installs.js";
 import type { UpdateReport } from "./update-progress.js";
 import type { TakenCheckpoint, VolumeCheckpoints } from "./volume-checkpoints.js";
@@ -65,9 +66,13 @@ import {
   type StackCommit,
 } from "./stack-transaction.js";
 import { untilSettled } from "./settle-check.js";
+import { provenanceRefusal } from "./image-provenance.js";
+import type { ProvenanceSource } from "./image-updates.js";
+import { parseImageReference } from "./registry-client.js";
+import { ruleForImage } from "../shared/image-provenance.js";
 
 export interface StacksDependencies {
-  docker: Pick<DockerClient, "containerSummaries" | "networks" | "inspect" | "inspectImage">;
+  docker: Pick<DockerClient, "containerSummaries" | "networks" | "inspect" | "inspectImage" | "pull">;
   hostScript: HostScript;
   imageExists: (image: string) => Promise<boolean | null>;
   settings: {
@@ -79,6 +84,8 @@ export interface StacksDependencies {
   };
   wait: (milliseconds: number) => Promise<unknown>;
   clock: () => number;
+  // Who published an image, for the scopes an admin asks proof of; absent where nothing does.
+  provenance?: ProvenanceSource | null;
 }
 
 const LABELS = {
@@ -167,6 +174,8 @@ function readFilesScript(mark: string, paths: readonly string[], folder: string,
     `limit=${STACK_LIMITS.fileBytes}`,
     `root=$(readlink -f -- ${shellQuoted(folder)})`,
     'inside() { [ -n "$root" ] && case "$(readlink -f -- "$1")" in "$root"/*) true ;; *) false ;; esac; }',
+    // One not there yet is made where its folder really is.
+    'parentInside() { [ -n "$root" ] && case "$(readlink -f -- "$(dirname "$1")")" in "$root" | "$root"/*) true ;; *) false ;; esac; }',
   ];
   paths.forEach((path, index) => {
     const quoted = shellQuoted(path);
@@ -176,7 +185,8 @@ function readFilesScript(mark: string, paths: readonly string[], folder: string,
       `  if ! inside ${quoted}; then echo "${mark} ${index} outside"`,
       `  elif [ "$(wc -c < ${quoted})" -gt "$limit" ]; then echo "${mark} ${index} big"`,
       `  else base64 < ${quoted} | tr -d '\\n'; echo; fi`,
-      `else echo "${mark} ${index} absent"; fi`,
+      `elif parentInside ${quoted}; then echo "${mark} ${index} absent"`,
+      `else echo "${mark} ${index} outside"; fi`,
       `[ -f ${shellQuoted(`${path}${PREVIOUS_SUFFIX}`)} ] && echo "${mark} ${index} previous"`,
     );
   });
@@ -628,7 +638,8 @@ export class Stacks {
     if (current.files == null) return refused(current.error ?? STACK_OUTCOMES.unreadable);
     for (const { path, hash } of edited) {
       const file = current.files.files.find((each) => each.path === path);
-      if (file === undefined && !isEnvPath(stack, path)) return refused(STACK_OUTCOMES.notItsFile(path));
+      // Only what the read found is this stack's: Compose checks that set, and only that set is written.
+      if (file === undefined) return refused(STACK_OUTCOMES.notItsFile(path));
       if ((file?.hash ?? null) !== hash)
         return refused(STACK_OUTCOMES.changedMeanwhile(relativeTo(stack.folder, path)));
     }
@@ -979,6 +990,9 @@ export class Stacks {
     if (unread) return notChanged(STACK_OUTCOMES.unreadable);
     const services = servicesMovedByTag(before.services, after.services, tag, variable);
     if (services === null || !services.includes(service)) return notChanged(STACK_OUTCOMES.tagMoreThanTag);
+    const references = services.flatMap((moved) => after.services[moved]?.image ?? []);
+    const heldBack = await this.publisherRefusal(references);
+    if (heldBack !== null) return notChanged(heldBack);
     const where = this.placeOf(stack, edit.place, compose.path);
     const moving = await this.keptAside(stack, services, keeper, report);
     if (typeof moving === "string") return didNotRun(moving);
@@ -993,6 +1007,17 @@ export class Stacks {
     const problem = ran.exitCode !== 0 ? tail(ran.output) : await this.firstProblem(stack, moving);
     // What it ran before: the tag the files are put back on when the new one does not hold.
     const was = imageTag(moving.find((each) => each.service === service)?.details.Config.Image ?? "");
+    // Data too big to copy was never kept: once Compose made the new version, the old one is not put back over what
+    // that may have changed. One Compose could not even make never opened the data, and goes back as any other.
+    const tooBig = moving.some((each) => each.kept.oversized === true);
+    if (problem !== null && tooBig && (await this.madeAgain(moving)))
+      return didNotRun(
+        STACK_OUTCOMES.tagLeftOnNew(
+          moving.map(({ name }) => name),
+          was,
+          problem,
+        ),
+      );
     if (problem !== null) return this.putBackTag(stack, moving, { problem, was }, keeper, report);
     for (const { name } of moving) await keeper.discard(name);
     void this.refreshDrift().catch(() => undefined);
@@ -1005,6 +1030,26 @@ export class Stacks {
         : STACK_OUTCOMES.tagChangedStopped(names, tag, where),
       output: null,
     };
+  }
+
+  /**
+   * The publisher rules an update is held to, for each image this change would run, before anything stops: one a rule
+   * covers is pulled first, so its digest is what is checked, and Compose then starts what is already here.
+   */
+  private async publisherRefusal(references: readonly string[]): Promise<string | null> {
+    const { provenance, docker } = this.dependencies;
+    if (!provenance) return null;
+    for (const reference of references) {
+      const image = parseImageReference(reference);
+      if (image === null || ruleForImage(provenance.policy(), image) === null) continue;
+      const pulled = await docker.pull(reference).then(
+        () => null,
+        (error: unknown) => STACK_OUTCOMES.notPulled(reference, describeError(error)),
+      );
+      const refusal = pulled ?? (await provenanceRefusal(provenance, reference, await docker.inspectImage(reference)));
+      if (refusal !== null) return refusal;
+    }
+    return null;
   }
 
   // Where the tag was written, as a person reads it: the image line of a Compose file, or one variable in the .env.
@@ -1052,6 +1097,16 @@ export class Stacks {
     return STACK_OUTCOMES.tagNoCopy(notKept.kept.outcome);
   }
 
+  // Whether Compose made any of these anew, so the new version may have opened their data: Docker fills an empty
+  // volume from the image as it makes the container, before it starts.
+  private async madeAgain(moving: readonly Moving[]): Promise<boolean> {
+    for (const { name, details } of moving) {
+      const now = await this.dependencies.docker.inspect(name);
+      if (now !== null && now.Id !== details.Id) return true;
+    }
+    return false;
+  }
+
   // Each as it was: the ones that ran are brought up, the ones that were stopped are made but stay stopped.
   private async bringUp(stack: Stack, moving: readonly Moving[]) {
     const running = moving.filter((each) => each.running).map(({ service }) => service);
@@ -1091,12 +1146,18 @@ export class Stacks {
     report?.enter(UPDATE_PHASE.undoing);
     const failedToo = (undo: string, output: string | null = null) =>
       didNotRun(STACK_OUTCOMES.tagNotPutBack(problem, undo), output);
-    await this.onServices(
+    const stopped = await this.onServices(
       stack,
       "stop",
       moving.map(({ service }) => service),
     );
-    for (const { name, details } of moving.filter((each) => each.kept.complete)) {
+    const restoring = moving.filter((each) => each.kept.complete);
+    const writer = await this.writerOf(restoring);
+    if (writer !== null) {
+      const said = stopped.exitCode === 0 ? null : redactSecrets(tail(stopped.output));
+      return failedToo(STACK_OUTCOMES.writerStillRunning(writer), said);
+    }
+    for (const { name, details } of restoring) {
       const restored = await keeper.restore(name, details);
       if (restored.problem !== null) return failedToo(restored.problem);
     }
@@ -1107,13 +1168,28 @@ export class Stacks {
     const back = await this.firstProblem(stack, moving);
     if (back !== null) return failedToo(back);
     for (const { name } of moving) await keeper.discard(name);
-    const names = moving.map(({ name }) => name);
-    const dataKept = moving.some((each) => each.kept.oversized === true);
     return didNotRun(
-      dataKept
-        ? STACK_OUTCOMES.tagPutBackDataKept(names, was, problem)
-        : STACK_OUTCOMES.tagPutBack(names, was, problem),
+      STACK_OUTCOMES.tagPutBack(
+        moving.map(({ name }) => name),
+        was,
+        problem,
+      ),
     );
+  }
+
+  /**
+   * The first container still running that can write data about to be put back, whatever Compose said of its stop:
+   * the new version's own, or any other that uses the same data. Null once every one of them has stopped.
+   */
+  private async writerOf(restoring: readonly Moving[]): Promise<string | null> {
+    const { docker } = this.dependencies;
+    for (const summary of await docker.containerSummaries()) {
+      const container = await docker.inspect(summary.Id);
+      if (container === null) continue;
+      const running = container.State.Running === true || container.State.Restarting === true;
+      if (running && restoring.some(({ details }) => sharesRollbackData(details, container))) return nameOf(summary);
+    }
+    return null;
   }
 
   /**

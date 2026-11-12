@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const PROBE_KIND = { http: "http", tcp: "tcp", dns: "dns", tls: "tls" } as const;
+// A web check's address, by its protocol as a URL reads it: lower case, however it was written.
+export const PROBE_WEB_PROTOCOL = { http: "http:", https: "https:" } as const;
 // Which addresses a check may reach, chosen when it is made and held at every check, whatever a name resolves to then.
 export const PROBE_SCOPE = {
   thisMachine: "this-machine",
@@ -37,6 +39,8 @@ export const PROBE_LIMITS = {
   statusFrom: 100,
   statusTo: 599,
   portTo: 65535,
+  // The furthest a date reaches either side of 1970. A certificate's dates (year 9999 at most) never come near it.
+  dateMilliseconds: 8_640_000_000_000_000,
 } as const;
 export const PROBE_DNS_PORT = 53;
 export const PROBE_TICK_MILLISECONDS = 5_000;
@@ -53,7 +57,7 @@ const hostField = z.string().trim().max(PROBE_LIMITS.targetCharacters).refine(is
 const isPlainWebAddress = (value: string) => {
   if (!URL.canParse(value)) return false;
   const { protocol, username, password, search, hash } = new URL(value);
-  const isWeb = protocol === "http:" || protocol === "https:";
+  const isWeb = protocol === PROBE_WEB_PROTOCOL.http || protocol === PROBE_WEB_PROTOCOL.https;
   return isWeb && username === "" && password === "" && search === "" && hash === "";
 };
 
@@ -180,7 +184,12 @@ export interface ProbeView extends ProbeBody {
   samples: { at: number; outcome: ProbeOutcome; latencyMilliseconds: number | null }[];
 }
 
-const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
+// One an older version kept from a runner that sent a date no calendar holds: worded so, never thrown over.
+const UNREADABLE_DAY = "an unreadable date";
+function dayOf(at: number) {
+  const day = new Date(at);
+  return Number.isNaN(day.getTime()) ? UNREADABLE_DAY : day.toISOString().slice(0, 10);
+}
 
 export const PROBE_TEXT = {
   certificate: (name: string, host: string, status: CertificateStatus, certificate: ProbeCertificate) => {

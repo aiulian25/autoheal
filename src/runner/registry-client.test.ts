@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NODE_TO_OCI_ARCHITECTURE, REGISTRY_MESSAGES } from "../shared/constants.js";
+import { NODE_TO_OCI_ARCHITECTURE, REGISTRY, REGISTRY_MESSAGES } from "../shared/constants.js";
 import { RegistryClient, RegistryError, imageLabelsOf, parseImageReference } from "./registry-client.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -138,6 +138,89 @@ describe("RegistryClient", () => {
   it("says what the registry answered when it has no such image", async () => {
     const asking = new RegistryClient().digest({ registry: base, repository: "team/missing", tag: "latest" });
     await expect(asking).rejects.toThrow("the registry answered HTTP 404");
+  });
+
+  describe("a token answer", () => {
+    const TOKEN_REALM = "https://registry.example.com/token";
+    const REFERENCE = { registry: "registry.example.com", repository: "team/app", tag: "1" };
+    const PADDING_CHUNK_BYTES = 16 * 1024;
+    // Far past any token answer, and still small enough for a test to send.
+    const PADDING_BYTES = 2 * 1024 * 1024;
+
+    // A token service answering with `answer`, in front of a registry that takes any token and asks for one otherwise.
+    const registryAnswering = (answer: () => Response) => {
+      const asked: string[] = [];
+      const fetching = (async (url: string | URL | Request, init?: RequestInit) => {
+        asked.push(String(url));
+        if (String(url).startsWith(TOKEN_REALM)) return answer();
+        if (new Headers(init?.headers).has("authorization")) {
+          return new Response(null, { status: 200, headers: { "docker-content-digest": DIGEST } });
+        }
+        const challenge = `Bearer realm="${TOKEN_REALM}",service="registry",scope="repository:team/app:pull"`;
+        return new Response(null, { status: 401, headers: { "www-authenticate": challenge } });
+      }) as typeof fetch;
+      return { asked, digest: () => new RegistryClient(fetching).digest(REFERENCE) };
+    };
+
+    // A token and then padding, with no length said: how much of it was pulled, and whether the rest was let go.
+    const paddedToken = () => {
+      const encoder = new TextEncoder();
+      const padding = encoder.encode("x".repeat(PADDING_CHUNK_BYTES));
+      const parts = [
+        encoder.encode('{"token":"made-up-token","padding":"'),
+        ...Array.from({ length: PADDING_BYTES / PADDING_CHUNK_BYTES }, () => padding),
+        encoder.encode('"}'),
+      ];
+      const seen = { pulled: 0, cancelled: false };
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const part = parts.shift();
+          if (part === undefined) return controller.close();
+          seen.pulled += part.byteLength;
+          controller.enqueue(part);
+        },
+        cancel() {
+          seen.cancelled = true;
+        },
+      });
+      return { seen, body };
+    };
+
+    it("reads no more of it than a token answer can be, lets the rest go and asks nothing more", async () => {
+      const answer = paddedToken();
+      const registry = registryAnswering(() => new Response(answer.body));
+      await expect(registry.digest()).rejects.toThrow(REGISTRY_MESSAGES.tokenTooLarge);
+      expect(answer.seen.pulled).toBeLessThanOrEqual(REGISTRY.tokenBytesLimit + 2 * PADDING_CHUNK_BYTES);
+      expect(answer.seen.cancelled).toBe(true);
+      expect(registry.asked).toHaveLength(2);
+    });
+
+    it.each([[403], [500]])("lets go of a token answer it turns down, with HTTP %i", async (status) => {
+      const answer = paddedToken();
+      const registry = registryAnswering(() => new Response(answer.body, { status }));
+      await expect(registry.digest()).rejects.toThrow(RegistryError);
+      expect(answer.seen.cancelled).toBe(true);
+    });
+
+    it.each([
+      ["one that is not JSON", "made-up-token-text, not JSON"],
+      ["a token that cannot be sent as one", JSON.stringify({ token: "made-up-token-text\r\nX-Other: 1" })],
+    ])("refuses %s without repeating any of it", async (_what, text) => {
+      const registry = registryAnswering(() => new Response(text));
+      const failure = await registry.digest().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(RegistryError);
+      expect((failure as Error).message).not.toContain("made-up");
+      expect(registry.asked).toHaveLength(2);
+    });
+
+    it("still takes a token as registries give one", async () => {
+      const token = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIifQ.c2lnbmF0dXJl";
+      const registry = registryAnswering(() => Response.json({ token, access_token: token, expires_in: 300 }));
+      expect(await registry.digest()).toBe(DIGEST);
+    });
   });
 });
 

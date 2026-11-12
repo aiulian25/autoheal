@@ -1,4 +1,4 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import {
   APPLICATION_BACKUP_FAILURE,
   APPLICATION_BACKUP_RUN_STATUS,
@@ -14,11 +14,15 @@ import {
   UPDATE_RUN_STATUS,
   WORK_ITEM_STATUS,
 } from "../../shared/constants.js";
+import { JARVIS_STATUS } from "../../shared/jarvis.js";
+import { REBOOT_PLAN_STATUS, REBOOT_PLAN_TEXT } from "../../shared/reboot-plans.js";
 import { ROLLOUT_STATUS } from "../../shared/rollouts.js";
 import type { DatabaseHandle } from "../database/connection.js";
+import { OPEN_TO_ANSWERS } from "../jarvis/assistant-answers.js";
 import {
   incidentEvents,
   incidents,
+  jarvisItems,
   jobs,
   replayRuns,
   stackRestarts,
@@ -93,6 +97,27 @@ export function settleDispatchedWork(databaseHandle: DatabaseHandle, now: number
       now,
       MOVING_ROLLOUTS,
     );
+  // A reboot plan going on in this copy was approved for the fleet as it was then: it waits for a person, whose
+  // resume looks at every host afresh. Its kept status follows; a row that cannot be read stays as it is, and blocks.
+  sqlite
+    .prepare(
+      "UPDATE reboot_plans SET state_json=json_set(state_json,'$.status',?,'$.reason',?,'$.updatedAt',?),status=?,updated_at=? WHERE json_valid(state_json) AND json_extract(state_json,'$.status')=?",
+    )
+    .run(
+      REBOOT_PLAN_STATUS.paused,
+      REBOOT_PLAN_TEXT.restored,
+      now,
+      REBOOT_PLAN_STATUS.paused,
+      now,
+      REBOOT_PLAN_STATUS.running,
+    );
+  // An assistant question open in this copy may have been answered since, and Home Assistant's helper still holds that
+  // answer: replayed as it reconnects, it would carry out a yes already spent. Each is closed; new ones get new codes.
+  database
+    .update(jarvisItems)
+    .set({ status: JARVIS_STATUS.dropped })
+    .where(and(isNotNull(jarvisItems.codeSealed), inArray(jarvisItems.status, [...OPEN_TO_ANSWERS])))
+    .run();
   database.update(tasks).set({ checkedOutBy: null, checkedOutAt: null }).run();
   database
     .update(updateRuns)

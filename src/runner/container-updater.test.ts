@@ -16,7 +16,13 @@ import { settingsOf } from "./container-settings.js";
 import { ContainerUpdater, recreateSpecification, type UpdateSteps } from "./container-updater.js";
 import type { ContainerDetails, NetworkEndpoint } from "./incident-report.js";
 import type { PullLine } from "./update-progress.js";
-import { JOB_OUTCOMES, RECREATE_OUTCOMES } from "../shared/constants.js";
+import {
+  EDIT_OUTCOMES,
+  JOB_OUTCOMES,
+  RECREATE_OUTCOMES,
+  VERIFY_PROBLEMS,
+  VOLUME_COPY_MESSAGES,
+} from "../shared/constants.js";
 import { dataMountsOf, type RestoredData, type TakenCheckpoint } from "./volume-checkpoints.js";
 
 const OLD_IMAGE = `sha256:${"1".repeat(64)}`;
@@ -24,6 +30,8 @@ const NEW_IMAGE = `sha256:${"2".repeat(64)}`;
 const REFERENCE = "ghcr.io/example/app:2";
 const KEPT = "ghcr.io/example/app:2-autoheal-previous";
 const ANONYMOUS = "f".repeat(64);
+// What a copy too big to make says, as a model store or a media cache would.
+const TOO_MUCH_DATA = JOB_OUTCOMES.checkpointSkipped(JOB_OUTCOMES.checkpointTooBig("2.0 GB"));
 const completeCheckpoint = (details: ContainerDetails, outcome = ""): TakenCheckpoint => ({
   complete: true,
   containerId: details.Id ?? null,
@@ -340,6 +348,16 @@ describe("ContainerUpdater", () => {
   });
 
   const app = () => docker.find("app")!;
+  // The image of each container started, in order: an old one started after the new one is the old version on new data.
+  const startsSeen = () => {
+    const started: string[] = [];
+    const start = docker.start.bind(docker);
+    docker.start = async (reference) => {
+      started.push(docker.find(reference)!.Image!);
+      await start(reference);
+    };
+    return started;
+  };
 
   const desired = `ghcr.io/example/app@sha256:${"a".repeat(64)}`;
   const rollout = () => ({
@@ -571,11 +589,11 @@ describe("ContainerUpdater", () => {
         () => now,
         {
           take: async (_name, details) => ({
-            ...completeCheckpoint(details, "more than this host's 2.0 GB limit"),
+            ...completeCheckpoint(details, TOO_MUCH_DATA),
             complete: false,
             oversized: true,
           }),
-          verify: async () => ({ at: null, problem: null }),
+          verify: async () => ({ at: null, problem: VOLUME_COPY_MESSAGES.incomplete }),
           restore: async (name) => {
             restored.push(name);
             return { at: null, problem: null };
@@ -591,19 +609,27 @@ describe("ContainerUpdater", () => {
       expect(app()).toMatchObject({ Image: NEW_IMAGE, State: { Running: true } });
     });
 
-    it("undoes one that then starts badly, putting the old container back over the data as the new one left it", async () => {
-      docker.afterStart = (container) =>
-        container.Image === NEW_IMAGE
-          ? { Status: "exited", Running: false, ExitCode: 1 }
-          : { Status: "running", Running: true };
+    it("keeps the old one stopped and aside when the new one then starts badly: it might not read what that wrote", async () => {
+      docker.afterStart = () => ({ Status: "exited", Running: false, ExitCode: 1 });
+      const started = startsSeen();
       restored.length = 0;
+      const tooMuch = withTooMuchData();
 
-      const result = await withTooMuchData().update("app", true);
+      const result = await tooMuch.update("app", true);
 
-      expect(result.succeeded).toBe(false);
-      expect(result.outcome).toContain(JOB_OUTCOMES.rolledBackDataKept("app"));
-      expect(app()).toMatchObject({ Image: OLD_IMAGE });
-      expect(docker.find("app-autoheal-old")).toBeUndefined();
+      expect(started).toEqual([NEW_IMAGE]);
+      expect(docker.find("app-autoheal-old")).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+      expect(app()).toMatchObject({ Image: NEW_IMAGE });
+      expect(result).toEqual({
+        succeeded: false,
+        outcome: `${JOB_OUTCOMES.startedBadly("app", "the new container stopped (exit 1)", "app-autoheal-old")}${TOO_MUCH_DATA}`,
+      });
+      // Nor does a roll back by hand put it back over that data.
+      expect(await tooMuch.rollBack("app")).toEqual({
+        succeeded: false,
+        outcome: JOB_OUTCOMES.rollbackRefused("app", VOLUME_COPY_MESSAGES.incomplete),
+      });
+      expect(started).toEqual([NEW_IMAGE]);
       expect(restored).toEqual([]);
     });
 
@@ -737,6 +763,181 @@ describe("ContainerUpdater", () => {
     expect(docker.find("app-autoheal-old")?.State.Running).toBe(false);
     expect(app().Image).toBe(NEW_IMAGE);
     expect(docker.calls).not.toContain("remove /app");
+  });
+
+  describe("when Docker's answer to the new container's start is lost", () => {
+    const COPIED_AT = Date.UTC(2026, 10, 11, 3, 12);
+    const LOST = "socket hang up";
+    const unconfirmed = VERIFY_PROBLEMS.startUnconfirmed(LOST);
+    // The data's schema: the new version moves it on to 2 as it starts, and only putting the copy back undoes that.
+    let schema: number;
+    let copied: number;
+    let seenByOriginal: number[];
+    let discarded: string[];
+    let originalId: string;
+
+    beforeEach(() => {
+      schema = 1;
+      seenByOriginal = [];
+      discarded = [];
+      originalId = app().Id!;
+      docker.afterStart = () => {
+        schema = 2;
+        return { Status: "running", Running: true };
+      };
+      const start = docker.start.bind(docker);
+      docker.start = async (reference) => {
+        const starting = docker.find(reference)!;
+        if (starting.Id === originalId) seenByOriginal.push(schema);
+        await start(reference);
+        if (starting.Id !== originalId) throw new Error(LOST);
+      };
+    });
+
+    // A copy that can go missing once the new version runs, or fail on its way back.
+    const keeping = (copy: { missing?: boolean; restore?: () => RestoredData } = {}) =>
+      new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (_name, details) => {
+            copied = schema;
+            return completeCheckpoint(details);
+          },
+          verify: async () => ({
+            at: COPIED_AT,
+            problem: copy.missing === true && schema === 2 ? "the copy is gone" : null,
+          }),
+          restore: async () => {
+            if (copy.restore !== undefined) return copy.restore();
+            schema = copied;
+            return { at: COPIED_AT, problem: null };
+          },
+          discard: async (name) => void discarded.push(name),
+        },
+      );
+
+    it("undoes an automatic update through the roll back, so the old version starts only on the data as it was", async () => {
+      const result = await keeping().update("app", true);
+      expect(result.succeeded).toBe(false);
+      expect(result.outcome).toBe(
+        `${JOB_OUTCOMES.undone("app", unconfirmed)} ${JOB_OUTCOMES.rolledBackWithData("app", "2026-11-11 03:12 UTC")}`,
+      );
+      expect(seenByOriginal).toEqual([1]);
+      expect(app()).toMatchObject({ Id: originalId, State: { Running: true } });
+      expect(docker.find("app-autoheal-old")).toBeUndefined();
+      expect(docker.calls).not.toContain("remove /app");
+      expect(discarded).toEqual(["app"]);
+    });
+
+    it("keeps the old one stopped and aside with its copy when a person updates it, until they roll back", async () => {
+      const updater = keeping();
+      expect(await updater.update("app")).toEqual({
+        succeeded: false,
+        outcome: JOB_OUTCOMES.startedBadly("app", unconfirmed, "app-autoheal-old"),
+      });
+      expect(docker.find("app-autoheal-old")).toMatchObject({ Id: originalId, State: { Running: false } });
+      expect(app()).toMatchObject({ Image: NEW_IMAGE });
+      expect(discarded).toEqual([]);
+      expect(seenByOriginal).toEqual([]);
+
+      expect((await updater.rollBack("app")).succeeded).toBe(true);
+      expect(seenByOriginal).toEqual([1]);
+    });
+
+    it("refuses the undo when the copy is gone, and the old version never starts on the new data", async () => {
+      const result = await keeping({ missing: true }).update("app", true);
+      expect(result.outcome).toContain(JOB_OUTCOMES.rollbackRefused("app", "the copy is gone"));
+      expect(seenByOriginal).toEqual([]);
+      expect(docker.find("app-autoheal-old")).toMatchObject({ Id: originalId, State: { Running: false } });
+      expect(app()).toMatchObject({ Image: NEW_IMAGE });
+      expect(discarded).toEqual([]);
+    });
+
+    it.each<[string, () => RestoredData]>([
+      ["stops partway", () => ({ at: COPIED_AT, problem: "no space left on device" })],
+      [
+        "is cut off",
+        () => {
+          throw new Error("the runner stopped");
+        },
+      ],
+    ])(
+      "keeps the old version stopped when putting its data back %s, until a rebuilt runner finishes",
+      async (_how, restore) => {
+        await keeping({ restore }).update("app", true);
+        expect(seenByOriginal).toEqual([]);
+        expect(app()).toMatchObject({ Id: originalId, State: { Running: false } });
+        expect(discarded).toEqual([]);
+
+        docker.calls.length = 0;
+        expect((await keeping().rollBack("app")).succeeded).toBe(true);
+        expect(seenByOriginal).toEqual([1]);
+        expect(docker.calls.filter((call) => call === "start /app")).toHaveLength(1);
+        expect(discarded).toEqual(["app"]);
+      },
+    );
+
+    it("still puts the old one back at once when something fails before the start is asked for", async () => {
+      docker.connect = async () => {
+        throw new Error("network proxy not found");
+      };
+      const result = await keeping().update("app", true);
+      expect(result.outcome).toBe(JOB_OUTCOMES.restoredAfterFailure("app", "network proxy not found"));
+      expect(docker.calls.filter((call) => call.startsWith("start "))).toHaveLength(1);
+      expect(seenByOriginal).toEqual([1]);
+      expect(app()).toMatchObject({ Id: originalId, State: { Running: true } });
+      expect(discarded).toEqual(["app"]);
+    });
+
+    it("undoes a stateless update the same way, with no data to put back", async () => {
+      app().Mounts = [];
+      const stateless = new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+      );
+      const result = await stateless.update("app", true);
+      expect(result.outcome).toBe(`${JOB_OUTCOMES.undone("app", unconfirmed)} ${JOB_OUTCOMES.rolledBack("app")}`);
+      expect(app()).toMatchObject({ Id: originalId, State: { Running: true } });
+      expect(docker.find("app-autoheal-old")).toBeUndefined();
+    });
+
+    it("still puts the old one back at once for a recreate, which runs the image the old one does", async () => {
+      expect(await keeping().recreate("app")).toEqual({
+        succeeded: false,
+        outcome: RECREATE_OUTCOMES.restoredAfterFailure("app", LOST),
+      });
+      expect(seenByOriginal).toEqual([1]);
+      expect(app()).toMatchObject({ Id: originalId, State: { Running: true } });
+      expect(docker.containers.size).toBe(1);
+    });
+  });
+
+  describe("an update a person said yes to, by its image's digest", () => {
+    const YES = `sha256:${"a".repeat(64)}`;
+
+    it("goes ahead to the image the yes was for", async () => {
+      docker.pulledDigests = [`ghcr.io/example/app@${YES}`];
+
+      expect((await updater.update("app", false, undefined, { expectedDigest: YES })).succeeded).toBe(true);
+      expect(app()).toMatchObject({ Image: NEW_IMAGE });
+    });
+
+    it("stops nothing when the tag moved to another image since the yes", async () => {
+      docker.pulledDigests = [`ghcr.io/example/app@sha256:${"b".repeat(64)}`];
+
+      const result = await updater.update("app", false, undefined, { expectedDigest: YES });
+
+      expect(result).toEqual({ succeeded: false, outcome: JOB_OUTCOMES.notTheApprovedImage("app", REFERENCE) });
+      expect(docker.calls.filter((call) => /^(stop|rename|create) /.test(call))).toEqual([]);
+      expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+    });
   });
 
   it("pulls, recreates with the same settings and networks, checks it runs, then removes the old one", async () => {
@@ -975,6 +1176,51 @@ describe("ContainerUpdater", () => {
     expect(app().Image).toBe(OLD_IMAGE);
     expect(app().State.Running).toBe(true);
     expect(docker.containers.size).toBe(1);
+  });
+
+  describe("when Docker makes the new container but the first look at it fails", () => {
+    const LOOK_FAILED = "connection reset by peer";
+    // What a dropped connection or a busy engine does: the container is there, under the name, and unseen.
+    const lookFailsOnce = () => {
+      const create = docker.create.bind(docker);
+      const inspect = docker.inspect.bind(docker);
+      let fresh: string | null = null;
+      docker.create = async (name, specification) => {
+        fresh = await create(name, specification);
+        return fresh;
+      };
+      docker.inspect = async (reference) => {
+        if (reference !== fresh) return inspect(reference);
+        fresh = null;
+        throw new Error(LOOK_FAILED);
+      };
+    };
+
+    it.each([
+      ["by hand", false],
+      ["with automatic undo", true],
+    ])("puts the old container back under its own name, updated %s, with no new one left", async (_how, undo) => {
+      lookFailsOnce();
+      const originalId = app().Id!;
+
+      const result = await updater.update("app", undo);
+
+      expect(result.outcome).toBe(JOB_OUTCOMES.restoredAfterFailure("app", LOOK_FAILED));
+      expect(app()).toMatchObject({ Id: originalId, Image: OLD_IMAGE, State: { Running: true } });
+      expect(docker.containers.size).toBe(1);
+    });
+
+    it("leaves an old container that was stopped as it was, with no new one left", async () => {
+      docker.containers.clear();
+      docker.add(appContainer({ State: { Status: "exited", Running: false, ExitCode: 0 } }));
+      lookFailsOnce();
+      const originalId = app().Id!;
+
+      await updater.update("app");
+
+      expect(app()).toMatchObject({ Id: originalId, State: { Running: false } });
+      expect(docker.containers.size).toBe(1);
+    });
   });
 
   it("starts the old container again, under its own name, when parking it fails", async () => {
@@ -1220,11 +1466,13 @@ describe("ContainerUpdater", () => {
       return rename(reference, newName);
     };
     const result = await updater.recreate("app");
-    expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+    // A recreate keeps no copy, so what Docker may have put in its volume cannot be undone: it waits for a person.
+    expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+    expect(docker.calls.filter((call) => call.startsWith("start "))).toEqual([]);
     expect(docker.containers.size).toBe(1);
     expect(result).toEqual({
       succeeded: false,
-      outcome: RECREATE_OUTCOMES.restoredAfterFailure("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+      outcome: RECREATE_OUTCOMES.restoredStopped("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
     });
   });
 
@@ -1281,6 +1529,99 @@ describe("ContainerUpdater", () => {
         "discard app's data",
         `tag ${OLD_IMAGE} ${KEPT}`,
       ]);
+    });
+
+    describe("when the tag moved to another image before Docker made the new container", () => {
+      const UNCHECKED = `sha256:${"f".repeat(64)}`;
+      // Another pull of the same tag while the old container is set aside: Docker makes the new one with its volumes.
+      beforeEach(() => {
+        const rename = docker.rename.bind(docker);
+        docker.rename = async (reference, newName) => {
+          docker.images.set(UNCHECKED, { Id: UNCHECKED, Config: {} });
+          docker.tags.set(REFERENCE, UNCHECKED);
+          return rename(reference, newName);
+        };
+      });
+
+      it("puts back the data kept first, as an empty volume may now hold that image's files, then the old one", async () => {
+        const result = await checkpointsDoing({ at: KEPT_AT, problem: null }).update("app");
+
+        expect(result.outcome).toBe(
+          JOB_OUTCOMES.restoredAfterFailure("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+        );
+        const back = docker.calls.slice(docker.calls.indexOf("rename /app-autoheal-old app"));
+        expect(back).toEqual([
+          "rename /app-autoheal-old app",
+          "restore app's data",
+          "start /app",
+          "discard app's data",
+        ]);
+        expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+      });
+
+      it("leaves the old one stopped, and its kept data, when that data cannot go back", async () => {
+        const result = await checkpointsDoing({ at: KEPT_AT, problem: "no space left on device" }).update("app");
+
+        expect(result).toEqual({
+          succeeded: false,
+          outcome: JOB_OUTCOMES.restoreDataFailed(
+            "app",
+            `${JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)}; no space left on device`,
+          ),
+        });
+        expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+        expect(docker.calls).not.toContain("discard app's data");
+      });
+
+      it("puts the old one back stopped when its data was too big to keep, as an empty volume may hold that image's files", async () => {
+        const oversized = new ContainerUpdater(
+          docker,
+          async () => undefined,
+          () => now,
+          {
+            take: async (_name, details) => ({ ...completeCheckpoint(details), complete: false, oversized: true }),
+            verify: async () => ({ at: null, problem: null }),
+            restore: async (name) => {
+              docker.calls.push(`restore ${name}'s data`);
+              return { at: null, problem: null };
+            },
+            discard: async () => {},
+          },
+        );
+
+        const result = await oversized.update("app");
+
+        expect(docker.calls).not.toContain("restore app's data");
+        expect(docker.calls.filter((call) => call.startsWith("start "))).toEqual([]);
+        expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+        expect(result).toEqual({
+          succeeded: false,
+          outcome: JOB_OUTCOMES.restoredStopped("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+        });
+      });
+
+      it("puts the old one back stopped after an edit too, which keeps no copy of the data", async () => {
+        const result = await updater.edit("app", settingsOf(appContainer(), imageConfig));
+
+        expect(docker.calls.filter((call) => call.startsWith("start "))).toEqual([]);
+        expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+        expect(result).toEqual({
+          succeeded: false,
+          outcome: EDIT_OUTCOMES.restoredStopped("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE)),
+        });
+      });
+
+      it("copies nothing back for data in host folders, which Docker never fills", async () => {
+        docker.containers.clear();
+        docker.add(
+          appContainer({ Mounts: [{ Type: "bind", Source: "/srv/app/config", Destination: "/config", RW: true }] }),
+        );
+
+        await checkpointsDoing({ at: KEPT_AT, problem: null }).update("app");
+
+        expect(docker.calls).not.toContain("restore app's data");
+        expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+      });
     });
 
     it("says it kept it when the new one starts badly, and puts it back before the old one starts again", async () => {
@@ -1430,6 +1771,64 @@ describe("ContainerUpdater", () => {
       expect((await resume().rollBack("app")).succeeded).toBe(true);
       expect(copies).toBe(1);
       expect(docker.calls.some((call) => call.startsWith("start "))).toBe(false);
+    });
+
+    describe("when the old container is not seen to go once the new one holds", () => {
+      // Docker refuses, or acts and loses its answer: either way the update itself has held.
+      const removalFails = (removedAnyway: boolean) => {
+        const originalId = app().Id!;
+        const remove = docker.remove.bind(docker);
+        docker.remove = async (reference) => {
+          if (reference !== originalId) return remove(reference);
+          docker.calls.push(`remove ${docker.find(reference)?.Name}`);
+          if (removedAnyway) docker.containers.delete(originalId);
+          throw new Error("removal of container is already in progress");
+        };
+      };
+
+      it("keeps the copy of its data, says so, and a roll back to it still puts that data back", async () => {
+        removalFails(false);
+        const updater = checkpointsDoing({ at: KEPT_AT, problem: null });
+
+        const result = await updater.update("app");
+
+        expect(result.succeeded).toBe(true);
+        expect(result.outcome).toContain(JOB_OUTCOMES.originalKept("app-autoheal-old"));
+        expect(docker.calls).not.toContain("discard app's data");
+        expect(docker.find("app-autoheal-old")).toBeDefined();
+        docker.calls.length = 0;
+        expect((await updater.rollBack("app")).succeeded).toBe(true);
+        expect(docker.calls.indexOf("restore app's data")).toBeLessThan(docker.calls.indexOf("start /app"));
+      });
+
+      it("lets the copy go when Docker removed it though its answer was lost", async () => {
+        removalFails(true);
+
+        const result = await checkpointsDoing({ at: KEPT_AT, problem: null }).update("app");
+
+        expect(result.outcome).not.toContain(JOB_OUTCOMES.originalKept("app-autoheal-old"));
+        expect(docker.calls).toContain("discard app's data");
+      });
+
+      it("keeps the copy when Docker cannot be asked whether it went", async () => {
+        const originalId = app().Id!;
+        const inspect = docker.inspect.bind(docker);
+        let removing = false;
+        const remove = docker.remove.bind(docker);
+        docker.remove = async (reference) => {
+          removing ||= reference === originalId;
+          return remove(reference);
+        };
+        docker.inspect = async (reference) => {
+          if (removing && reference === originalId) throw new Error("Docker went away");
+          return inspect(reference);
+        };
+
+        const result = await checkpointsDoing({ at: KEPT_AT, problem: null }).update("app");
+
+        expect(result.outcome).toContain(JOB_OUTCOMES.originalKept("app-autoheal-old"));
+        expect(docker.calls).not.toContain("discard app's data");
+      });
     });
 
     it("leaves the old container stopped when its data cannot be put back", async () => {
@@ -1615,6 +2014,36 @@ describe("ContainerUpdater", () => {
       expect(await updater.dependentsOf("app")).toEqual([]);
     });
 
+    it("keeps a dependent's copy of its data when its old container is not seen to go, and says so", async () => {
+      addDependent();
+      const discarded: string[] = [];
+      const keeping = new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (_name, details) => completeCheckpoint(details),
+          verify: async () => ({ at: null, problem: null }),
+          restore: async () => ({ at: null, problem: null }),
+          discard: async (name) => void discarded.push(name),
+        },
+      );
+      const remove = docker.remove.bind(docker);
+      docker.remove = async (reference) => {
+        if (reference === vpnId) throw new Error("device or resource busy");
+        return remove(reference);
+      };
+
+      const result = await keeping.update("app");
+
+      expect(result.succeeded).toBe(true);
+      expect(result.outcome).toContain(JOB_OUTCOMES.originalKept("qbittorrent-autoheal-old"));
+      expect(discarded).toEqual(["app"]);
+      expect(docker.find("qbittorrent-autoheal-old")?.Id).toBe(vpnId);
+    });
+
     it("updates one of them on its own, without asking for the names Docker gives it from the other", async () => {
       addDependent();
       expect(await updater.update("qbittorrent")).toMatchObject({ succeeded: true });
@@ -1655,6 +2084,86 @@ describe("ContainerUpdater", () => {
       expect(qbittorrent()).toMatchObject({ Id: vpnId, State: { Running: true } });
     });
 
+    it("keeps the whole group stopped and aside when one had too much data to copy and the new one starts badly", async () => {
+      addDependent({ Mounts: [{ Type: "volume", Name: "client-data", Destination: "/data", RW: true }] });
+      docker.afterStart = (container) =>
+        container.Name === "/app"
+          ? { Status: "exited", Running: false, ExitCode: 1 }
+          : { Status: "running", Running: true };
+      const started = startsSeen();
+      const restored: string[] = [];
+      const tooMuchForOne = new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (name, details) =>
+            name === "qbittorrent"
+              ? { ...completeCheckpoint(details, TOO_MUCH_DATA), complete: false, oversized: true }
+              : completeCheckpoint(details),
+          verify: async (name) => ({
+            at: null,
+            problem: name === "qbittorrent" ? VOLUME_COPY_MESSAGES.incomplete : null,
+          }),
+          restore: async (name) => {
+            restored.push(name);
+            return { at: null, problem: null };
+          },
+          discard: async () => {},
+        },
+      );
+
+      const result = await tooMuchForOne.update("app", true);
+
+      expect(started).toEqual([NEW_IMAGE]);
+      expect(docker.find("app-autoheal-old")).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+      expect(qbittorrent().State.Running).toBe(false);
+      expect(restored).toEqual([]);
+      expect(result).toEqual({
+        succeeded: false,
+        outcome: `${JOB_OUTCOMES.startedBadly("app", "the new container stopped (exit 1)", "app-autoheal-old")}${JOB_OUTCOMES.dependentsStopped(["qbittorrent"])} qbittorrent: ${TOO_MUCH_DATA}`,
+        output: expect.any(String),
+      });
+    });
+
+    it("leaves them stopped with their copies when Docker's answer to the new one's start is lost", async () => {
+      addDependent();
+      const providerId = app().Id!;
+      const start = docker.start.bind(docker);
+      docker.start = async (reference) => {
+        const starting = docker.find(reference)!;
+        await start(reference);
+        if (starting.Name === "/app" && starting.Id !== providerId) throw new Error("socket hang up");
+      };
+      const discarded: string[] = [];
+      const keeping = new ContainerUpdater(
+        docker,
+        async (milliseconds) => {
+          now += milliseconds;
+        },
+        () => now,
+        {
+          take: async (_name, details) => completeCheckpoint(details),
+          verify: async () => ({ at: null, problem: null }),
+          restore: async () => ({ at: null, problem: null }),
+          discard: async (name) => void discarded.push(name),
+        },
+      );
+      const result = await keeping.update("app");
+      expect(result.outcome).toBe(
+        JOB_OUTCOMES.startedBadly("app", VERIFY_PROBLEMS.startUnconfirmed("socket hang up"), "app-autoheal-old") +
+          JOB_OUTCOMES.dependentsStopped(["qbittorrent"]),
+      );
+      expect(qbittorrent().State.Running).toBe(false);
+      expect(discarded).toEqual([]);
+
+      expect(await keeping.rollBack("app")).toMatchObject({ succeeded: true });
+      expect(qbittorrent()).toMatchObject({ Id: vpnId, State: { Running: true } });
+      expect(app()).toMatchObject({ Id: providerId, State: { Running: true } });
+    });
+
     it("never starts a dependent on an image its tag was moved to meanwhile, and keeps its old container", async () => {
       addDependent();
       const MOVED = `sha256:${"6".repeat(64)}`;
@@ -1677,6 +2186,44 @@ describe("ContainerUpdater", () => {
           "qbittorrent-autoheal-old",
         ),
       );
+    });
+
+    it("keeps it and those inside its network stopped when its tag moved and none of its data was kept", async () => {
+      addDependent();
+      const MOVED = `sha256:${"7".repeat(64)}`;
+      const rename = docker.rename.bind(docker);
+      docker.rename = async (reference, newName) => {
+        if (newName === "app-autoheal-old") {
+          docker.images.set(MOVED, { Id: MOVED, Config: {} });
+          docker.tags.set(REFERENCE, MOVED);
+        }
+        return rename(reference, newName);
+      };
+      const nothingKept = new ContainerUpdater(
+        docker,
+        async () => undefined,
+        () => now,
+        {
+          take: async (_name, details) => ({
+            ...completeCheckpoint(details, TOO_MUCH_DATA),
+            complete: false,
+            oversized: true,
+          }),
+          verify: async () => ({ at: null, problem: VOLUME_COPY_MESSAGES.incomplete }),
+          restore: async () => ({ at: null, problem: null }),
+          discard: async () => {},
+        },
+      );
+
+      const result = await nothingKept.update("app");
+
+      expect(docker.calls.filter((call) => call.startsWith("start "))).toEqual([]);
+      expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: false } });
+      expect(qbittorrent().State.Running).toBe(false);
+      expect(result).toEqual({
+        succeeded: false,
+        outcome: `${JOB_OUTCOMES.restoredStopped("app", JOB_OUTCOMES.tagMovedMeanwhile(REFERENCE))}${JOB_OUTCOMES.dependentsWaitStopped(["qbittorrent"])}`,
+      });
     });
 
     it("keeps a dependent's old container when its new one does not hold", async () => {

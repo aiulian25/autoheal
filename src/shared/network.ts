@@ -314,6 +314,10 @@ export const NETWORK_TEXT = {
   speedNotSaid: "not said",
   loginRefused: "the router refused the login",
   certificateChanged: "the router's certificate changed",
+  routerTooSlow: "The router took too long to answer.",
+  routerAnswerTooLarge: "The router's answer was larger than Autoheal reads, so it was let go.",
+  routerReadStopped: "Autoheal stopped waiting for the router's answer.",
+  routerAnswered: (status: number, path: string) => `The router answered ${status} for ${path}`,
   reportFailed: (reason: string) =>
     `Ollama could not write this week's words (${reason}). The figures are still right.`,
   reportTitle: "This week on your network",

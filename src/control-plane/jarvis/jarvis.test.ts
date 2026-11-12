@@ -29,6 +29,7 @@ import {
 } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type Heartbeat, type WorkResponse } from "../../shared/protocol.js";
 import { JARVIS_LIMITS, type JarvisConnected, type JarvisView } from "../../shared/jarvis.js";
+import { settleDispatchedWork } from "../backups/settle-dispatched-work.js";
 import { auditEvents, hosts, jarvisItems, tasks, users } from "../database/schema.js";
 
 describe("Jarvis", () => {
@@ -428,6 +429,48 @@ describe("Jarvis", () => {
       expect((await view()).recent).toHaveLength(1);
     });
 
+    describe("two messages due at once", () => {
+      // Two say at the same tick; Home Assistant's answer to the first is held back until it is let go.
+      const sendingTwo = async () => {
+        await connected();
+        openTask("container:HOST:sonarr", "sonarr", JARVIS_LIMITS.settleMilliseconds + 1);
+        openTask("container:HOST:radarr", "radarr", JARVIS_LIMITS.settleMilliseconds + 1);
+        let answer = () => {};
+        vi.mocked(fetch).mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answer = () => resolve(new Response(null, { status: 200 }));
+            }),
+        );
+        const sending = controlPlane.services.jarvis.tick();
+        await vi.waitFor(() => expect(told()).toHaveLength(1));
+        return async () => {
+          answer();
+          await sending;
+        };
+      };
+
+      it("are both sent while it stays connected", async () => {
+        const letGo = await sendingTwo();
+        await letGo();
+        expect(told()).toHaveLength(2);
+      });
+
+      it("send nothing more once it is disconnected while the first is on its way", async () => {
+        const letGo = await sendingTwo();
+        expect((await admin.delete(API_ROUTES.jarvis)).statusCode).toBe(204);
+        await letGo();
+        expect(told()).toHaveLength(1);
+      });
+
+      it("send nothing more once it is paused while the first is on its way", async () => {
+        const letGo = await sendingTwo();
+        expect((await admin.put(API_ROUTES.jarvisPause, { paused: true })).statusCode).toBe(204);
+        await letGo();
+        expect(told()).toHaveLength(1);
+      });
+    });
+
     describe("a line written while its message is still on its way", () => {
       // The message goes out, and Home Assistant's answer to the webhook is held back until it has `arrived`.
       const onItsWay = async () => {
@@ -756,6 +799,25 @@ describe("Jarvis", () => {
         };
         const replies = () => told().filter(({ tier }) => tier === "reply");
 
+        it("takes an answer in the same second as the heard it follows, and only once", async () => {
+          const whoami = [updated("whoami")];
+          await asking("Laurel", whoami);
+          await later(whoami, JARVIS_LIMITS.settleMilliseconds);
+          const question = told()[0]!;
+          // A phone pressed at once: Home Assistant writes both lines within one second.
+          const second = seconds();
+          read(`autoheal heard ${question.id} ${second}`);
+          read(`autoheal yes ${question.code!} ${second} phone`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("Updating whoami on Laurel now.");
+
+          // Its last line again, as a Home Assistant that restarted restores it.
+          read(`autoheal yes ${question.code!} ${second} phone`);
+          await passes(1);
+          expect(replies()).toHaveLength(1);
+          expect(await takeWork()).toHaveLength(1);
+        });
+
         it("carries out a yes as whoever connected it, says so, and tells what came of it", async () => {
           const { code } = await askedAbout("Alder");
           read(`autoheal yes ${code} ${seconds()} voice Living Room`);
@@ -779,7 +841,8 @@ describe("Jarvis", () => {
             expect(jobs).toHaveLength(1);
             return jobs;
           });
-          expect(job).toMatchObject({ action: "update", containerName: "whoami" });
+          // To the very image it asked about, by its digest.
+          expect(job).toMatchObject({ action: "update", containerName: "whoami", expectedDigest: digest("a") });
           const result = { succeeded: true, outcome: "Updated whoami, and it is running.", output: null };
           expect((await runner("POST", apiPath(RUNNER_ROUTES.jobResult, { jobId: job!.id }), result)).statusCode).toBe(
             204,
@@ -830,6 +893,100 @@ describe("Jarvis", () => {
           read(`autoheal yes ${code} ${seconds() + 1} voice`);
           await vi.waitFor(() => expect(replies()).toHaveLength(2));
           expect(replies()[1]!.say).toBe("That question is no longer open.");
+        });
+
+        it("says nothing more to a yes it left, read again as a Home Assistant that restarted restores it", async () => {
+          const { code } = await askedAbout("Elder");
+          await report([updated("whoami", "b")], false);
+          const second = seconds();
+          read(`autoheal yes ${code} ${second} voice`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+
+          read(`autoheal yes ${code} ${second} voice`);
+          await later([updated("whoami", "b")], 1);
+
+          expect(replies()).toHaveLength(1);
+        });
+
+        it("says once that a question is over, however often the same answer to it is read again", async () => {
+          const { code } = await askedAbout("Hawthorn");
+          await report([updated("whoami", "b")], false);
+          read(`autoheal yes ${code} ${seconds()} voice`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+
+          const again = seconds() + 1;
+          for (const _reconnect of [1, 2, 3]) read(`autoheal yes ${code} ${again} voice`);
+          await later([updated("whoami", "b")], 1);
+
+          expect(replies().map(({ say }) => say)).toEqual([
+            "A newer version came out since I asked, so I left it. I will ask again.",
+            "That question is no longer open.",
+          ]);
+          expect(await takeWork()).toEqual([]);
+        });
+
+        it("takes no yes to an update once asking about updates was turned off, with no look in between", async () => {
+          const { question, code } = await askedAbout("Hazel");
+          const off = await admin.put(API_ROUTES.jarvisAsking, { updates: false, versions: true });
+          expect(off.statusCode).toBe(204);
+          const { database } = controlPlane.services.databaseHandle;
+          expect(database.select().from(jarvisItems).where(eq(jarvisItems.id, question.id)).get()).toMatchObject({
+            status: "dropped",
+          });
+
+          read(`autoheal yes ${code} ${seconds()} voice`);
+
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("That question is no longer open.");
+          expect(await takeWork()).toEqual([]);
+          expect((await taskOf("whoami", "Hazel")).assignee).toMatchObject({ kind: "user" });
+        });
+
+        it("takes no yes once asking is off by any road, as settings a restore put back", async () => {
+          const { code } = await askedAbout("Hornbeam");
+          const store = controlPlane.services.settingsStore;
+          const stored = store.read(SETTING_KEYS.jarvis, z.record(z.string(), z.unknown()))!;
+          store.write(SETTING_KEYS.jarvis, { ...stored, askUpdates: false });
+
+          read(`autoheal yes ${code} ${seconds()} voice`);
+
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("That question is no longer open.");
+          expect(await takeWork()).toEqual([]);
+        });
+
+        it("takes no yes a restore brought back: its question is closed, though Home Assistant replays it", async () => {
+          const { code } = await askedAbout("Jasmine");
+          // What every way of putting the database back runs, here over the question as the older copy held it.
+          settleDispatchedWork(controlPlane.services.databaseHandle, controlPlane.clock.now, "restored");
+
+          read(`autoheal yes ${code} ${seconds()} voice`);
+
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("That question is no longer open.");
+          expect(await takeWork()).toEqual([]);
+          expect((await taskOf("whoami", "Jasmine")).assignee).toMatchObject({ kind: "user" });
+        });
+
+        it("takes no answer to a question an earlier connection asked, once another took its place", async () => {
+          const { code } = await askedAbout("Ivy");
+          expect((await admin.post(API_ROUTES.jarvisConnect, {})).statusCode).toBe(200);
+          // The new connection asks as well: proven and switched on, as whoever made it would.
+          const store = controlPlane.services.settingsStore;
+          const stored = store.read(SETTING_KEYS.jarvis, z.record(z.string(), z.unknown()))!;
+          store.write(SETTING_KEYS.jarvis, {
+            ...stored,
+            askUpdates: true,
+            askVersions: true,
+            testAnswered: { said: "yes", how: "voice", seconds: 4, at: 1 },
+          });
+
+          read(`autoheal yes ${code} ${seconds()} voice`);
+
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("That question is no longer open.");
+          expect(await takeWork()).toEqual([]);
+          expect((await taskOf("whoami", "Ivy")).assignee).toMatchObject({ kind: "user" });
         });
 
         it("takes no yes once whoever connected it is no longer an admin, and none while it is paused", async () => {
@@ -907,6 +1064,47 @@ describe("Jarvis", () => {
             expect(asked().map(({ to }) => to)).toEqual(["3.5", "3.6"]);
           });
 
+          it("ignores the version for the container it asked about, not one its shortened name matches", async () => {
+            const shortened = "a".repeat(64);
+            const asked64 = `${shortened}x`;
+            const current = { status: "current" as const, checkedAt: 1, remoteDigest: null };
+            const containers = [
+              containerSnapshot({ name: shortened, image: "example/sibling:3.4", update: current }),
+              pinned(asked64, "3.4", "3.5"),
+            ];
+            const secret = await asking("Elm", containers);
+            await later(containers, JARVIS_LIMITS.settleMilliseconds);
+            const [question] = asked();
+            await confirmsAs(secret, question!.id);
+
+            read(`autoheal no ${question!.code} ${seconds()} phone`);
+
+            const named = (name: string) =>
+              controlPlane.services.inventoryService.containers().find((container) => container.name === name);
+            expect(named(asked64)?.update.ignored).toBe("3.5");
+            expect(named(shortened)?.update.ignored).not.toBe("3.5");
+          });
+
+          it.each([
+            ["about versions", "Juniper", { updates: true, versions: false }, "That question is no longer open."],
+            ["about updates alone", "Larch", { updates: false, versions: true }, "Moving gitea on Larch to 3.5 now."],
+          ])(
+            "answers a yes to a version as it should once asking %s was turned off",
+            async (_what, label, switches, said) => {
+              const gitea = [pinned("gitea", "3.4", "3.5")];
+              const secret = await asking(label, gitea);
+              await later(gitea, JARVIS_LIMITS.settleMilliseconds);
+              const [question] = asked();
+              await confirmsAs(secret, question!.id);
+              expect((await admin.put(API_ROUTES.jarvisAsking, switches)).statusCode).toBe(204);
+
+              read(`autoheal yes ${question!.code} ${seconds()} voice`);
+
+              await vi.waitFor(() => expect(replies()).toHaveLength(1));
+              expect(replies()[0]!.say).toBe(said);
+            },
+          );
+
           it("moves to a newer version on a yes, as whoever connected it, and tells what came of it", async () => {
             const gitea = [pinned("gitea", "3.4", "3.5")];
             const secret = await asking("Dogwood", gitea);
@@ -929,6 +1127,34 @@ describe("Jarvis", () => {
             ).toBe(204);
             await vi.waitFor(() => expect(replies()).toHaveLength(2));
             expect(replies()[1]!.say).toBe("gitea on Dogwood is updated.");
+          });
+
+          it("tells what came of the job a yes made, though the clock moved on as the job was made", async () => {
+            const gitea = [pinned("gitea", "3.4", "3.5")];
+            const secret = await asking("Hornbeam", gitea);
+            await later(gitea, JARVIS_LIMITS.settleMilliseconds);
+            const [question] = asked();
+            await confirmsAs(secret, question!.id);
+            // The hand-over makes its job at once, and the clock is a moment further on by the time the yes is kept.
+            const jobs = controlPlane.services.jobsService;
+            const request = jobs.request.bind(jobs);
+            jobs.request = (...args) => {
+              const job = request(...args);
+              controlPlane.clock.now += 1;
+              return job;
+            };
+
+            read(`autoheal yes ${question!.code} ${seconds()} voice`);
+            const [job] = await vi.waitFor(async () => {
+              const taken = await takeWork();
+              expect(taken).toHaveLength(1);
+              return taken;
+            });
+            const result = { succeeded: true, outcome: "Moved gitea to 3.5.", output: null };
+            await runner("POST", apiPath(RUNNER_ROUTES.jobResult, { jobId: job!.id }), result);
+
+            await vi.waitFor(() => expect(replies()).toHaveLength(2));
+            expect(replies()[1]!.say).toBe("gitea on Hornbeam is updated.");
           });
         });
 

@@ -14,11 +14,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { STACK_OUTCOMES } from "../shared/constants.js";
+import { PROVENANCE_MESSAGES, STACK_OUTCOMES } from "../shared/constants.js";
 import type { StackAnswer } from "../shared/stacks.js";
 import type { ContainerSummary } from "./docker-client.js";
 import { settingsOf } from "./container-settings.js";
 import { Stacks, imageExistsWith } from "./stacks.js";
+import { PREVIOUS_SUFFIX } from "./stack-transaction.js";
+import { parseImageReference } from "./registry-client.js";
+import { PROVENANCE_STATUS, type ImageProvenance, type ImageTrustPolicy } from "../shared/image-provenance.js";
 
 const FOLDER = "/home/alex/docker/wiki";
 const COMPOSE = `${FOLDER}/docker-compose.yml`;
@@ -136,6 +139,7 @@ function stacksWith(
       },
       networks: async () => [],
       inspectImage: async () => null,
+      pull: async () => undefined,
       inspect: async (name: string) =>
         (overrides.inspected?.[name] ?? {
           Config: {},
@@ -331,6 +335,7 @@ describe("a stack's files, opened only inside its folder", () => {
         containerSummaries: async () => [labelled],
         networks: async () => [],
         inspectImage: async () => null,
+        pull: async () => undefined,
         inspect: async () => null,
       },
       hostScript: async (script: string) => {
@@ -592,6 +597,7 @@ describe("every lifecycle command on one stack", () => {
         containerSummaries: async () => summaries,
         networks: async () => [],
         inspectImage: async () => null,
+        pull: async () => undefined,
         inspect: async () => ({ Config: {}, State: { Running: true, Status: "running" }, RestartCount: 0 }) as never,
       },
       hostScript: async (script: string) => {
@@ -1143,6 +1149,7 @@ exec /usr/bin/mv "$@"
           composeRan && membersAfterUp !== undefined ? membersAfterUp : [member("Wiki", "wiki", HASH_A)],
         networks: async () => [],
         inspectImage: async () => null,
+        pull: async () => undefined,
         inspect: async () => details,
       },
       hostScript,
@@ -1247,6 +1254,36 @@ exec /usr/bin/mv "$@"
     expect((await host.saveBoth(await host.hashes())).error).toBeNull();
     expect(readFileSync(host.envFile, "utf8")).toBe(NEW_ENV);
     expect(statSync(host.envFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("writes no file it did not read as this stack's, however its path is spelled", async () => {
+    const host = onDisk();
+    for (const path of [`${FOLDER}/../escaped.env`, `${FOLDER}/notes.txt`]) {
+      const answer = await host.ask({ kind: "save", files: [{ path, text: "X=1\n", hash: null }] });
+      expect(answer.error).toContain("not one of this stack's files");
+    }
+    expect(existsSync(join(host.root, "escaped.env"))).toBe(false);
+    expect(existsSync(join(host.folder, "notes.txt"))).toBe(false);
+  });
+
+  it("makes a new settings file its Compose file names only in a folder really inside its own", async () => {
+    const host = onDisk();
+    writeFileSync(host.composeFile, "services:\n  wiki:\n    image: wiki:2\n    env_file: conf/app.env\n");
+    const outside = join(host.root, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(host.folder, "conf"));
+    const appEnv = `${FOLDER}/conf/app.env`;
+    const save = () => host.ask({ kind: "save", files: [{ path: appEnv, text: "X=1\n", hash: null }] });
+
+    expect((await host.ask({ kind: "read" })).files?.files.map(({ path }) => path)).not.toContain(appEnv);
+    expect((await save()).error).toContain("not one of this stack's files");
+    expect(readdirSync(outside)).toEqual([]);
+
+    // A real folder there: the same new file is made.
+    rmSync(join(host.folder, "conf"));
+    mkdirSync(join(host.folder, "conf"));
+    expect((await save()).error).toBeNull();
+    expect(readFileSync(join(host.folder, "conf", "app.env"), "utf8")).toBe("X=1\n");
   });
 
   it("takes one of two saves of the same version, the other told to look again", async () => {
@@ -1474,9 +1511,49 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
   const TAGGED = "services:\n  wiki:\n    image: wiki:2.0 # pinned\n    env_file: .env\n";
   const imageIn = (text: string) => /image: (\S+)/.exec(text)?.[1] ?? "";
 
+  const STOPS = { exitCode: 0, output: "", stops: true };
+  const WIKI_DATA = [{ Type: "volume", Name: "wiki-data", Destination: "/data", RW: true }];
+  const PULLED = `sha256:${"d".repeat(64)}`;
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  interface TagHostOptions {
+    holdsOnNew?: boolean;
+    keeps?: boolean;
+    text?: string;
+    // A new version that does not hold runs on, unhealthy, instead of exiting at once.
+    unhealthyOnNew?: boolean;
+    mounts?: object[];
+    // What Compose answers when told to stop the new version, and whether it really stops; an error is a host that
+    // could not be reached.
+    stopOnNew?: { exitCode: number | null; output: string; stops: boolean } | Error;
+    // Another container, in no stack, that uses the same data and keeps running.
+    sharedWriter?: boolean;
+    // What its registry says of the new image's signature, under a rule that asks for one unless `covered` is false.
+    provenance?: { found: ImageProvenance; covered?: boolean };
+    // Its data too big to copy first: the change goes ahead without a copy, as an update does.
+    tooMuchData?: boolean;
+    // Compose cannot even make the new version, as when its image cannot be pulled.
+    pullFailsOnNew?: boolean;
+  }
+
   // The real scripts on real files, under a test's own folder; only Compose and Docker are faked.
-  function tagHost({ holdsOnNew = true, keeps = true, text = TAGGED } = {}) {
+  function tagHost({
+    holdsOnNew = true,
+    keeps = true,
+    text = TAGGED,
+    unhealthyOnNew = false,
+    mounts = [],
+    stopOnNew = STOPS,
+    sharedWriter = false,
+    provenance,
+    tooMuchData = false,
+    pullFailsOnNew = false,
+  }: TagHostOptions = {}) {
     const root = mkdtempSync(join(tmpdir(), "autoheal-retag-"));
+    roots.push(root);
     const folder = join(root, "wiki");
     mkdirSync(folder);
     const composeFile = join(folder, "docker-compose.yml");
@@ -1484,6 +1561,9 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
     writeFileSync(join(folder, ".env"), ENV_TEXT);
     const commands: string[] = [];
     const onDiskImage = () => imageIn(readFileSync(composeFile, "utf8"));
+    // As Compose's stop and up leave it, and the version its container was made from.
+    let running = true;
+    let madeFrom = "wiki:2.0";
     const resolved = (script: string) => {
       const edited = /printf %s '([^']+)' \| base64 -d > "\$work\/0"/.exec(script)?.[1];
       const read = edited === undefined ? readFileSync(composeFile, "utf8") : Buffer.from(edited, "base64").toString();
@@ -1500,29 +1580,72 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
       if (script.includes("docker compose version")) {
         const command = / (stop|up -d --no-deps|up --no-start --no-deps) (.*) 2>&1/.exec(script);
         if (command !== null) commands.push(`${command[1]} ${command[2]}`);
-        return { exitCode: 0, output: "" };
+        const upping = command?.[1] === "up -d --no-deps";
+        if (upping && pullFailsOnNew && onDiskImage() === "wiki:2.1") {
+          return { exitCode: 1, output: "pull access denied for wiki" };
+        }
+        if (upping) {
+          running = true;
+          madeFrom = onDiskImage();
+        }
+        if (command?.[1] !== "stop") return { exitCode: 0, output: "" };
+        const answer = onDiskImage() === "wiki:2.1" ? stopOnNew : STOPS;
+        if (answer instanceof Error) throw answer;
+        if (answer.stops) running = false;
+        return { exitCode: answer.exitCode, output: answer.output };
       }
       const ran = spawnSync("sh", ["-c", script.replaceAll(FOLDER, folder)], { encoding: "utf8" });
       return { exitCode: ran.status, output: `${ran.stdout}${ran.stderr}`.replaceAll(folder, FOLDER) };
     });
-    // Running on what it was, or on the new version when that holds; else the new version exits at once.
-    const details = () => {
+    // Running on what it was, or on the new version when that holds; else the new version exits at once, or runs on
+    // unhealthy.
+    const stateOf = () => {
+      if (!running) return { Running: false, Status: "exited", ExitCode: 0 };
       const failing = !holdsOnNew && onDiskImage() === "wiki:2.1";
-      return {
-        Id: "Wiki",
+      if (!failing) return { Running: true, Status: "running" };
+      if (unhealthyOnNew) return { Running: true, Status: "running", Health: { Status: "unhealthy" } };
+      return { Running: false, Status: "exited", ExitCode: 1, FinishedAt: "2026-11-07T10:00:00Z" };
+    };
+    // Compose makes the container anew for another version.
+    const details = () =>
+      ({
+        Id: madeFrom === "wiki:2.0" ? "Wiki" : "Wiki-made-on-2.1",
         Name: "/Wiki",
         Config: { Labels: member("Wiki", "wiki", HASH_A).Labels, Image: onDiskImage() },
-        Mounts: [],
-        State: failing
-          ? { Running: false, Status: "exited", ExitCode: 1, FinishedAt: "2026-11-07T10:00:00Z" }
-          : { Running: true, Status: "running" },
+        Mounts: mounts,
+        State: stateOf(),
         RestartCount: 0,
-      } as never;
-    };
+      }) as never;
+    const indexer = {
+      Id: "Indexer",
+      Name: "/Indexer",
+      Config: { Labels: {} },
+      Mounts: mounts,
+      State: { Running: true, Status: "running" },
+    } as never;
+    const outsider: ContainerSummary = { Id: "Indexer", Names: ["/Indexer"], State: "running", Status: "Up" };
+    const pulled: string[] = [];
+    const wiki = parseImageReference("wiki:2.1")!;
+    const provenanceSource =
+      provenance === undefined
+        ? null
+        : {
+            policy: (): ImageTrustPolicy => ({
+              revision: 1,
+              publishers: [{ name: "example", publicKey: "irrelevant here" }],
+              required:
+                provenance.covered === false
+                  ? []
+                  : [{ registry: wiki.registry, repository: wiki.repository, publishers: [] }],
+            }),
+            read: async () => provenance.found,
+          };
     const keeper = {
       take: vi.fn(async () => {
         // Copied while the old version is still what the files say.
         expect(onDiskImage()).toBe("wiki:2.0");
+        if (tooMuchData)
+          return { containerId: "Wiki", mounts: [], complete: false, oversized: true as const, outcome: "" };
         return { containerId: "Wiki", mounts: [], complete: keeps, outcome: keeps ? "" : " The copy failed." };
       }),
       restore: vi.fn(async () => ({ at: 1, problem: null })),
@@ -1530,11 +1653,14 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
     };
     const stacks = new Stacks({
       docker: {
-        containerSummaries: async () => [member("Wiki", "wiki", HASH_A)],
+        containerSummaries: async () => [member("Wiki", "wiki", HASH_A), ...(sharedWriter ? [outsider] : [])],
         networks: async () => [],
-        inspectImage: async () => null,
-        inspect: async () => details(),
+        inspectImage: async () =>
+          provenance === undefined ? null : ({ Id: "sha256:new", RepoDigests: [`wiki@${PULLED}`] } as never),
+        pull: async (reference: string) => void pulled.push(reference),
+        inspect: async (reference: string) => (reference === "Indexer" ? indexer : details()),
       },
+      provenance: provenanceSource,
       hostScript,
       imageExists: async () => true,
       settings: {
@@ -1550,7 +1676,14 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
         return () => (now += 60_000);
       })(),
     });
-    return { stacks, keeper, commands, composeText: () => readFileSync(composeFile, "utf8") };
+    return {
+      stacks,
+      keeper,
+      commands,
+      composeText: () => readFileSync(composeFile, "utf8"),
+      previousText: () => readFileSync(`${composeFile}${PREVIOUS_SUFFIX}`, "utf8"),
+      pulled,
+    };
   }
 
   it("changes only the tag, copies the data aside first, recreates it, and drops the copy once it holds", async () => {
@@ -1581,6 +1714,163 @@ describe("a newer version handed to the agent, its tag changed in its files", ()
     expect(host.composeText()).toBe(TAGGED);
     expect(host.keeper.restore).toHaveBeenCalledWith("Wiki", expect.objectContaining({ Id: "Wiki" }));
     expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'", "stop 'wiki'", "up -d --no-deps 'wiki'"]);
+  });
+
+  describe("with data too big to copy first", () => {
+    it("goes ahead without a copy, as an update does", async () => {
+      const host = tagHost({ tooMuchData: true, mounts: WIKI_DATA });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran).toEqual({
+        succeeded: true,
+        outcome: STACK_OUTCOMES.tagChanged(["Wiki"], "2.1", STACK_OUTCOMES.tagLine("docker-compose.yml")),
+        output: null,
+      });
+    });
+
+    it("leaves it on the new version when that does not come back well, never the old one over its data", async () => {
+      const host = tagHost({ tooMuchData: true, holdsOnNew: false, mounts: WIKI_DATA });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'"]);
+      expect(host.composeText()).toBe(TAGGED.replace("wiki:2.0", "wiki:2.1"));
+      expect(host.previousText()).toBe(TAGGED);
+      expect(host.keeper.restore).not.toHaveBeenCalled();
+      expect(host.keeper.discard).not.toHaveBeenCalled();
+      expect(ran).toEqual({
+        succeeded: false,
+        outcome: STACK_OUTCOMES.tagLeftOnNew(["Wiki"], "2.0", "Wiki: the new container stopped (exit 1)"),
+        output: null,
+      });
+    });
+  });
+
+  describe("with data too big to copy first, when Compose could not even make the new version", () => {
+    it("puts it back as any other, as the new version never opened its data", async () => {
+      const host = tagHost({ tooMuchData: true, pullFailsOnNew: true, mounts: WIKI_DATA });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(host.composeText()).toBe(TAGGED);
+      expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'", "stop 'wiki'", "up -d --no-deps 'wiki'"]);
+      expect(ran).toEqual({
+        succeeded: false,
+        outcome: STACK_OUTCOMES.tagPutBack(["Wiki"], "2.0", "pull access denied for wiki"),
+        output: null,
+      });
+    });
+  });
+
+  describe("putting it back only once nothing can still write its data", () => {
+    const ON_NEW = TAGGED.replace("wiki:2.0", "wiki:2.1");
+
+    it("leaves the data, its copy and the files alone when Compose's stop fails and the new version runs on", async () => {
+      const refusal = "Error response from daemon: cannot stop container: permission denied";
+      const host = tagHost({
+        holdsOnNew: false,
+        unhealthyOnNew: true,
+        mounts: WIKI_DATA,
+        stopOnNew: { exitCode: 1, output: refusal, stops: false },
+      });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran).toEqual({
+        succeeded: false,
+        outcome: STACK_OUTCOMES.tagNotPutBack("Wiki: it reports unhealthy", STACK_OUTCOMES.writerStillRunning("Wiki")),
+        output: refusal,
+      });
+      expect(host.keeper.restore).not.toHaveBeenCalled();
+      expect(host.keeper.discard).not.toHaveBeenCalled();
+      expect(host.composeText()).toBe(ON_NEW);
+      expect(host.previousText()).toBe(TAGGED);
+      expect(host.commands).toEqual(["stop 'wiki'", "up -d --no-deps 'wiki'", "stop 'wiki'"]);
+    });
+
+    it("leaves them alone too when the host cannot be reached to stop it", async () => {
+      const host = tagHost({ holdsOnNew: false, mounts: WIKI_DATA, stopOnNew: new Error("the host did not answer") });
+
+      await expect(host.stacks.changeTag("Wiki", "2.1", host.keeper)).rejects.toThrow("the host did not answer");
+
+      expect(host.keeper.restore).not.toHaveBeenCalled();
+      expect(host.keeper.discard).not.toHaveBeenCalled();
+      expect(host.composeText()).toBe(ON_NEW);
+    });
+
+    it("leaves the data alone while another container that uses it keeps running", async () => {
+      const host = tagHost({ holdsOnNew: false, mounts: WIKI_DATA, sharedWriter: true });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran).toEqual({
+        succeeded: false,
+        outcome: STACK_OUTCOMES.tagNotPutBack(
+          "Wiki: the new container stopped (exit 1)",
+          STACK_OUTCOMES.writerStillRunning("Indexer"),
+        ),
+        output: null,
+      });
+      expect(host.keeper.restore).not.toHaveBeenCalled();
+      expect(host.composeText()).toBe(ON_NEW);
+    });
+
+    it("puts everything back, the data once, when every writer is seen stopped though Compose's stop said it failed", async () => {
+      const host = tagHost({
+        holdsOnNew: false,
+        unhealthyOnNew: true,
+        mounts: WIKI_DATA,
+        stopOnNew: { exitCode: 1, output: "network wiki_default not found", stops: true },
+      });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran.outcome).toBe(STACK_OUTCOMES.tagPutBack(["Wiki"], "2.0", "Wiki: it reports unhealthy"));
+      expect(host.keeper.restore).toHaveBeenCalledTimes(1);
+      expect(host.keeper.discard).toHaveBeenCalledWith("Wiki");
+      expect(host.composeText()).toBe(TAGGED);
+    });
+  });
+
+  describe("held to the publisher rules an update is held to", () => {
+    const said = (status: ImageProvenance["status"], publisher: string | null) => ({
+      found: {
+        status,
+        digest: PULLED,
+        publisher,
+        checkedAt: 1,
+        problem: publisher === null ? "it is not signed" : null,
+      },
+    });
+
+    it("stops nothing for an image a required publisher did not sign", async () => {
+      const host = tagHost({ provenance: said(PROVENANCE_STATUS.unsigned, null) });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran.succeeded).toBe(false);
+      expect(ran.outcome).toContain(PROVENANCE_MESSAGES.heldBack("wiki:2.1", "it is not signed"));
+      expect(host.commands).toEqual([]);
+      expect(host.keeper.take).not.toHaveBeenCalled();
+      expect(host.composeText()).toBe(TAGGED);
+    });
+
+    it("goes ahead to an image its publisher signed, checking the very one it pulled", async () => {
+      const host = tagHost({ provenance: said(PROVENANCE_STATUS.verified, "example") });
+
+      const ran = await host.stacks.changeTag("Wiki", "2.1", host.keeper);
+
+      expect(ran.succeeded).toBe(true);
+      expect(host.pulled).toEqual(["wiki:2.1"]);
+    });
+
+    it("pulls nothing to check where no rule covers the image", async () => {
+      const host = tagHost({ provenance: { ...said(PROVENANCE_STATUS.unsigned, null), covered: false } });
+
+      expect((await host.stacks.changeTag("Wiki", "2.1", host.keeper)).succeeded).toBe(true);
+      expect(host.pulled).toEqual([]);
+    });
   });
 
   it("changes nothing when its data could not be copied aside, and starts it again", async () => {

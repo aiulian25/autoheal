@@ -97,13 +97,16 @@ export class NetworkWatch {
   private lastInternet: InternetHealth | null = null;
   private exposureReadable = false;
   private lastOwnCheck: { at: number; works: boolean } | null = null;
-  private speedTestRefused = false;
+  // The router connection that refused this user a speed test: the refusal holds for it, and new settings ask afresh.
+  private speedTestRefusedBy: RouterAdapter | null = null;
   private lastSpeedTestAsked = 0;
   private logLastAt: number | null = null;
   private logWindow = { second: 0, lines: 0 };
   private logRefused: { sender: string; at: number; lines: number } | null = null;
   private receiver: Socket | null = null;
   private readonly logSenders: RouterLogSenders;
+  // The router a poll under way is reading.
+  private polling: RouterAdapter | null = null;
 
   constructor(private readonly dependencies: NetworkWatchDependencies) {
     this.logSenders = new RouterLogSenders(
@@ -130,17 +133,33 @@ export class NetworkWatch {
     this.lastInternet = null;
     this.lastBands.clear();
     this.recentBusy = [];
-    this.speedTestRefused = false;
+    this.speedTestRefusedBy = null;
     this.logRefused = null;
   }
 
+  // One poll at a time: a minute that finds the last one still reading lets it be, and the next minute reads.
   async tick() {
+    if (this.polling !== null) return;
     const adapter = this.dependencies.settings.adapter();
     if (adapter === null) {
       this.reachable = false;
       this.problem = null;
       return;
     }
+    this.polling = adapter;
+    try {
+      await this.poll(adapter);
+    } finally {
+      this.polling = null;
+    }
+  }
+
+  /** Stops the poll still waiting on the router: a restore, or a shutdown, then has none of it to wait for. */
+  cancelPoll() {
+    this.polling?.cancel();
+  }
+
+  private async poll(adapter: RouterAdapter) {
     const at = this.now();
     this.polls += 1;
     const sendersRefreshed = this.dependencies.logPort == null ? undefined : this.logSenders.refresh();
@@ -255,14 +274,19 @@ export class NetworkWatch {
       const busy = this.quietBusyMbps();
       this.store.addSpeedTest(last, busy, isFairTest(busy, contract?.downMbps ?? null), SPEED_SOURCE.router);
     }
-    if (contract === null || this.speedTestRefused) return;
+    if (contract === null || this.refusedBy(adapter)) return;
     const due =
       at - Math.max(this.lastSpeedTestAsked, this.store.lastSpeedTestAt()) >= DAY / NETWORK_LIMITS.speedTestsADay;
     // A busy line would only give an unfair test: it waits for a quiet minute.
     if (!due || !isFairTest(internet.busyMbps, contract.downMbps)) return;
     this.lastSpeedTestAsked = at;
-    const allowed = await adapter.startSpeedTest().catch(() => false);
-    if (!allowed) this.speedTestRefused = true;
+    // Only the router's own no holds: failing to ask is no answer, and the next test asks again when it is due.
+    const allowed = await adapter.startSpeedTest().catch(() => null);
+    if (allowed === false) this.speedTestRefusedBy = adapter;
+  }
+
+  private refusedBy(adapter: RouterAdapter | null) {
+    return adapter !== null && this.speedTestRefusedBy === adapter;
   }
 
   private async recordExposure(adapter: RouterAdapter, at: number) {
@@ -459,7 +483,7 @@ export class NetworkWatch {
       contract: this.dependencies.settings.contract(),
       lines: this.lastInternet?.lines ?? [],
       publicAddress: this.lastInternet?.publicAddress ?? null,
-      speedTestRefused: this.speedTestRefused,
+      speedTestRefused: this.refusedBy(this.dependencies.settings.adapter()),
     };
   }
 

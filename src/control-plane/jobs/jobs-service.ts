@@ -96,6 +96,8 @@ interface JobDetails {
   undoIfUnhealthy?: boolean;
   // The tag a change-tag job moves its container to.
   tag?: string;
+  // The registry digest of the image a person said yes to: the update goes to that image or not at all.
+  expectedDigest?: string;
 }
 
 export const bootIdOf = (host: HostRow): string | null =>
@@ -240,6 +242,7 @@ export class JobsService {
         backupJson: details.backup === undefined ? null : JSON.stringify(details.backup),
         undoIfUnhealthy: details.undoIfUnhealthy ?? false,
         targetTag,
+        expectedDigest: details.expectedDigest ?? null,
         expectedResourcesFingerprint: details.expectedResourcesFingerprint ?? null,
         rolloutJson: details.rollout ? JSON.stringify(rolloutJobSchema.parse(details.rollout)) : null,
       })
@@ -405,6 +408,7 @@ export class JobsService {
         ...delivered,
         action: job.action as ContainerJob["action"],
         ...(job.undoIfUnhealthy ? { undoIfUnhealthy: true } : {}),
+        ...(job.expectedDigest === null ? {} : { expectedDigest: job.expectedDigest }),
         ...(job.action === JOB_ACTION.update &&
         job.requestedByUserId !== null &&
         !job.operatorUserId &&

@@ -96,7 +96,15 @@ function packagesByHost(request: AgentDispatchRequest): Map<string, string[]> {
 export class DispatchService {
   constructor(private readonly dependencies: DispatchDependencies) {}
 
-  dispatch(actor: Actor, request: AgentDispatchRequest): AgentDispatchView {
+  /**
+   * `approved`: the registry digest a person said yes to, by its update's task, as the assistant asks one about. Such an
+   * update goes to that image or back to them.
+   */
+  dispatch(
+    actor: Actor,
+    request: AgentDispatchRequest,
+    approved: ReadonlyMap<string, string> = new Map(),
+  ): AgentDispatchView {
     // Each once, however often it was dragged.
     const updates = [...new Set(request.updates)].map((taskId) => this.updateOf(taskId));
     const packages = packagesByHost(request);
@@ -108,7 +116,7 @@ export class DispatchService {
     const tags = [...named.values()].map((asked) => this.tagOf(asked));
     // All or none: the work one asks for may still be refused, by checks of its own, and takes back those before it.
     this.dependencies.databaseHandle.atomically(() => {
-      updates.forEach((handOver) => this.handOverUpdate(actor, handOver));
+      updates.forEach((handOver) => this.handOverUpdate(actor, handOver, approved.get(handOver.task.id)));
       tags.forEach((handOver) => this.handOverTag(actor, handOver));
       packages.forEach((names, hostId) => this.handOverPackages(actor, hostId, names));
       incidents.forEach((incidentId) => this.handOverIncident(actor, incidentId));
@@ -215,10 +223,15 @@ export class DispatchService {
 
   // --- handing over ---------------------------------------------------------------------------------
 
-  private handOverUpdate(actor: Actor, { task, container }: UpdateHandOver) {
+  private handOverUpdate(actor: Actor, { task, container }: UpdateHandOver, digest: string | undefined) {
     const { tasks, auditLog } = this.dependencies;
     tasks.change(actor, task.id, { assignee: TO_AUTOHEAL });
-    tasks.addActivity(task.id, TASK_ACTIVITY.dispatched, { kind: "user", actor }, {});
+    tasks.addActivity(
+      task.id,
+      TASK_ACTIVITY.dispatched,
+      { kind: "user", actor },
+      digest === undefined ? {} : { digest },
+    );
     tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.dispatched(actor.username));
     auditLog.recordUserAction(
       actor,

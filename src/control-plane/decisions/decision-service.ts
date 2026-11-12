@@ -173,6 +173,7 @@ export class DecisionService {
           return server.client.chat(systemPrompt, userPrompt, AbortSignal.any([signal, runnerGone]));
         },
         (from, reason) => this.incidents.addEvent(incidentId, TRACE.serverFellBack, { from, reason }),
+        runnerGone,
       );
       this.incidents.addEvent(incidentId, TRACE.modelAnswered, {
         raw: content.slice(0, RAW_ANSWER_TRACE_LIMIT),

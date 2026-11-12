@@ -3,9 +3,11 @@ import { dirname } from "node:path";
 import {
   COMPOSE_PROJECT_LABEL,
   COMPOSE_WORKING_DIR_LABEL,
+  HIGHEST_PORT,
   HOST_DEPLOY_REFUSALS,
   INSTALL_OUTCOMES,
   OWN_COMPOSE_TEXT,
+  PORT_PROTOCOL,
   UPDATE_PHASE,
   UPDATE_VERIFY,
   VERIFY_PROBLEMS,
@@ -25,7 +27,15 @@ import {
 import type { ContainerSummary, DockerClient } from "./docker-client.js";
 import type { HostFiles } from "./host-files.js";
 import { answerHostProfile } from "./host-profile.js";
-import { checkScript, COMPOSE_PREAMBLE, INSTALL_EXIT, shellQuoted, upScript } from "./install-script.js";
+import {
+  checkScript,
+  COMPOSE_PREAMBLE,
+  FOLDER_IN_USE,
+  INSTALL_EXIT,
+  KEEPER_LINE,
+  shellQuoted,
+  upScript,
+} from "./install-script.js";
 import type { HostScript, InstallResult } from "./installs.js";
 import { untilSettled } from "./settle-check.js";
 import type { UpdateReport } from "./update-progress.js";
@@ -51,11 +61,23 @@ export interface OwnComposeDependencies {
 interface Service {
   image?: string;
   container_name?: string;
-  ports?: { published?: string | number; target?: number }[];
+  ports?: { published?: string | number; target?: number; protocol?: string; host_ip?: string }[];
   volumes?: { type?: string; source?: string }[];
   networks?: Record<string, unknown>;
   build?: unknown;
 }
+// A published binding: two meet on the same port and transport, at the same address or where either takes them all.
+interface Binding {
+  protocol: string;
+  address: string;
+  port: number;
+}
+const EVERY_ADDRESS: ReadonlySet<string> = new Set(["", "0.0.0.0", "::"]);
+const overlap = (one: Binding, other: Binding) =>
+  one.port === other.port &&
+  one.protocol === other.protocol &&
+  (one.address === other.address || EVERY_ADDRESS.has(one.address) || EVERY_ADDRESS.has(other.address));
+
 interface Config {
   name?: string;
   services?: Record<string, Service>;
@@ -96,11 +118,14 @@ function readScript(mark: string, project: string, { compose, env }: Pick<OwnRun
 }
 
 const SAME_MARK = "same=1";
+const writtenAs = (file: string, expected: string) =>
+  `[ "$(sha256sum "$dir/${file}" | cut -d' ' -f1)" = ${shellQuoted(expected)} ]`;
 // A file that is not there is what an install that stopped early left. One that differs is someone's since then.
-const stillAsWritten = (file: string, expected: string) =>
-  `[ ! -e "$dir/${file}" ] || [ "$(sha256sum "$dir/${file}" | cut -d' ' -f1)" = ${shellQuoted(expected)} ]`;
+const stillAsWritten = (file: string, expected: string) => `[ ! -e "$dir/${file}" ] || ${writtenAs(file, expected)}`;
+// What the failed install left: nothing at all, or its own Compose file as it wrote it (written right after its
+// folder), with its settings as written or not yet there. A folder holding anything else is someone else's.
 const folderAsWritten = ({ composeSha256, envSha256 }: OwnRetry) =>
-  `{ ${stillAsWritten(COMPOSE_FILE, composeSha256)}; } && { ${stillAsWritten(ENV_FILE, envSha256)}; }`;
+  `! { ${FOLDER_IN_USE}; } || { [ ! -L "$dir" ] && [ -f "$dir/${COMPOSE_FILE}" ] && ${writtenAs(COMPOSE_FILE, composeSha256)} && { ${stillAsWritten(ENV_FILE, envSha256)}; }; }`;
 const retryFolderScript = (folder: string, retry: OwnRetry) =>
   [`dir=${shellQuoted(folder)}`, `if ${folderAsWritten(retry)}; then echo ${SAME_MARK}; fi`].join("\n");
 
@@ -110,8 +135,8 @@ function writeOwnScript({ folder, compose, env, retry }: OwnRun, binds: readonly
     "set -e",
     `dir=${shellQuoted(folder)}`,
     retry === null
-      ? `[ -e "$dir/${COMPOSE_FILE}" ] && exit ${INSTALL_EXIT.folderTaken}`
-      : `${folderAsWritten(retry)} || exit ${INSTALL_EXIT.folderChanged}`,
+      ? `if ${FOLDER_IN_USE}; then exit ${INSTALL_EXIT.folderTaken}; fi`
+      : `{ ${folderAsWritten(retry)}; } || exit ${INSTALL_EXIT.folderChanged}`,
     "umask 022",
     'mkdir -p "$dir"',
     `printf %s ${encoded(compose)} | base64 -d > "$dir/${COMPOSE_FILE}"`,
@@ -125,10 +150,10 @@ function writeOwnScript({ folder, compose, env, retry }: OwnRun, binds: readonly
     // Made here, or Docker would make them for root and the app could not write to them.
     ...(binds.length === 0 ? [] : [`mkdir -p ${quoted}`]),
     'if [ "$(id -u)" = 0 ]; then',
-    `  keeper=$(stat -c '%u:%g' "$(dirname "$dir")")`,
-    `  chown "$keeper" "$dir" "$dir/${COMPOSE_FILE}"`,
-    ...(env === "" ? [] : [`  chown "$keeper" "$dir/${ENV_FILE}"`]),
-    ...(binds.length === 0 ? [] : [`  chown "$keeper" ${quoted}`]),
+    `  ${KEEPER_LINE}`,
+    `  chown -h "$keeper" "$dir" "$dir/${COMPOSE_FILE}"`,
+    ...(env === "" ? [] : [`  chown -h "$keeper" "$dir/${ENV_FILE}"`]),
+    ...(binds.length === 0 ? [] : [`  chown -h "$keeper" ${quoted}`]),
     "fi",
   ].join("\n");
 }
@@ -216,26 +241,29 @@ export class OwnCompose {
       }
       if (!/^writable=1$/m.test(found.output)) issues.push(composeIssue(null, text.folderLocked(folder)));
     }
-    const published = new Map(
-      others.flatMap((container) =>
-        (container.Ports ?? []).flatMap((port) =>
-          port.PublicPort === undefined ? [] : [[port.PublicPort, nameOf(container)] as const],
-        ),
+    const published = others.flatMap((container) =>
+      (container.Ports ?? []).flatMap((port) =>
+        port.PublicPort === undefined
+          ? []
+          : [{ protocol: port.Type, address: port.IP ?? "", port: port.PublicPort, holder: nameOf(container) }],
       ),
     );
+    const holderOf = (wanted: Binding) => published.find((binding) => overlap(binding, wanted))?.holder;
     for (const [, service] of services) {
-      for (const { published: port } of service.ports ?? []) {
-        const number = Number(port);
-        const holder = published.get(number);
+      for (const { published: port, protocol = PORT_PROTOCOL.tcp, host_ip: address = "" } of service.ports ?? []) {
+        const wanted = { protocol, address, port: Number(port) };
+        const holder = holderOf(wanted);
         if (holder === undefined) continue;
+        const number = wanted.port;
         const line = linesWith(files.compose, new RegExp(`(^|[^\\d])${number}:`));
+        // The next port free for the same binding, and none past the last there is.
         let free = number + 1;
-        while (published.has(free)) free += 1;
+        while (free <= HIGHEST_PORT && holderOf({ ...wanted, port: free }) !== undefined) free += 1;
         const original = line === null ? null : files.compose.split("\n")[line - 1]!;
         issues.push({
           ...composeIssue(line, text.portTaken(number, holder)),
           fix:
-            line === null || original === null
+            line === null || original === null || free > HIGHEST_PORT
               ? null
               : {
                   label: text.usePort(free),

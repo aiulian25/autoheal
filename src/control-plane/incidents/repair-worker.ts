@@ -262,7 +262,19 @@ export class RepairWorker {
       await this.report(incident, host, { ...plan, repair: REPAIR.report }, outcome);
       return;
     }
-    const requested = this.request(host, container, plan.repair);
+    // Ollama may take minutes: the same container, still down and still Ollama's by its own answer or a person's
+    // hand-over, must still have this repair on offer now.
+    const current = this.candidateOf(incident, this.hostsById());
+    const stillOffered =
+      current !== null &&
+      current.container.containerId === container.containerId &&
+      this.offered(current.host, current.container, current.dispatched).includes(plan.repair);
+    if (!stillOffered) {
+      incidents.addEvent(incident.id, TRACE.repairSkipped, { reason: REPAIR_TEXT.noLongerGiven });
+      incidents.update(incident.id, { status: INCIDENT_STATUS.awaitingApproval });
+      return;
+    }
+    const requested = this.request(current.host, current.container, plan.repair);
     if (typeof requested === "string") {
       await this.report(incident, host, { ...plan, repair: REPAIR.report }, requested);
       return;

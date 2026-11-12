@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   runnerTokenOf,
   startTestControlPlane,
@@ -8,9 +8,17 @@ import {
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
-import { PROBE_LIMITS, PROBE_SCOPE, PROBE_STATE, type ProbeBody, type ProbeView } from "../../shared/probes.js";
+import {
+  PROBE_LIMITS,
+  PROBE_OUTCOME,
+  PROBE_SCOPE,
+  PROBE_STATE,
+  type ProbeBody,
+  type ProbeView,
+} from "../../shared/probes.js";
 import { RUNNER_ROUTES, type HeartbeatResponse, type ProbeReport } from "../../shared/protocol.js";
 import { ServiceProbes } from "../../runner/service-probes.js";
+import { ProbeService } from "./probe-service.js";
 
 const INTERVAL_SECONDS = 60;
 const bodyWith = (change: Partial<ProbeBody> = {}): ProbeBody => ({
@@ -36,7 +44,7 @@ describe("checks made from a host rather than from Autoheal", () => {
       await controlPlane.runnerApp.inject({
         method: "POST",
         url: RUNNER_ROUTES.heartbeat,
-        payload: { ...heartbeatWith({ hostLabel: label }), serviceProbes: true, ...extra },
+        payload: { ...heartbeatWith({ hostLabel: label }), serviceProbes: true, probeAttempts: true, ...extra },
         headers: { authorization: `Bearer ${tokens[label]!}` },
       })
     ).json<HeartbeatResponse>();
@@ -114,6 +122,85 @@ describe("checks made from a host rather than from Autoheal", () => {
     expect(probe.samples).toEqual([]);
   });
 
+  it("lets what a host last saw go unknown once the host goes quiet, and takes its next answer", async () => {
+    await add("Alder", bodyWith({ vantage: hostIds.Alder! }));
+    await tick();
+    const given = (await heartbeat("Alder")).probes![0]!;
+    await heartbeat("Alder", { probeResults: [{ ...given, ok: true, latencyMilliseconds: 9, problem: null }] });
+    const answered = (await probesOf("Alder"))[0]!;
+    expect(answered.state).toBe(PROBE_STATE.up);
+
+    // Alder reports nothing more. Quiet past the deadline, but its next answer not yet due to have come: it still
+    // shows what it saw.
+    controlPlane.clock.now += (PROBE_LIMITS.vantageDeadlineSeconds + 1) * 1000;
+    await tick();
+    expect((await probesOf("Alder"))[0]!.state).toBe(PROBE_STATE.up);
+    // Past the check's interval and the deadline after it, nothing has come.
+    controlPlane.clock.now += INTERVAL_SECONDS * 1000;
+    await tick();
+    const quiet = (await probesOf("Alder"))[0]!;
+    expect(quiet.state).toBe(PROBE_STATE.unknown);
+    expect(quiet.lastProblem).toContain("has not reported this check");
+    expect(quiet.samples).toEqual(answered.samples);
+
+    // Back, and once the check is due it is handed out again: its fresh answer is taken.
+    controlPlane.clock.now += INTERVAL_SECONDS * 1000;
+    const again = (await heartbeat("Alder")).probes![0]!;
+    await heartbeat("Alder", { probeResults: [{ ...again, ok: true, latencyMilliseconds: 7, problem: null }] });
+    expect((await probesOf("Alder"))[0]!).toMatchObject({ state: PROBE_STATE.up, lastLatencyMilliseconds: 7 });
+  });
+
+  it("keeps what a reporting host last saw while its check waits its turn", async () => {
+    await add("Alder", bodyWith({ vantage: hostIds.Alder! }));
+    await tick();
+    const given = (await heartbeat("Alder")).probes![0]!;
+    await heartbeat("Alder", { probeResults: [{ ...given, ok: true, latencyMilliseconds: 9, problem: null }] });
+    // Past the interval and the deadline, but Alder still reports: its checks wait their turn, they are not lost.
+    controlPlane.clock.now += (INTERVAL_SECONDS + PROBE_LIMITS.vantageDeadlineSeconds + 1) * 1000;
+    vi.spyOn(controlPlane.services.probes, "probesFor").mockReturnValue([]);
+    await heartbeat("Alder");
+    await tick();
+    expect((await probesOf("Alder"))[0]!.state).toBe(PROBE_STATE.up);
+  });
+
+  describe("a check of one host's service made from another, during maintenance", () => {
+    const failing = { ok: false, latencyMilliseconds: null, problem: "No route to that network." };
+    // Both runners keep windows, so either host may have one.
+    const beat = (label: string, extra: Record<string, unknown> = {}) =>
+      heartbeat(label, { maintenanceGeneration: 0, ...extra });
+    const openWindow = async (label: string) => {
+      await beat(label);
+      const window = await admin.post(apiPath(API_ROUTES.hostMaintenance, { hostId: hostIds[label]! }), {
+        containerName: null,
+        reason: "Planned",
+        expiresAt: controlPlane.clock.now + 60 * 60_000,
+      });
+      expect(window.statusCode, window.body).toBe(200);
+    };
+    // Alder's check, made from Birch: one failure is enough to call it down.
+    const failedOnce = async () => {
+      await add("Alder", bodyWith({ vantage: hostIds.Birch! }));
+      await tick();
+      const given = (await beat("Birch")).probes![0]!;
+      await beat("Birch", { probeResults: [{ ...given, ...failing }] });
+      return (await probesOf("Alder"))[0]!;
+    };
+
+    it("holds it while the host it is about is in maintenance, wherever it is made from", async () => {
+      await openWindow("Alder");
+      const probe = await failedOnce();
+      expect(probe.state).not.toBe(PROBE_STATE.down);
+      expect(probe.samples.map(({ outcome }) => outcome)).toEqual([PROBE_OUTCOME.maintenance]);
+    });
+
+    it("still counts it while only the host it is made from is in maintenance", async () => {
+      await openWindow("Birch");
+      const probe = await failedOnce();
+      expect(probe.state).toBe(PROBE_STATE.down);
+      expect(probe.samples.map(({ outcome }) => outcome)).toEqual([PROBE_OUTCOME.down]);
+    });
+  });
+
   it("says a runner that cannot make checks cannot, rather than calling the service down", async () => {
     const { services } = controlPlane;
     await add("Birch", bodyWith({ vantage: hostIds.Birch! }));
@@ -138,6 +225,7 @@ describe("checks made from a host rather than from Autoheal", () => {
     const answer = (report: Partial<ProbeReport>): ProbeReport => ({
       id: given.id,
       generation: given.generation,
+      attempt: given.attempt,
       ok: true,
       latencyMilliseconds: 7,
       problem: null,
@@ -155,6 +243,58 @@ describe("checks made from a host rather than from Autoheal", () => {
     // The right host and generation.
     await heartbeat("Alder", { probeResults: [answer({})] });
     expect((await probesOf("Alder"))[0]!.state).toBe(PROBE_STATE.up);
+  });
+
+  describe("one result for each time a check is handed out", () => {
+    const failing = { ok: false, latencyMilliseconds: null, problem: "No route to that network." };
+    const handedOut = async () => {
+      await add("Alder", bodyWith({ vantage: hostIds.Alder!, failuresBeforeDown: 2 }));
+      await tick();
+      return (await heartbeat("Alder")).probes![0]!;
+    };
+
+    it("takes a result sent again, after its answer was lost, as the one result it is", async () => {
+      const given = await handedOut();
+      await heartbeat("Alder", { probeResults: [{ ...given, ...failing }] });
+      const once = (await probesOf("Alder"))[0]!;
+      controlPlane.clock.now += 5_000;
+      await heartbeat("Alder", { probeResults: [{ ...given, ...failing }] });
+
+      const probe = (await probesOf("Alder"))[0]!;
+      expect(probe.state).not.toBe(PROBE_STATE.down);
+      expect(probe.lastCheckedAt).toBe(once.lastCheckedAt);
+      expect(probe.samples).toHaveLength(1);
+    });
+
+    it("takes no result that came after its deadline, nor one for a hand-out since replaced", async () => {
+      const given = await handedOut();
+      controlPlane.clock.now += PROBE_LIMITS.vantageDeadlineSeconds * 1000;
+      const late = await heartbeat("Alder", { probeResults: [{ ...given, ...failing }] });
+      expect((await probesOf("Alder"))[0]!.samples).toEqual([]);
+      // The answer to that late report hands the check out afresh.
+      const again = late.probes![0]!;
+      expect(again.attempt).not.toBe(given.attempt);
+      await heartbeat("Alder", { probeResults: [{ ...given, ...failing }] });
+      expect((await probesOf("Alder"))[0]!.samples).toEqual([]);
+      await heartbeat("Alder", { probeResults: [{ ...again, ...failing }] });
+      expect((await probesOf("Alder"))[0]!.samples).toHaveLength(1);
+    });
+
+    it("takes no result for a hand-out from before the control plane restarted", async () => {
+      const given = await handedOut();
+      const { databaseHandle, maintenance } = controlPlane.services;
+      const restarted = new ProbeService({ databaseHandle, maintenance, clock: () => controlPlane.clock.now });
+      restarted.recordReports(hostIds.Alder!, [{ ...given, ...failing }]);
+      expect((await probesOf("Alder"))[0]!.samples).toEqual([]);
+    });
+
+    it("gives none to a runner that would not say which time each result answers", async () => {
+      await add("Birch", bodyWith({ vantage: hostIds.Birch! }));
+      // One from before attempts: it makes checks, but its results carry no attempt, so one could count twice.
+      expect((await heartbeat("Birch", { probeAttempts: undefined })).probes).toBeUndefined();
+      await tick();
+      expect((await probesOf("Birch"))[0]!.lastProblem).toContain("cannot make checks itself");
+    });
   });
 
   it("asks again with a new generation once the check itself changes", async () => {
@@ -191,14 +331,14 @@ describe("checks made from a host rather than from Autoheal", () => {
 
     const reports = await checks.run(
       [
-        { id: "p1", generation: "g1", body: bodyWith({ vantage: hostIds.Alder! }) },
+        { id: "p1", generation: "g1", attempt: "a1", body: bodyWith({ vantage: hostIds.Alder! }) },
         { id: "p2", generation: "g2", body: bodyWith({ vantage: hostIds.Alder!, name: "Second" }) },
       ],
       AbortSignal.timeout(5000),
     );
 
     expect(reports).toEqual([
-      { id: "p1", generation: "g1", ok: true, latencyMilliseconds: 3, problem: null },
+      { id: "p1", generation: "g1", attempt: "a1", ok: true, latencyMilliseconds: 3, problem: null },
       { id: "p2", generation: "g2", ok: true, latencyMilliseconds: 3, problem: null },
     ]);
     expect(asked.map(({ name }) => name)).toEqual(["Wiki", "Second"]);

@@ -9,7 +9,14 @@ import { containerSnapshot, heartbeatWith } from "../../../test/support/inventor
 import { fillNotificationQueue } from "../../../test/support/notifications.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type IncidentDetailView } from "../../shared/api.js";
-import { INCIDENT_STATUS, TRACE, VERDICT_ESCALATED, VERDICT_REPAIRED } from "../../shared/constants.js";
+import {
+  INCIDENT_STATUS,
+  REPAIR_TEXT,
+  RESTART_CHOICE,
+  TRACE,
+  VERDICT_ESCALATED,
+  VERDICT_REPAIRED,
+} from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
   type ContainerSnapshot,
@@ -190,6 +197,54 @@ describe("containers given to Ollama", () => {
     expect(await eventsOf(incident.id, TRACE.repairSkipped)).toHaveLength(1);
     expect(await eventsOf(incident.id, TRACE.repairPlanned)).toEqual([]);
     expect(told).toEqual([]);
+  });
+
+  describe("when what made it Ollama's changed while it decided", () => {
+    const setAside = async (incidentId: string) => {
+      expect(await takeWork()).toEqual([]);
+      expect(await eventsOf(incidentId, TRACE.repairSkipped)).toEqual([{ reason: REPAIR_TEXT.noLongerGiven }]);
+      expect((await detail(incidentId)).status).toBe(INCIDENT_STATUS.awaitingApproval);
+    };
+
+    it("starts nothing once its own answer no longer gives it to Ollama, and hands it back", async () => {
+      const incident = escalate();
+      asking = async () => {
+        asking = null;
+        await giveToOllama("tika", RESTART_CHOICE.ask);
+      };
+      answers.push(plan("recreate"));
+      await worker.run();
+
+      await setAside(incident.id);
+    });
+
+    it.each([
+      ["came back by itself", { state: "running", exitCode: null }],
+      ["was replaced by another", { containerId: "999999999999" }],
+    ])("starts nothing once the container %s", async (_meanwhile, change) => {
+      const incident = escalate();
+      asking = async () => {
+        asking = null;
+        await report([{ ...failing, ...change } as ContainerSnapshot]);
+      };
+      answers.push(plan("recreate"));
+      await worker.run();
+
+      await setAside(incident.id);
+    });
+
+    it("still repairs under a person's hand-over, whatever its own answer became", async () => {
+      const incident = escalate();
+      controlPlane.services.incidentsService.addEvent(incident.id, TRACE.dispatched, { by: "admin" });
+      asking = async () => {
+        asking = null;
+        await giveToOllama("tika", RESTART_CHOICE.ask);
+      };
+      answers.push(plan("recreate"));
+      await worker.run();
+
+      expect(await takeWork()).toMatchObject([{ containerName: "tika", action: "recreate" }]);
+    });
   });
 
   it("recreates it once a restart did not hold, and settles the incident when that holds", async () => {

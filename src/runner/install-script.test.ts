@@ -1,10 +1,21 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INSTALLED_LINE, composeOf, type InstallSpec } from "../shared/install.js";
+import { INSTALLED_LINE, OWNED_FOLDER, composeOf, type InstallSpec } from "../shared/install.js";
 import { INSTALL_EXIT, checkScript, downScript, parseComposeScript, writeScript } from "./install-script.js";
 
 const execute = promisify(execFile);
@@ -82,10 +93,10 @@ describe("the scripts an install runs on a host", () => {
 
   it("gives its files to whoever keeps the folder when run as root, and its data to whoever the app runs as", () => {
     const script = writeScript({ ...spec, owner: "1026:100" });
-    expect(script).toContain(`keeper=$(stat -c '%u:%g' "$(dirname "$dir")")`);
-    expect(script).toContain('chown "$keeper" "$dir" "$dir/docker-compose.yml" "$dir/.env"');
-    expect(script).toContain("chown 1026:100 ");
-    expect(writeScript(spec)).toContain('chown "$keeper" ');
+    expect(script).toContain(`keeper=$(stat -L -c '%u:%g' "$(dirname "$dir")")`);
+    expect(script).toContain('chown -h "$keeper" "$dir" "$dir/docker-compose.yml" "$dir/.env"');
+    expect(script).toContain("chown -h 1026:100 ");
+    expect(writeScript(spec)).toContain('chown -h "$keeper" ');
   });
 
   it("will not write over a folder that already holds an app", async () => {
@@ -94,6 +105,72 @@ describe("the scripts an install runs on a host", () => {
     const { code } = await run(writeScript(spec));
     expect(code).toBe(INSTALL_EXIT.folderTaken);
     expect(readFileSync(join(spec.folder, ".env"), "utf8")).toBe(before);
+  });
+
+  it("keeps out of a folder that already holds anything, leaving what is there as it was", async () => {
+    mkdirSync(spec.folder, { recursive: true });
+    writeFileSync(join(spec.folder, ".env"), "SECRET=theirs\n");
+    writeFileSync(join(spec.folder, "notes.txt"), "kept\n");
+    const check = checkScript(spec).replace(/^if docker compose[\s\S]*?fi$/m, "compose=test");
+    expect((await run(check)).stdout).toContain("taken=1");
+
+    expect((await run(writeScript(spec))).code).toBe(INSTALL_EXIT.folderTaken);
+
+    expect(readFileSync(join(spec.folder, ".env"), "utf8")).toBe("SECRET=theirs\n");
+    expect(readFileSync(join(spec.folder, "notes.txt"), "utf8")).toBe("kept\n");
+    expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(false);
+  });
+
+  it("installs into a folder already there when it is empty, and marks it as all the app's", async () => {
+    mkdirSync(spec.folder, { recursive: true });
+    expect((await run(writeScript(spec))).code).toBe(0);
+    expect(readFileSync(join(spec.folder, OWNED_FOLDER.file), "utf8")).toBe(`${OWNED_FOLDER.text}\n`);
+  });
+
+  it("keeps out of a folder that is a link, leaving the folder it points to as it was", async () => {
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(elsewhere);
+    mkdirSync(dirname(spec.folder), { recursive: true });
+    symlinkSync(elsewhere, spec.folder);
+    const check = checkScript(spec).replace(/^if docker compose[\s\S]*?fi$/m, "compose=test");
+    expect((await run(check)).stdout).toContain("taken=1");
+
+    expect((await run(writeScript(spec))).code).toBe(INSTALL_EXIT.folderTaken);
+
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("as root, hands over only what it made, never through a link, to the real keeper of the folder above", async () => {
+    const shims = join(root, "shims");
+    const handedOver = join(root, "handed-over");
+    mkdirSync(shims);
+    writeFileSync(join(shims, "id"), "#!/bin/sh\necho 0\n", { mode: 0o755 });
+    writeFileSync(join(shims, "chown"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${handedOver}'\n`, { mode: 0o755 });
+    // Someone's folder already there: it keeps its owner.
+    mkdirSync(join(root, "media"));
+    const asRoot = { env: { ...process.env, PATH: `${shims}:${process.env.PATH}` } };
+
+    await execute("sh", ["-c", writeScript({ ...spec, owner: "1026:100" })], asRoot);
+
+    const { uid, gid } = statSync(join(root, "docker"));
+    const files = ["docker-compose.yml", ".env", OWNED_FOLDER.file].map((file) => join(spec.folder, file));
+    expect(readFileSync(handedOver, "utf8").trim().split("\n").toSorted()).toEqual(
+      [`-h ${uid}:${gid} ${[spec.folder, ...files].join(" ")}`, `-h 1026:100 ${join(spec.folder, "data")}`].toSorted(),
+    );
+  });
+
+  it("keeps the folder of an install made before the mark, and what is in it, when its data is to go too", async () => {
+    await run(writeScript(spec));
+    rmSync(join(spec.folder, OWNED_FOLDER.file));
+    writeFileSync(join(spec.folder, "notes.txt"), "kept\n");
+    const all = downScript(spec.folder, spec.name, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
+
+    expect((await run(all)).code).toBe(INSTALL_EXIT.folderKept);
+
+    expect(readFileSync(join(spec.folder, "notes.txt"), "utf8")).toBe("kept\n");
+    expect(existsSync(join(spec.folder, "data"))).toBe(true);
+    expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(false);
+    expect(existsSync(join(spec.folder, ".env"))).toBe(false);
   });
 
   it("holds an unsafe value as text: nothing in a spec runs", async () => {
@@ -123,7 +200,10 @@ describe("the scripts an install runs on a host", () => {
     expect((await run(keep)).code).toBe(0);
     expect(existsSync(join(spec.folder, "docker-compose.yml"))).toBe(false);
     expect(existsSync(join(spec.folder, ".env"))).toBe(false);
+    expect(existsSync(join(spec.folder, OWNED_FOLDER.file))).toBe(false);
     expect(existsSync(join(spec.folder, "data"))).toBe(true);
+    // The data it kept is someone's now: an install of its own takes a new folder.
+    rmSync(spec.folder, { recursive: true });
     await run(writeScript(spec));
     const all = downScript(spec.folder, spec.name, true).replace(/^if docker compose[\s\S]*?fi$/m, "compose=true");
     expect((await run(all)).code).toBe(0);

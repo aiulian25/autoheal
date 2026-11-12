@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { incidents } from "../database/schema.js";
+import { hosts, incidents } from "../database/schema.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeOllama, MODEL_DIGEST, answer } from "../../../test/fakes/fake-ollama.js";
 import {
@@ -185,6 +185,35 @@ describe("decisions on the control plane", () => {
     await choose("restart");
     await submit();
     expect(asked.mock.calls.at(-1)?.[1]).toBe(PRIORITY_LIVE);
+  });
+
+  it("lets go of an incident still waiting for the model once its runner stops waiting, not when its turn comes", async () => {
+    const host = controlPlane.services.databaseHandle.database.select().from(hosts).get()!;
+    let letGo = () => {};
+    const held = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    let asked = 0;
+    ollama.handler = async () => {
+      asked += 1;
+      await held;
+      return answer({ action: "escalate", target: "", diagnosis: "first" });
+    };
+    const first = controlPlane.services.decisionService.decide(host, submission, new AbortController().signal);
+    await vi.waitFor(() => expect(asked).toBe(1));
+    const gone = new AbortController();
+    let settled: string | null = null;
+    void controlPlane.services.decisionService.decide(host, submission, gone.signal).then(
+      () => (settled = "answered"),
+      () => (settled = "let go"),
+    );
+
+    gone.abort();
+
+    await vi.waitFor(() => expect(settled).toBe("let go"), { timeout: 1000 });
+    letGo();
+    await first;
+    expect(asked).toBe(1);
   });
 
   it("answers with the model's decision and traces every step", async () => {

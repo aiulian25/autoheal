@@ -12,7 +12,7 @@ import {
   type HomeReviewView,
   type HomeSuggestion,
 } from "../../shared/home-review.js";
-import { redactSecrets } from "../../shared/redaction.js";
+import { redactSecrets, redactYamlSecrets } from "../../shared/redaction.js";
 import { charactersLeft } from "../../shared/prompt.js";
 import {
   aliasOf,
@@ -266,6 +266,11 @@ export class HomeReview {
   private run(key: string, prompt: () => Promise<{ system: string; user: string }>) {
     const { ask, clock, facts } = this.dependencies;
     if (this.runs.get(key)?.status === HOME_REVIEW_RUN.running) return;
+    // An answer, or a failure, that comes after a restore belongs to what was replaced: it is not kept.
+    const { generation } = this;
+    const settle = (run: HomeReviewRun) => {
+      if (generation === this.generation) this.runs.set(key, run);
+    };
     this.runs.set(key, { ...IDLE, status: HOME_REVIEW_RUN.running, at: clock() });
     void (async () => {
       try {
@@ -283,9 +288,9 @@ export class HomeReview {
           ],
           problems: yamlProblems(suggestion.yaml),
         }));
-        this.runs.set(key, { status: HOME_REVIEW_RUN.done, at: clock(), suggestions, error: null });
+        settle({ status: HOME_REVIEW_RUN.done, at: clock(), suggestions, error: null });
       } catch (error) {
-        this.runs.set(key, { ...IDLE, status: HOME_REVIEW_RUN.failed, at: clock(), error: describeError(error) });
+        settle({ ...IDLE, status: HOME_REVIEW_RUN.failed, at: clock(), error: describeError(error) });
       }
     })();
   }
@@ -309,7 +314,7 @@ export class HomeReview {
       const room = charactersLeft(this.dependencies.contextTokens(), HOME_REVIEW_TEXT.fixSystem, facts);
       return {
         system: HOME_REVIEW_TEXT.fixSystem,
-        user: `${facts}\n\n${HOME_REVIEW_TEXT.relatedConfig(redactSecrets(mentioned.join("\n")).slice(0, room))}`,
+        user: `${facts}\n\n${HOME_REVIEW_TEXT.relatedConfig(redactYamlSecrets(mentioned.join("\n")).slice(0, room))}`,
       };
     });
     return true;
@@ -341,7 +346,7 @@ export class HomeReview {
       const room = charactersLeft(this.dependencies.contextTokens(), HOME_REVIEW_TEXT.roomSystem, inventory);
       return {
         system: HOME_REVIEW_TEXT.roomSystem,
-        user: `${inventory}\n\n${HOME_REVIEW_TEXT.relatedConfig(redactSecrets(automations.join("\n")).slice(0, room))}`,
+        user: `${inventory}\n\n${HOME_REVIEW_TEXT.relatedConfig(redactYamlSecrets(automations.join("\n")).slice(0, room))}`,
       };
     });
     return true;

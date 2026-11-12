@@ -212,10 +212,13 @@ actions:
             data:
               message: "{{ trigger.json.say }}"
             continue_on_error: true
+      # Said aloud, so heard, whatever the phone does next.
+      - *heard
       - if:
           - condition: template
             value_template: "{{ asking and phone != '' }}"
         then:
+          # A send that fails ends the run: nothing after it depends on it.
           - &ask_on_phone
             action: "{{ notify }}"
             data:
@@ -228,11 +231,10 @@ actions:
                     title: !input yes_button
                   - action: "AUTOHEAL_NO_{{ trigger.json.code }}"
                     title: !input no_button
-            continue_on_error: true
-      - *heard
       - stop: Said aloud
 
-  # Not aloud now: a phone gets it.
+  # Not aloud now: a phone gets it. Heard only once the phone took it: a send that fails ends the run without it, and
+  # Autoheal sends the message again later.
   - if:
       - condition: template
         value_template: "{{ phone != '' }}"
@@ -249,7 +251,6 @@ actions:
               message: "{{ trigger.json.text }}"
               data:
                 tag: "autoheal-{{ trigger.json.id }}"
-            continue_on_error: true
       - *heard
       - stop: Shown on the phone
 

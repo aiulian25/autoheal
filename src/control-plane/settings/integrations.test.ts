@@ -150,6 +150,50 @@ describe("notification channels and Home Assistant, set in the dashboard", () =>
     });
   });
 
+  it("refuses a user or password in an address, and takes the token in its own field", async () => {
+    const refused = await admin.put(integration("ntfy"), {
+      url: "https://reader:address-marker@ntfy.example.test",
+      topic: "home",
+    });
+    expect(refused.statusCode).toBe(422);
+    expect(refused.json()).toEqual({ error: "integration_address_credentials" });
+    expect(controlPlane.services.integrationsService.ntfy()).toBeNull();
+    const taken = await admin.put(integration("ntfy"), {
+      url: "https://ntfy.example.test",
+      topic: "home",
+      token: "address-marker",
+    });
+    expect(taken.statusCode).toBe(204);
+
+    const everything = JSON.stringify([
+      (await admin.get(API_ROUTES.integrations)).json(),
+      (await admin.get(API_ROUTES.audit)).json<AuditEventView[]>(),
+      controlPlane.stdout,
+    ]);
+    expect(everything).toContain("integration.saved");
+    expect(everything).not.toContain("address-marker");
+  });
+
+  it("shows viewers an address saved before with its user part left out", async () => {
+    await admin.put(integration("ntfy"), { url: "https://ntfy.example.test/base", topic: "home" });
+    controlPlane.services.databaseHandle.database
+      .update(settings)
+      .set({
+        valueJson: JSON.stringify({
+          url: "https://reader:address-marker@ntfy.example.test/base",
+          topic: "home",
+          token: null,
+        }),
+      })
+      .where(eq(settings.key, SETTING_KEYS.ntfy))
+      .run();
+    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+
+    const shown = await viewOf(viewer, "ntfy");
+    expect(shown).toMatchObject({ source: "dashboard", url: "https://ntfy.example.test/base", topic: "home" });
+    expect(JSON.stringify((await viewer.get(API_ROUTES.integrations)).json())).not.toContain("address-marker");
+  });
+
   it("takes an open ntfy topic over plain http, and says it is plain http", async () => {
     expect((await admin.put(integration("ntfy"), { url: "http://ntfy.home.lan" })).statusCode).toBe(400);
     expect((await admin.put(integration("ntfy"), { url: "http://ntfy.home.lan", topic: "home" })).statusCode).toBe(204);

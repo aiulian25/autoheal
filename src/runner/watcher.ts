@@ -4,7 +4,10 @@ import {
   CONTAINER_STATE_RUNNING,
   EVENT_KILL,
   EXIT_CODE_SUCCESS,
+  OUTCOMES,
+  RESTARTING_ACTIONS,
   TRIGGER_BY_EVENT,
+  VERDICT_SKIPPED,
   isAutohealHelper,
   isParkedContainer,
   type Trigger,
@@ -24,6 +27,7 @@ import {
   restartPolicyOf,
   summariseState,
   triggerOf,
+  type ContainerDetails,
 } from "./incident-report.js";
 import { neighboursOf } from "./neighbours.js";
 import type { RemedyGuard } from "./remedy-guard.js";
@@ -183,7 +187,11 @@ export class Watcher {
     const decision = modelDecision({ ...decided.decision }, report);
     const finalDecision = { ...decided, decision };
     await decider.prepareOutcome?.(submission, finalDecision);
-    const result = await executor.carryOut(decision, report.containerName);
+    // A model can take a while: a restart is carried out only while the container it was decided about still fails.
+    const stale = RESTARTING_ACTIONS.has(decision.action) && !(await this.stillFailing(name, container));
+    const result: Outcome = stale
+      ? { outcome: OUTCOMES.decidedTooLate(name), verdict: VERDICT_SKIPPED, executed: false }
+      : await executor.carryOut(decision, report.containerName);
     await decider.recordOutcome(submission, finalDecision, result);
     await this.tellOwner(
       containerNameOf(container),
@@ -192,6 +200,12 @@ export class Watcher {
       result,
       finalDecision,
     );
+  }
+
+  // The same container, not one made since under its name, and still broken.
+  private async stillFailing(name: string, seen: ContainerDetails): Promise<boolean> {
+    const now = await this.dependencies.docker.inspect(name);
+    return now !== null && now.Id === seen.Id && isBroken(now.State, restartPolicyOf(now));
   }
 
   private tellOwner(container: string, summary: string, diagnosis: string, result: Outcome, decided: DecisionOutcome) {

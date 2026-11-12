@@ -190,6 +190,33 @@ describe("Autoheal updating itself, from the dashboard", () => {
     expect(helperCreations()).toEqual([]);
   });
 
+  describe("when its registry does not answer", () => {
+    const REGISTRY_TAG = "ghcr.io/example/autoheal:latest";
+    const REGISTRY_DIGEST = `ghcr.io/example/autoheal@sha256:${"3".repeat(64)}`;
+    beforeEach(() => {
+      engine.containers.get(NAME)!.Config = { Image: REGISTRY_TAG, Tty: false, Env: [] } as never;
+      engine.unreachableRegistries.add(REGISTRY_TAG);
+    });
+
+    it.each([
+      ["the image it runs", OLD_IMAGE],
+      ["another it pulled before", NEW_IMAGE],
+    ])("says so, rather than calling %s the newest or updating to it", async (_what, cached) => {
+      engine.imageIds.set(REGISTRY_TAG, cached);
+      engine.imageLabels.set(cached, {});
+      engine.imageDigests.set(cached, [REGISTRY_DIGEST]);
+      await expect(service().start(actor)).rejects.toMatchObject({ code: API_ERRORS.selfUpdateRegistryUnreachable });
+      expect(helperCreations()).toEqual([]);
+    });
+
+    it("still updates to an image built here, which no registry has", async () => {
+      engine.imageIds.set(REGISTRY_TAG, NEW_IMAGE);
+      engine.imageLabels.set(NEW_IMAGE, {});
+      await service().start(actor);
+      expect(helperCreations()).toHaveLength(1);
+    });
+  });
+
   it("refuses when it already runs that image, when an update is going on, and without the Docker socket", async () => {
     engine.imageIds.set(REFERENCE, OLD_IMAGE);
     engine.imageLabels.set(OLD_IMAGE, {});

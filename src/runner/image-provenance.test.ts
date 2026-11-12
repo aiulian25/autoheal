@@ -1,7 +1,8 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { PROVENANCE_STATUS, type ImageTrustPolicy } from "../shared/image-provenance.js";
-import { ImageProvenanceReader } from "./image-provenance.js";
+import { PROVENANCE_MESSAGES } from "../shared/constants.js";
+import { ImageProvenanceReader, provenanceRefusal } from "./image-provenance.js";
 import type { ImageReference, SignatureArtifact } from "./registry-client.js";
 
 const IMAGE: ImageReference = { registry: "ghcr.io", repository: "owner/app", tag: "2.1" };
@@ -188,5 +189,74 @@ describe("who published an image", () => {
 
     expect((await reading.read(IMAGE, OTHER_DIGEST)).status).toBe(PROVENANCE_STATUS.invalid);
     expect((await reading.read(IMAGE, DIGEST)).status).toBe(PROVENANCE_STATUS.verified);
+  });
+});
+
+describe("an image named by its digest, as a staged rollout names it", () => {
+  const PINNED = `ghcr.io/owner/app@${DIGEST}`;
+  const pulled = { Id: "sha256:config", RepoDigests: [PINNED] };
+  const sourceSaying = (status: (typeof PROVENANCE_STATUS)[keyof typeof PROVENANCE_STATUS], policy = policyWith()) => ({
+    policy: () => policy,
+    read: async () => ({
+      status,
+      digest: DIGEST,
+      publisher: status === PROVENANCE_STATUS.verified ? "owner" : null,
+      checkedAt: 1,
+      problem: null,
+    }),
+  });
+
+  it("is held to the rule over its repository: unsigned, it is refused", async () => {
+    expect(await provenanceRefusal(sourceSaying(PROVENANCE_STATUS.unsigned), PINNED, pulled)).toBe(
+      PROVENANCE_MESSAGES.heldBack(PINNED, PROVENANCE_STATUS.unsigned),
+    );
+  });
+
+  it("goes ahead signed by a publisher the rule allows", async () => {
+    expect(await provenanceRefusal(sourceSaying(PROVENANCE_STATUS.verified), PINNED, pulled)).toBeNull();
+  });
+
+  it("is not held where no rule covers its repository", async () => {
+    const elsewhere = policyWith({ required: [{ registry: "ghcr.io", repository: "someone/else", publishers: [] }] });
+    expect(await provenanceRefusal(sourceSaying(PROVENANCE_STATUS.unsigned, elsewhere), PINNED, pulled)).toBeNull();
+  });
+});
+
+describe("an image more than one trusted publisher signed", () => {
+  const second = publisherKeys();
+  const REFERENCE = "ghcr.io/owner/app:2.1";
+  const pulled = { Id: "sha256:config", RepoDigests: [`ghcr.io/owner/app@${DIGEST}`] };
+  const ownerSigned = signedWith(owner, payloadFor(DIGEST));
+  const secondSigned = signedWith(second, payloadFor(DIGEST));
+  const sourceWith = (kept: SignatureArtifact[], requiring: string[]) => {
+    const policy = policyWith({
+      publishers: [
+        { name: "owner", publicKey: pemOf(owner) },
+        { name: "second", publicKey: pemOf(second) },
+      ],
+      required: [{ registry: "ghcr.io", repository: "owner/app", publishers: requiring }],
+    });
+    const reader = new ImageProvenanceReader({ signatures: async () => kept }, () => policy);
+    return { policy: () => policy, read: (image: ImageReference, digest: string) => reader.read(image, digest) };
+  };
+  const refusalWith = (kept: SignatureArtifact[], requiring: string[]) =>
+    provenanceRefusal(sourceWith(kept, requiring), REFERENCE, pulled);
+
+  it.each([
+    ["first", [secondSigned, ownerSigned]],
+    ["last", [ownerSigned, secondSigned]],
+  ])("goes ahead when the publisher its rule requires signed it, that signature %s", async (_where, kept) => {
+    expect(await refusalWith(kept, ["second"])).toBeNull();
+  });
+
+  it("goes ahead past a trusted signature for another image, to the one for this image", async () => {
+    expect(await refusalWith([signedWith(owner, payloadFor(OTHER_DIGEST)), secondSigned], ["second"])).toBeNull();
+  });
+
+  it("is still refused when the publisher required signed nothing of it that holds up", async () => {
+    const broken = { ...secondSigned, signature: Buffer.from("not a signature").toString("base64") };
+    expect(await refusalWith([ownerSigned], ["second"])).not.toBeNull();
+    expect(await refusalWith([ownerSigned, signedWith(second, payloadFor(OTHER_DIGEST))], ["second"])).not.toBeNull();
+    expect(await refusalWith([ownerSigned, broken], ["second"])).not.toBeNull();
   });
 });

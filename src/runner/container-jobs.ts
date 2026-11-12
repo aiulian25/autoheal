@@ -220,6 +220,7 @@ export class ContainerJobs {
       [JOB_ACTION.update]: (name, job, authorize) =>
         updater.update(name, job.undoIfUnhealthy === true || undoesFailedUpdate(name), reportFor(job), {
           allowWithoutCheckpoint: !job.rollout && job.allowWithoutCheckpoint === true,
+          ...(job.expectedDigest === undefined ? {} : { expectedDigest: job.expectedDigest }),
           ...(job.rollout ? { rollout: job.rollout } : {}),
           ...(authorize ? { authorize } : {}),
         }),
@@ -540,6 +541,15 @@ export class ContainerJobs {
           return matches;
         };
         let admittedScope = false;
+        // What the updater acts on is what it finds when it acts: a container that joined the provider's namespace
+        // since this job's look was granted to nobody, so nothing goes ahead. A reviewed scope's fingerprint says so
+        // already.
+        const membersStillGranted = async () => {
+          if (job.operatorUserId === undefined || job.expectedResourcesFingerprint) return true;
+          const granted = new Set(authorizationIdentities.map(({ id }) => id));
+          const { authorizationIdentities: now } = await this.affected(name, action);
+          return now.every(({ id }) => granted.has(id));
+        };
         const operatorCheck = async () => {
           if (job.operatorUserId === undefined) return true;
           const targets: OperatorTarget[] = [];
@@ -557,6 +567,7 @@ export class ContainerJobs {
                 // First updater admission is after image pulling and immediately before its first stop/rename.
                 // Later checks must allow the operation's own replacement IDs while retaining current grant checks.
                 if (!admittedScope && !(await reviewStillCurrent())) return false;
+                if (!admittedScope && !(await membersStillGranted())) return false;
                 if (
                   !admittedScope &&
                   job.rollout &&

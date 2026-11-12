@@ -7,7 +7,8 @@ import type { ProbeReport, RemoteProbe } from "../shared/protocol.js";
  * the destinations a check may reach, the addresses no check may ever reach, and its own deadline are enforced here,
  * on the host that makes the request, and not only where it was asked for.
  *
- * Nothing is remembered: each check is made, reported with the generation it was given for, and forgotten. A check
+ * Nothing is remembered: each check is made, reported with the generation and the hand-out it came with, and
+ * forgotten; a report sent again, after its answer was lost, the control plane takes once. A check
  * whose answer never arrives is the control plane's to call unknown, never this side's to guess at.
  */
 export class ServiceProbes {
@@ -37,6 +38,7 @@ export class ServiceProbes {
     return {
       id: probe.id,
       generation: probe.generation,
+      ...(probe.attempt === undefined ? {} : { attempt: probe.attempt }),
       ok: result.ok,
       latencyMilliseconds: result.latencyMilliseconds,
       problem: result.problem === null ? null : result.problem.slice(0, PROBE_LIMITS.problemCharacters),

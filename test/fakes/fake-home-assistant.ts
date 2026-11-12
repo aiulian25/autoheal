@@ -121,7 +121,8 @@ export class FakeHomeAssistant {
     this.setState(entityId, state, attributes);
   }
 
-  private fire(eventType: string, data: unknown) {
+  /** Sends an event as given, whatever it holds: what a peer that is not quite Home Assistant might send. */
+  fire(eventType: string, data: unknown) {
     for (const [socket, subscriptions] of this.subscribers) {
       const subscription = subscriptions.get(eventType);
       if (subscription !== undefined) {

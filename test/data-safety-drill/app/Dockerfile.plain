@@ -1,0 +1,6 @@
+FROM docker:29.9.0-cli
+ARG MARK=1
+ARG FILL=0
+LABEL autoheal.drill.mark=$MARK
+RUN if [ "$FILL" = 1 ]; then mkdir -p /cache && echo other > /cache/from-other; fi
+ENTRYPOINT ["/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1 & wait $!; done"]

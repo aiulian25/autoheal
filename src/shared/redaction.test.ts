@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSecrets } from "./redaction.js";
+import { redactSecrets, redactYamlSecrets } from "./redaction.js";
 
 describe("redactSecrets", () => {
   it("replaces the container's own environment values of 8+ characters with their name", () => {
@@ -31,6 +31,10 @@ describe("redactSecrets", () => {
     ["slack xoxb-123456789012-abcdefghijkl", "slack [REDACTED]"],
     ["telegram 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", "telegram [REDACTED]"],
     ["https://discord.com/api/webhooks/123456/abcDEF_xyz-123 sent", "https://discord.com/api/webhooks/[REDACTED] sent"],
+    ["password: 'hunter 2 hunter'", "password: '[REDACTED]'"],
+    ["{'api_key': 'it''s secret', 'user': 'bob'}", "{'api_key': '[REDACTED]', 'user': 'bob'}"],
+    ['secret="a \\"b\\" c" next', 'secret="[REDACTED]" next'],
+    ["token: 'left open to the end", "token: '[REDACTED]'"],
   ])("masks %s", (text, expected) => {
     expect(redactSecrets(text)).toBe(expected);
   });
@@ -45,5 +49,40 @@ describe("redactSecrets", () => {
   it("leaves ordinary log lines alone", () => {
     const line = "2026-10-20 12:00:01 ERROR connection refused to tika:9998 after 3 retries";
     expect(redactSecrets(line, ["TIKA_URL=http://tika:9998"])).toBe(line);
+  });
+});
+
+describe("redactYamlSecrets", () => {
+  it("masks a value named like a secret however YAML writes it, and leaves what is beside it", () => {
+    const yaml = [
+      "data:",
+      "  password: plain words here",
+      "  credentials:",
+      "    user: nested",
+      "",
+      "    pass: nested too",
+      "  note: kept",
+      "list:",
+      "  - token: >-",
+      "      folded",
+      "    kept: item sibling",
+      "  - 'secret': \"wraps",
+      '      on"',
+      "other: {api_key: inline, name: kept}",
+    ].join("\n");
+    expect(redactYamlSecrets(yaml)).toBe(
+      [
+        "data:",
+        "  password: [REDACTED]",
+        "  credentials: [REDACTED]",
+        "  note: kept",
+        "list:",
+        "  - token: [REDACTED]",
+        "    kept: item sibling",
+        "  - 'secret': [REDACTED]",
+        "other: {api_key: [REDACTED], name: kept}",
+      ].join("\n"),
+    );
+    expect(redactYamlSecrets("password: plain words\r\nnote: kept\r")).toBe("password: [REDACTED]\nnote: kept\r");
   });
 });

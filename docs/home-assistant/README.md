@@ -27,7 +27,7 @@ Autoheal's assistant card, in **Settings → Connections**, has these three step
 
 What the blueprint does with each message:
 
-- A message is said aloud on the satellite when it is not quiet hours, someone is home (if that is asked) and the satellite is free; otherwise it goes to the phone; with neither, it shows in Home Assistant. Then it writes `heard`.
+- A message is said aloud on the satellite when it is not quiet hours, someone is home (if that is asked) and the satellite is free; otherwise it goes to the phone; with neither, it shows in Home Assistant. Then it writes `heard`. On the phone alone, only once the phone took it: a phone Home Assistant cannot send to writes nothing, and Autoheal sends the message again later.
 - A question is asked on the satellite, and the words heard are matched against the words for yes and for no. If nobody answers, or the satellite cannot ask, the phone gets the question with its two buttons. A button writes its answer whenever it is pressed, for as long as the question is open.
 - A message that cannot be said or shown now (quiet hours, nobody home, the satellite busy, and no phone) writes `later`, and Autoheal sends it again an hour later. A reply is never put off: it answers someone now, so it is shown in Home Assistant instead.
 

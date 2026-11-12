@@ -116,6 +116,10 @@ export class FakeDockerEngine {
   readonly imagesInspected: string[] = [];
   // Which image a tag points at, by its id; a tag not here is its own id. A pull moves the tags listed below.
   readonly imageIds = new Map<string, string>();
+  // Each image's registry digests, by its id: one pulled from a registry has one, one built or loaded here none.
+  readonly imageDigests = new Map<string, string[]>();
+  // References whose registry does not answer: their pull fails as Docker's does.
+  readonly unreachableRegistries = new Set<string>();
   readonly tagsMovedOnPull = new Map<string, string>();
   // Images whose containers exit as soon as they start, by id.
   readonly failingImages = new Set<string>();
@@ -147,6 +151,17 @@ export class FakeDockerEngine {
   >();
   // A command's result, by the command; each runs successfully and quietly unless said otherwise.
   commandResult: (command: string[]) => FakeCommandResult = () => ({ stdout: "", stderr: "", exitCode: 0 });
+  // What a command without a terminal sends back through an upgraded connection: its result in Docker's frames. A
+  // test can send what Docker would not, such as a frame cut short.
+  streamed: (command: string[]) => Buffer = (command) => {
+    const result = this.commandResult(command);
+    return Buffer.concat([frame(result.stdout), frame(result.stderr, STDERR)]);
+  };
+  // Set, a command's start is taken and never answered: a Docker gone quiet before the command's stream began.
+  holdStarts = false;
+  // Set, a command's stream begins and never ends: a command that runs on and on.
+  holdStreams = false;
+  private readonly held = new Set<Duplex>();
   // Each container's files by path, as Docker's archive calls reach them.
   readonly files = new Map<string, Map<string, FakeFile>>();
   private readonly directory = mkdtempSync(join(tmpdir(), "autoheal-docker-"));
@@ -191,10 +206,23 @@ export class FakeDockerEngine {
     }
   }
 
+  // Connections held open, unanswered or unended, that the asker has not let go.
+  heldOpen() {
+    return this.held.size;
+  }
+
+  private hold(socket: Duplex) {
+    this.held.add(socket);
+    // The asker hanging up ends it: a server keeps its own side open until told.
+    socket.once("end", () => socket.destroy());
+    socket.once("close", () => this.held.delete(socket));
+  }
+
   close() {
     for (const stream of this.streams) {
       stream.end();
     }
+    for (const socket of this.held) socket.destroy();
     return new Promise<void>((resolve) =>
       this.server!.close(() => {
         rmSync(this.directory, { recursive: true, force: true });
@@ -214,6 +242,10 @@ export class FakeDockerEngine {
   // A shell as a terminal shows it: what is typed comes back, and "exit" or Ctrl-D ends it with code 0. As busybox's
   // line editor does, it drops what comes within 50 ms of a terminal's answer for the cursor, the answer included.
   private shell(request: IncomingMessage, socket: Duplex) {
+    if (this.holdStarts) {
+      this.hold(socket);
+      return;
+    }
     const id = /^\/exec\/([^/]+)\/start$/.exec(request.url ?? "")?.[1];
     const exec = id === undefined ? undefined : this.execs.get(id);
     if (exec === undefined) {
@@ -223,6 +255,15 @@ export class FakeDockerEngine {
     socket.write(
       "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
     );
+    if (!exec.tty && this.holdStreams) {
+      this.hold(socket);
+      return;
+    }
+    if (!exec.tty) {
+      exec.exitCode = this.commandResult(exec.command).exitCode;
+      socket.end(this.streamed(exec.command));
+      return;
+    }
     let answeredAt = -Infinity;
     let typed = "";
     socket.on("data", (chunk: Buffer) => {
@@ -353,11 +394,21 @@ export class FakeDockerEngine {
       const labels = this.imageLabels.get(imageId) ?? this.imageLabels.get(resolved);
       return labels === undefined
         ? json(404, { message: `No such image: ${imageId}` })
-        : json(200, { Id: resolved, RepoTags: [], RepoDigests: [], Config: { Labels: labels } });
+        : json(200, {
+            Id: resolved,
+            RepoTags: [],
+            RepoDigests: this.imageDigests.get(resolved) ?? [],
+            Config: { Labels: labels },
+          });
     }
     if (pathname === "/images/create" && method === "POST") {
       const pulled = `${searchParams.get("fromImage")}:${searchParams.get("tag")}`;
       this.pulls.push(pulled);
+      if (this.unreachableRegistries.has(pulled)) {
+        return json(500, {
+          message: 'Get "https://registry.example.test/v2/": dial tcp: lookup registry.example.test: no such host',
+        });
+      }
       const given = headers["x-registry-auth"];
       if (typeof given === "string") {
         this.pullCredentials.set(pulled, JSON.parse(Buffer.from(given, "base64url").toString()));

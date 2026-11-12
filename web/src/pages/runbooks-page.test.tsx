@@ -128,6 +128,65 @@ describe("a runbook's versions", () => {
     publishedAt: published ? Date.UTC(2026, 9, number) : null,
   });
 
+  it("keeps a runbook's draft, and its save, to that runbook when the page moves to another", async () => {
+    const runbookOf = (id: string, title: string, ...bodies: string[]) => ({
+      id,
+      scope: "global",
+      pattern: null,
+      title,
+      archived: false,
+      createdAt: Date.UTC(2026, 9, 1),
+      publishedVersion: null,
+      versions: bodies.map((body, index) => version(index + 1, body, false)),
+    });
+    const saving: { finish?: () => void } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const path = url.split("?")[0]!;
+        const answers: Record<string, unknown> = {
+          [API_ROUTES.session]: sessionFor("admin"),
+          [apiPath(API_ROUTES.runbook, { runbookId: "r1" })]: runbookOf("r1", "Runbook A", "A as it was."),
+          [apiPath(API_ROUTES.runbook, { runbookId: "r2" })]: runbookOf("r2", "Runbook B", "B as it is."),
+        };
+        if ((init?.method ?? "GET") === "POST") {
+          await new Promise<void>((resolve) => {
+            saving.finish = () => resolve();
+          });
+          answers[path] = runbookOf("r1", "Runbook A", "A as it was.", "A changed.");
+        }
+        return new Response(JSON.stringify(answers[path] ?? []), { headers: { "content-type": "application/json" } });
+      }),
+    );
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(SESSION_QUERY_KEY, sessionFor("admin"));
+    const router = createMemoryRouter([{ path: PATHS.runbook, element: <RunbookDetailPage /> }], {
+      initialEntries: [apiPath(PATHS.runbook, { runbookId: "r1" })],
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    const editor = () => screen.getByRole("textbox", { name: TEXT.runbooks.body }) as HTMLTextAreaElement;
+
+    const titled = (title: string) => screen.findByText(title, { selector: "[aria-current]" });
+    expect(await titled("Runbook A")).toBeTruthy();
+    fireEvent.change(editor(), { target: { value: "A changed." } });
+    fireEvent.click(screen.getByRole("button", { name: TEXT.runbooks.newVersion }));
+    await waitFor(() => expect(saving.finish).toBeDefined());
+    await router.navigate(apiPath(PATHS.runbook, { runbookId: "r2" }));
+
+    expect(await titled("Runbook B")).toBeTruthy();
+    expect(editor().value).toBe("B as it is.");
+    saving.finish!();
+    await waitFor(() =>
+      expect(queryClient.getQueryData<{ versions: unknown[] }>(["runbooks", "r1"])?.versions).toHaveLength(2),
+    );
+    expect(queryClient.getQueryData<{ title: string }>(["runbooks", "r2"])?.title).toBe("Runbook B");
+    expect(screen.getByText("Runbook B", { selector: "[aria-current]" })).toBeTruthy();
+  });
+
   it("says a published version stays as written, and starts a new draft from any version", async () => {
     serve("admin", {
       [apiPath(API_ROUTES.runbook, { runbookId: "r1" })]: {

@@ -1,13 +1,14 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
+import { Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeDockerEngine, exitedContainer } from "../../test/fakes/fake-docker-engine.js";
 import { FakeSshServer } from "../../test/fakes/fake-ssh-server.js";
 import { SshDockerConnection } from "../control-plane/ssh/ssh-docker-connection.js";
 import { SshSession } from "../control-plane/ssh/ssh-session.js";
-import { RUNNER_MESSAGES, SSH_STATE } from "../shared/constants.js";
+import { DOCKER_READ_LIMITS, RUNNER_MESSAGES, SSH_STATE } from "../shared/constants.js";
 import { DockerClient, type DockerEvent } from "./docker-client.js";
 import { LocalDockerConnection } from "./local-docker-connection.js";
 import { singleEntryArchive } from "./tar.js";
@@ -216,6 +217,80 @@ describe("DockerClient over the unix socket", () => {
     expect(exec).toMatchObject({ command: ["ls", "-la", "/srv/"], tty: false, environment: ["LC_ALL=C"] });
   });
 
+  describe("a command's output streamed as it comes, without a terminal", () => {
+    // One piece of output in Docker's framing: an 8-byte header saying whose it is and how long, then the bytes.
+    const framed = (text: string) => {
+      const payload = Buffer.from(text);
+      const header = Buffer.alloc(8);
+      header[0] = 1;
+      header.writeUInt32BE(payload.length, 4);
+      return Buffer.concat([header, payload]);
+    };
+    const collected = () => {
+      const chunks: Buffer[] = [];
+      const output = new Writable({
+        write(chunk: Buffer, _encoding, done) {
+          chunks.push(chunk);
+          done();
+        },
+      });
+      return { output, text: () => Buffer.concat(chunks).toString() };
+    };
+    const dump = (output: Writable) =>
+      docker.streamCommand("db", ["pg_dumpall"], { output, timeoutMilliseconds: 5000 });
+
+    beforeEach(() => {
+      const database = exitedContainer("db");
+      engine.add({ ...database, State: { ...database.State, Status: "running", Running: true } });
+    });
+
+    it("ends at its deadline a command whose stream Docker never begins, letting its connection go", async () => {
+      engine.holdStarts = true;
+      const { output } = collected();
+      const asked = docker.streamCommand("db", ["pg_dumpall"], { output, timeoutMilliseconds: 200 });
+      await expect(asked).rejects.toThrow(RUNNER_MESSAGES.commandTookTooLong);
+      await vi.waitFor(() => expect(engine.heldOpen()).toBe(0));
+    });
+
+    it("ends at the same deadline a command whose stream runs on", async () => {
+      engine.holdStreams = true;
+      const { output } = collected();
+      const asked = docker.streamCommand("db", ["pg_dumpall"], { output, timeoutMilliseconds: 200 });
+      await expect(asked).rejects.toThrow(RUNNER_MESSAGES.commandTookTooLong);
+      await vi.waitFor(() => expect(engine.heldOpen()).toBe(0));
+    });
+
+    it("passes every whole piece on, and says how the command ended", async () => {
+      engine.streamed = () => Buffer.concat([framed("CREATE TABLE a;\n"), framed("COPY a;\n")]);
+      const { output, text } = collected();
+
+      expect(await dump(output)).toEqual({ exitCode: 0, stderr: "" });
+      expect(text()).toBe("CREATE TABLE a;\nCOPY a;\n");
+    });
+
+    it("fails on a piece larger than any it takes at once, passing on what came before it", async () => {
+      const header = Buffer.alloc(8);
+      header[0] = 1;
+      header.writeUInt32BE(DOCKER_READ_LIMITS.frameBytes + 1, 4);
+      engine.streamed = () => Buffer.concat([framed("CREATE TABLE a;\n"), header, Buffer.alloc(1024)]);
+      const { output, text } = collected();
+
+      await expect(dump(output)).rejects.toThrow(RUNNER_MESSAGES.execFrameTooLarge);
+      expect(text()).toBe("CREATE TABLE a;\n");
+    });
+
+    it.each([
+      ["in its header", (piece: Buffer) => piece.subarray(0, 5)],
+      ["in its bytes", (piece: Buffer) => piece.subarray(0, piece.length - 3)],
+    ])("fails a stream that ends part-way through a piece, %s, though the command ended well", async (_where, cut) => {
+      engine.streamed = () => Buffer.concat([framed("CREATE TABLE a;\n"), cut(framed("COPY a;\n"))]);
+      const { output, text } = collected();
+
+      await expect(dump(output)).rejects.toThrow(RUNNER_MESSAGES.execStreamCutShort);
+      expect(text()).toBe("CREATE TABLE a;\n");
+    });
+  });
+
   it("reaches a container's files through its archive: stat, read, read only the header, and write", async () => {
     engine.files.set(
       "paperless",
@@ -394,5 +469,139 @@ describe("Docker's refusals, as Autoheal tells them", () => {
     expect(RUNNER_MESSAGES.dockerError(404, '{"message":"No such container: autoheal-autoheal-previous"}\n')).toBe(
       'Docker answered HTTP 404: {"message":"No such container: autoheal-autoheal-previous"}',
     );
+  });
+});
+
+describe("what an engine sends, read only as far as any real one goes", () => {
+  // An engine at the end of a socket that keeps sending until it is cut off, or has sent this much more than the limit.
+  async function sending(limit: number, chunk: Buffer, status = 200) {
+    const directory = mkdtempSync(join(tmpdir(), "autoheal-docker-limits-"));
+    const socket = join(directory, "engine.sock");
+    const answered = { closed: false };
+    const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.on("close", () => (answered.closed = true));
+      let sent = 0;
+      const more = () => {
+        while (!answered.closed && sent <= limit + 2 * chunk.length) {
+          sent += chunk.length;
+          if (!response.write(chunk)) {
+            response.once("drain", more);
+            return;
+          }
+        }
+        response.end();
+      };
+      more();
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    return {
+      docker: new DockerClient(socket),
+      answered,
+      close: async () => {
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(directory, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("stops reading an answer larger than any it needs, and cuts it off", async () => {
+    // Spaces: what JSON allows anywhere, so only its size is wrong.
+    const engine = await sending(DOCKER_READ_LIMITS.bodyBytes, Buffer.alloc(1024 * 1024, " "));
+    try {
+      await expect(engine.docker.containerSummaries()).rejects.toThrow(RUNNER_MESSAGES.dockerAnswerTooLarge);
+      await vi.waitFor(() => expect(engine.answered.closed).toBe(true));
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("fails a command whose start is refused with an answer cut off part-way, instead of waiting on it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "autoheal-docker-refusal-"));
+    const socket = join(directory, "engine.sock");
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      if (request.url?.endsWith("/start")) {
+        // A refusal that says how long it is, then stops a few bytes in.
+        response.writeHead(409, { "content-type": "application/json", "content-length": "100" });
+        response.write('{"message"');
+        response.socket?.destroy();
+        return;
+      }
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(JSON.stringify({ Id: "exec-1" }));
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      let settled: string | null = null;
+      void new DockerClient(socket).runInputCommand("app", ["true"], Buffer.alloc(0), 1024).then(
+        () => (settled = "done"),
+        () => (settled = "failed"),
+      );
+
+      await vi.waitFor(() => expect(settled).toBe("failed"), { timeout: 2000 });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails a command whose start is refused with an answer larger than any it reads, instead of waiting on it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "autoheal-docker-refusal-"));
+    const socket = join(directory, "engine.sock");
+    const answered = { closed: false };
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      if (!request.url?.endsWith("/start")) {
+        response.writeHead(201, { "content-type": "application/json" });
+        response.end(JSON.stringify({ Id: "exec-1" }));
+        return;
+      }
+      response.writeHead(409, { "content-type": "application/json" });
+      response.on("close", () => (answered.closed = true));
+      const chunk = Buffer.alloc(1024 * 1024, " ");
+      let sent = 0;
+      const more = () => {
+        while (!answered.closed && sent <= DOCKER_READ_LIMITS.bodyBytes + 2 * chunk.length) {
+          sent += chunk.length;
+          if (!response.write(chunk)) {
+            response.once("drain", more);
+            return;
+          }
+        }
+        response.end();
+      };
+      more();
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    try {
+      let settled: string | null = null;
+      void new DockerClient(socket).runInputCommand("app", ["true"], Buffer.alloc(0), 1024).then(
+        () => (settled = "done"),
+        (error: Error) => (settled = error.message),
+      );
+
+      await vi.waitFor(() => expect(settled).toBe(RUNNER_MESSAGES.dockerAnswerTooLarge), { timeout: 5000 });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes its event stream on a line longer than any event", async () => {
+    const engine = await sending(DOCKER_READ_LIMITS.lineCharacters, Buffer.alloc(64 * 1024, "x"));
+    try {
+      const events = await engine.docker.events();
+      const reading = (async () => {
+        for await (const _event of events) {
+          // Nothing is expected.
+        }
+      })();
+      await expect(reading).rejects.toThrow(RUNNER_MESSAGES.dockerLineTooLong);
+      await vi.waitFor(() => expect(engine.answered.closed).toBe(true));
+    } finally {
+      await engine.close();
+    }
   });
 });

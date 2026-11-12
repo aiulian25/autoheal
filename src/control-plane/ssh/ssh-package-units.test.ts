@@ -105,6 +105,37 @@ describe("a package job started as root over SSH", () => {
     expect([existsSync(runPath), existsSync(statusPath)]).toEqual([false, false]);
   });
 
+  describe("a start systemd refuses", () => {
+    const REFUSED = ["0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"];
+    const BUSY = "Failed to start transient service unit: Unit autoheal-packages.service was already loaded";
+    const attempt = (jobId: string) =>
+      spawnSync("sh", ["-c", moved(packageUnitCommand("apt", "check", jobId, []))], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${root}/bin:${process.env.PATH}` },
+      });
+    const scriptsOf = (jobId: string) =>
+      [SSH_PACKAGE_RUNS.runScript(jobId), SSH_PACKAGE_RUNS.statusScript(jobId)].map((path) => existsSync(moved(path)));
+
+    it("leaves nothing of a job it refused, and the scripts of the one that runs, saying why as it said", () => {
+      start("apt", "check", []);
+      writeFileSync(join(root, "bin", "systemd-run"), `#!/bin/sh\necho '${BUSY}' >&2\nexit 1\n`);
+      for (const jobId of REFUSED) {
+        const refused = attempt(jobId);
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain("already loaded");
+        expect(scriptsOf(jobId)).toEqual([false, false]);
+      }
+      expect(scriptsOf(JOB)).toEqual([true, true]);
+    });
+
+    it("leaves nothing of a job whose scripts could not all be written, starting nothing", () => {
+      mkdirSync(moved(SSH_PACKAGE_RUNS.statusScript(REFUSED[0]!)), { recursive: true });
+      expect(attempt(REFUSED[0]!).status).not.toBe(0);
+      expect(existsSync(moved(SSH_PACKAGE_RUNS.runScript(REFUSED[0]!)))).toBe(false);
+      expect(existsSync(join(root, "systemd-run.args"))).toBe(false);
+    });
+  });
+
   it("says started, busy while another run goes on, or failed with what the host said", async () => {
     const answering = (exitCode: number, stderr: string) =>
       sshPackageUnits(async () => ({ stdout: "", stderr, exitCode }));

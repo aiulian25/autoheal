@@ -24,6 +24,7 @@ import {
   type RebootPlanPreview,
   type RebootPlanView,
 } from "../../shared/reboot-plans.js";
+import { settleDispatchedWork } from "../backups/settle-dispatched-work.js";
 import { hosts, jobs, rebootPlans } from "../database/schema.js";
 import { serviceProbes } from "../probes/probe-schema.js";
 
@@ -635,11 +636,46 @@ describe("a plan of reboots across three hosts", () => {
     expect(rebootJobs()).toHaveLength(1);
   });
 
-  it("keeps one plan open at a time, and pauses after a database restore", async () => {
+  it("keeps one plan open at a time", async () => {
     await approve();
     expect((await world.admin.post(REBOOT_PLAN_ROUTES.plans, bodyWith())).statusCode).toBe(409);
-    world.plane.services.rebootPlans.pauseAfterRestore();
-    expect(await plan()).toMatchObject({ status: "paused", reason: REBOOT_PLAN_TEXT.restored });
+  });
+
+  // What every way of putting the database back runs: restoring a backup, online or not, and a self-update undone.
+  describe("after the database goes back to an earlier copy", () => {
+    const settle = () => settleDispatchedWork(world.plane.services.databaseHandle, world.plane.clock.now, "restored");
+    const row = (id: string) =>
+      world.plane.services.databaseHandle.database.select().from(rebootPlans).where(eq(rebootPlans.id, id)).get()!;
+
+    it("pauses a plan that was going on, so no host is asked again, however often it is settled", async () => {
+      const approved = await approve();
+      await rebootAndReturn(0);
+      await reportAll();
+
+      settle();
+      settle();
+      tick();
+
+      expect(rebootJobs()).toHaveLength(1);
+      expect(await plan()).toMatchObject({ status: "paused", reason: REBOOT_PLAN_TEXT.restored });
+      expect(row(approved.id).status).toBe(REBOOT_PLAN_STATUS.paused);
+    });
+
+    it("leaves a plan that had ended, and a row it cannot read, as they were", async () => {
+      const approved = await approve();
+      const ended = { ...approved, id: "ended-plan", status: REBOOT_PLAN_STATUS.completed };
+      const database = world.plane.services.databaseHandle.database;
+      database
+        .insert(rebootPlans)
+        .values({ id: ended.id, createdAt: 1, updatedAt: 1, stateJson: JSON.stringify(ended), status: ended.status })
+        .run();
+      database.insert(rebootPlans).values({ id: "unread-plan", createdAt: 1, updatedAt: 1, stateJson: "{" }).run();
+      const before = [row("ended-plan"), row("unread-plan")];
+
+      settle();
+
+      expect([row("ended-plan"), row("unread-plan")]).toEqual(before);
+    });
   });
 
   describe("with a service check it must see answering", () => {

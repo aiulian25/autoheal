@@ -8,7 +8,9 @@ set -euo pipefail
 # leaves behind (docker logs, curl) would fail the check with SIGPIPE.
 
 image="${1:-autoheal:smoke}"
-label="com.autoheal.smoke=1"
+# This run's own label and names: its exit removes only what carries them, never a person's or another run's.
+run_id="$(date +%s)-$$-$RANDOM"
+label="com.autoheal.smoke=$run_id"
 fixtures="$(cd "$(dirname "$0")/../fixtures/tls" && pwd)"
 hardened=(--read-only --cap-drop ALL --security-opt no-new-privileges:true --label "$label")
 main=/app/dist/server/main.js
@@ -27,9 +29,9 @@ if [[ -n "$(runner_state)" ]]; then
   exit 1
 fi
 
-network=autoheal-smoke
-volume=autoheal-smoke-data
-join_volume=autoheal-smoke-join
+network="autoheal-smoke-$run_id"
+volume="autoheal-smoke-data-$run_id"
+join_volume="autoheal-smoke-join-$run_id"
 scratch="$(mktemp -d)"
 
 cleanup() {

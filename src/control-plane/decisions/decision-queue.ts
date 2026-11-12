@@ -6,24 +6,44 @@ export type JobPriority = typeof PRIORITY_LIVE | typeof PRIORITY_REPLAY;
 
 interface Job {
   priority: JobPriority;
+  // Whose work it is: the host it is for. Null for the control plane's own.
+  owner: string | null;
   run: (signal: AbortSignal) => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
 }
 
+export interface QueuedFor {
+  owner?: string | null;
+  // Aborts when whoever asked no longer waits: the work then leaves the queue at once, never run.
+  signal?: AbortSignal;
+}
+
 /**
  * One model call at a time on one Ollama server: the Mini's iGPU is slow. Live incidents always
- * go first; a replay that is running when one arrives is stopped and re-run afterwards.
+ * go first; a replay that is running when one arrives is stopped and re-run afterwards. Live work is taken in turn,
+ * but never from the host just served while another host's waits, so one busy host cannot hold back the others.
  */
 export class DecisionQueue {
   private readonly waiting: Record<JobPriority, Job[]> = { [PRIORITY_LIVE]: [], [PRIORITY_REPLAY]: [] };
   private paused = false;
   private running: { job: Job; controller: AbortController } | null = null;
+  private lastOwner: string | null = null;
 
-  enqueue<Result>(priority: JobPriority, run: (signal: AbortSignal) => Promise<Result>): Promise<Result> {
+  enqueue<Result>(
+    priority: JobPriority,
+    run: (signal: AbortSignal) => Promise<Result>,
+    { owner = null, signal }: QueuedFor = {},
+  ): Promise<Result> {
     if (this.paused) return Promise.reject(new DomainError(API_ERRORS.restoreMaintenance));
+    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<Result>((resolve, reject) => {
-      this.waiting[priority].push({ priority, run, resolve: resolve as (value: unknown) => void, reject });
+      const job: Job = { priority, owner, run, resolve: resolve as (value: unknown) => void, reject };
+      const waiting = this.waiting[priority];
+      waiting.push(job);
+      // Still waiting: it leaves the queue. Already running or done: the signal is its run's to hear, as before. Never
+      // through a method: it is heard whenever, even after the database closed, and must not throw.
+      signal?.addEventListener("abort", () => withdraw(waiting, job, signal.reason), { once: true });
       if (priority === PRIORITY_LIVE && this.running?.job.priority === PRIORITY_REPLAY) {
         this.running.controller.abort(PREEMPTED);
       }
@@ -56,12 +76,13 @@ export class DecisionQueue {
     if (this.paused || this.running !== null) {
       return;
     }
-    const job = this.waiting[PRIORITY_LIVE].shift() ?? this.waiting[PRIORITY_REPLAY].shift();
+    const job = nextLive(this.waiting[PRIORITY_LIVE], this.lastOwner) ?? this.waiting[PRIORITY_REPLAY].shift();
     if (job === undefined) {
       return;
     }
     const controller = new AbortController();
     this.running = { job, controller };
+    this.lastOwner = job.owner;
     job
       .run(controller.signal)
       .then(job.resolve, (error: unknown) => {
@@ -79,4 +100,17 @@ export class DecisionQueue {
         this.next();
       });
   }
+}
+
+// The first live work waiting, unless it is the host just served's while another host's waits.
+function nextLive(live: Job[], lastOwner: string | null): Job | undefined {
+  const another = live.findIndex(({ owner }) => owner !== lastOwner);
+  return live.splice(another < 0 ? 0 : another, 1)[0];
+}
+
+function withdraw(waiting: Job[], job: Job, reason: unknown) {
+  const at = waiting.indexOf(job);
+  if (at < 0) return;
+  waiting.splice(at, 1);
+  job.reject(reason);
 }

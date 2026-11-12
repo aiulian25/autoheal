@@ -595,6 +595,8 @@ export const jobs = sqliteTable("jobs", {
   undoIfUnhealthy: integer("undo_if_unhealthy", { mode: "boolean" }).notNull().default(false),
   // The tag a change-tag job moves its container to.
   targetTag: text("target_tag"),
+  // The registry digest of the image a person said yes to: its update goes to that image or not at all.
+  expectedDigest: text("expected_digest"),
 });
 
 // Several containers' new images on one host, one at a time: see the update-runs migration.
@@ -667,6 +669,8 @@ export const jarvisItems = sqliteTable("jarvis_items", {
   codeSealed: text("code_sealed"),
   // When the last line counted about it was written, by Home Assistant's clock: an older one is not counted again.
   lastLineAt: integer("last_line_at"),
+  // The same for its answers alone: one in the same second as its heard still counts.
+  lastAnswerAt: integer("last_answer_at"),
   // The answer a question got, by whom and how, and how each update it started ended.
   answerJson: text("answer_json"),
 });

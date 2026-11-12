@@ -60,6 +60,9 @@ export function parseImageReference(reference: string): ImageReference | null {
 const isLoopback = (host: string) => LOOPBACK_HOST_PATTERN.test(host);
 const registryName = (registry: string) => (registry === REGISTRY.dockerHubHost ? REGISTRY.dockerHubName : registry);
 const isRefusal = (status: number) => status === HTTP_STATUS.unauthorized || status === HTTP_STATUS.forbidden;
+// Only a token that goes in an Authorization header as it is: fetch's refusal of any other repeats it whole.
+const isBearerToken = (value: unknown): value is string =>
+  typeof value === "string" && REGISTRY.bearerTokenPattern.test(value);
 const schemeOf = (host: string) => (isLoopback(host) ? REGISTRY.plainScheme : REGISTRY.secureScheme);
 
 const CHALLENGE_PARAMETER = /(\w+)="([^"]*)"/g;
@@ -112,6 +115,9 @@ export interface SignatureArtifact {
   certificate: string | null;
 }
 
+/** A token service's answer, under either name a token goes by, as the token service's word. */
+type TokenAnswer = Partial<Record<(typeof REGISTRY.tokenFields)[number], unknown>> | null;
+
 /** What a manifest, an index or an image configuration holds that is read here; all of it is the registry's word. */
 interface RegistryDocument {
   mediaType?: unknown;
@@ -134,21 +140,34 @@ const isIndex = (document: RegistryDocument) =>
   REGISTRY.indexTypes.some((type) => type === document.mediaType) || Array.isArray(document.manifests);
 
 // The body as text, refused past `limit` bytes whatever the registry declares: its answers are not trusted.
-async function textWithin(response: Response, limit: number): Promise<string> {
+async function textWithin(
+  response: Response,
+  limit: number,
+  tooLarge: string = REGISTRY_MESSAGES.tooLarge,
+): Promise<string> {
   if (Number(response.headers.get(HTTP_HEADERS.contentLength)) > limit) {
     await response.body?.cancel();
-    throw new RegistryError(REGISTRY_MESSAGES.tooLarge);
+    throw new RegistryError(tooLarge);
   }
   const chunks: Uint8Array[] = [];
   let size = 0;
   for await (const chunk of response.body ?? []) {
     size += chunk.byteLength;
     if (size > limit) {
-      throw new RegistryError(REGISTRY_MESSAGES.tooLarge);
+      throw new RegistryError(tooLarge);
     }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString();
+}
+
+// What does not parse is never repeated: JSON.parse's own error quotes the text, which may hold a credential.
+async function jsonWithin(response: Response, limit: number, tooLarge?: string): Promise<unknown> {
+  try {
+    return JSON.parse(await textWithin(response, limit, tooLarge));
+  } catch (error) {
+    throw error instanceof RegistryError ? error : new RegistryError(REGISTRY_MESSAGES.notJson);
+  }
 }
 
 function labelOf(labels: Record<string, unknown>, key: string): string | null {
@@ -433,11 +452,7 @@ export class RegistryClient {
       await response.body?.cancel();
       throw new RegistryError(REGISTRY_MESSAGES.badStatus(response.status));
     }
-    try {
-      return JSON.parse(await textWithin(response, REGISTRY.documentBytesLimit)) as RegistryDocument;
-    } catch (error) {
-      throw error instanceof RegistryError ? error : new RegistryError(REGISTRY_MESSAGES.notJson);
-    }
+    return (await jsonWithin(response, REGISTRY.documentBytesLimit)) as RegistryDocument;
   }
 
   // ghcr.io refuses a token for a private image, or one it does not have, with 403: anonymously, and with a
@@ -451,14 +466,16 @@ export class RegistryClient {
       signal: AbortSignal.timeout(REGISTRY.timeoutMilliseconds),
     });
     if (isRefusal(response.status)) {
+      await response.body?.cancel();
       throw new RegistryError(this.refusal(registry, access));
     }
     if (!response.ok) {
+      await response.body?.cancel();
       throw new RegistryError(REGISTRY_MESSAGES.tokenStatus(response.status));
     }
-    const body = (await response.json()) as Record<string, unknown>;
-    const token = REGISTRY.tokenFields.map((field) => body[field]).find((value) => typeof value === "string" && value);
-    if (typeof token !== "string") {
+    const body = (await jsonWithin(response, REGISTRY.tokenBytesLimit, REGISTRY_MESSAGES.tokenTooLarge)) as TokenAnswer;
+    const token = REGISTRY.tokenFields.map((field) => body?.[field]).find(isBearerToken);
+    if (token === undefined) {
       throw new RegistryError(REGISTRY_MESSAGES.noToken);
     }
     return token;

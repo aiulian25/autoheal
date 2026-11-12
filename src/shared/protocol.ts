@@ -390,10 +390,14 @@ export const restartWaitSchema = z
 
 export type RestartWait = z.infer<typeof restartWaitSchema>;
 
+const certificateDate = z.number().int().min(-PROBE_LIMITS.dateMilliseconds).max(PROBE_LIMITS.dateMilliseconds);
+
 /** What a host saw when it made a check it was given. Public facts about a certificate only, as ever. */
 export const probeReportSchema = z.object({
   id: z.string().max(PROBE_LIMITS.targetCharacters),
   generation: z.string().max(PROBE_LIMITS.nameCharacters),
+  // The hand-out it answers, given back as it came. Absent from runners before it, whose results are not taken.
+  attempt: z.string().max(PROBE_LIMITS.nameCharacters).optional(),
   ok: z.boolean(),
   latencyMilliseconds: z.number().int().min(0).nullable(),
   problem: z.string().max(PROBE_LIMITS.problemCharacters).nullable(),
@@ -402,8 +406,8 @@ export const probeReportSchema = z.object({
       fingerprint: z.string().max(PROBE_LIMITS.nameCharacters),
       subject: z.string().max(PROBE_LIMITS.targetCharacters),
       issuer: z.string().max(PROBE_LIMITS.targetCharacters),
-      validFrom: z.number().int(),
-      validTo: z.number().int(),
+      validFrom: certificateDate,
+      validTo: certificateDate,
       name: z.string().max(PROBE_LIMITS.targetCharacters),
       nameMatches: z.boolean(),
       chainError: z.string().max(PROBE_LIMITS.problemCharacters).nullable(),
@@ -493,7 +497,10 @@ export const heartbeatSchema = z.object({
   // Whether this runner can make service checks from its own host. Absent from runners from before it, whose
   // checks stay with Autoheal rather than being assumed to work.
   serviceProbes: z.boolean().optional(),
-  // What the checks it was given saw, each with the check and the generation it was given for.
+  // Whether its results give back the hand-out each answers. Absent from runners before it, which are given no checks:
+  // a result of theirs sent again, after its answer was lost, would count twice.
+  probeAttempts: z.boolean().optional(),
+  // What the checks it was given saw, each with the check, the generation and the hand-out it was given for.
   probeResults: z.array(probeReportSchema).max(PROBE_LIMITS.resultsPerReport).optional(),
 });
 
@@ -545,6 +552,9 @@ export interface RemoteProbe {
   id: string;
   // What the check was when it was handed out: a result for another generation is not an answer to this question.
   generation: string;
+  // This hand-out of it: a result counts once, for the latest hand-out and within its deadline. Absent from control
+  // planes before it.
+  attempt?: string;
   body: ProbeBody;
 }
 
@@ -731,6 +741,8 @@ export interface ContainerJob extends JobBase {
   >;
   // An update put back at once when the new container does not come back healthy: the owner chose so.
   undoIfUnhealthy?: boolean;
+  // An update to the very image a person said yes to, by its registry digest: one the tag moved to since is refused.
+  expectedDigest?: string;
   // The control plane grants this only to an explicitly requested human update, never agent work.
   allowWithoutCheckpoint?: boolean;
 }

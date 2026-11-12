@@ -1,0 +1,7 @@
+FROM docker:29.9.0-cli
+ARG VERSION=1
+ARG SICK=0
+ENV APP_VERSION=$VERSION APP_SICK=$SICK
+COPY app.sh /app.sh
+ENTRYPOINT ["/bin/sh", "/app.sh"]
+CMD []

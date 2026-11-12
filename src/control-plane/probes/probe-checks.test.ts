@@ -1,5 +1,7 @@
 import { createSocket } from "node:dgram";
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { createServer as createSecureServer, type Server as SecureServer } from "node:https";
 import { createServer as createTcpServer, type AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROBE_SCOPE, PROBE_TEXT, type ProbeBody, type ProbeTarget } from "../../shared/probes.js";
@@ -32,7 +34,7 @@ afterEach(() => {
   lookups.delayMilliseconds = 0;
 });
 const never = new AbortController().signal;
-const listening = (server: Server) =>
+const listening = (server: Server | SecureServer) =>
   new Promise<number>((resolve) => {
     server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
     closers.push(() => {
@@ -50,6 +52,17 @@ const webServer = async (status: number, headers: Record<string, string> = {}) =
   );
   return { port, hits: () => hits };
 };
+// A web service over TLS, on a certificate from the test authority the tests do not trust.
+const secureWebServer = () =>
+  listening(
+    createSecureServer(
+      {
+        cert: readFileSync("test/fixtures/tls/untrusted-server.pem"),
+        key: readFileSync("test/fixtures/tls/untrusted-server-key.pem"),
+      },
+      (_request, response) => response.writeHead(200).end(),
+    ),
+  );
 const bodyWith = (target: ProbeTarget, change: Partial<ProbeBody> = {}): ProbeBody => ({
   name: "Wiki",
   scope: PROBE_SCOPE.thisMachine,
@@ -158,6 +171,21 @@ describe("one check of a local service", () => {
     expect(asked.problem).toBe(PROBE_TEXT.wrongStatus(302, 200));
     expect(elsewhere.hits()).toBe(0);
     expect((await runCheck(bodyWith(web(`http://127.0.0.1:${redirecting.port}/`, 302)), never)).ok).toBe(true);
+  });
+
+  it("makes a check over HTTPS however its scheme is written, held to the same certificate", async () => {
+    const port = await secureWebServer();
+    const checked = (scheme: string, ignoreCertificate: boolean) =>
+      runCheck(
+        bodyWith({ kind: "http", url: `${scheme}://127.0.0.1:${port}/`, expectedStatus: 200, ignoreCertificate }),
+        never,
+      );
+    for (const scheme of ["https", "HTTPS", "Https"]) {
+      expect(await checked(scheme, true)).toMatchObject({ ok: true, problem: null });
+    }
+    const refused = await checked("https", false);
+    expect(refused.ok).toBe(false);
+    expect(await checked("HTTPS", false)).toEqual(refused);
   });
 
   it("gives up in its time on a service that never answers", async () => {

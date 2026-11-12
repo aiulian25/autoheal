@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeDockerEngine } from "../../test/fakes/fake-docker-engine.js";
 import { ConfigError } from "../config/environment-schema.js";
 import { loadRunnerConfig } from "../config/runner-config.js";
-import { RUNNER_TOKEN_PATTERN } from "../shared/constants.js";
-import { encodeJoinCode, type EnrolmentDetails } from "../shared/join-code.js";
+import { RUNNER_TOKEN_PATTERN, RUNNER_TOKEN_VOLUME } from "../shared/constants.js";
+import { sha256Hex } from "../shared/hash.js";
+import { encodeJoinCode, newToken, type EnrolmentDetails } from "../shared/join-code.js";
 import { ControlPlaneError, JoinCodeRefusedError } from "./control-plane-client.js";
 import { DockerClient } from "./docker-client.js";
 import { withRunnerToken } from "./runner-token.js";
@@ -17,6 +18,9 @@ const configWith = (enrolment: string) =>
 const FIRST = `ahe_${"F".repeat(43)}`;
 const SECOND = `ahe_${"S".repeat(43)}`;
 const noPause = async () => undefined;
+// The volume a code's traded token is kept in.
+const kept = (enrolment: string) =>
+  `${RUNNER_TOKEN_VOLUME.prefix}${sha256Hex(enrolment).slice(0, RUNNER_TOKEN_VOLUME.codeHashCharacters)}`;
 
 describe("a runner whose join code works once", () => {
   let engine: FakeDockerEngine;
@@ -110,6 +114,42 @@ describe("a runner whose join code works once", () => {
     expect(await docker.volumes("autoheal.runner.token")).toEqual([]);
   });
 
+  it("trades the same token again when it stopped after the trade, before keeping it, and needs no new code", async () => {
+    const said = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    // Docker keeps it as waiting, then fails to keep it as traded: as a runner stopped right after the control plane
+    // took its token.
+    const stoppedAfterTrade = {
+      volumes: (label: string) => docker.volumes(label),
+      createVolume: async (name: string, labels: Record<string, string>) => {
+        if (!name.endsWith(RUNNER_TOKEN_VOLUME.waitingSuffix)) throw new Error("the runner stopped");
+        return docker.createVolume(name, labels);
+      },
+      removeVolume: (name: string) => docker.removeVolume(name),
+    };
+    await withRunnerToken(configWith(FIRST), stoppedAfterTrade, redeem, noPause);
+    expect(said.mock.calls.flat().join("\n")).toContain("it is kept as waiting, so a restart trades it again");
+
+    const restarted = await withRunnerToken(configWith(FIRST), new DockerClient(engine.socketPath), redeem, noPause);
+
+    const [first] = traded;
+    expect(traded.map(({ token }) => token)).toEqual([first!.token, first!.token]);
+    expect(restarted.controlPlane?.token).toBe(first!.token);
+    expect((await docker.volumes(RUNNER_TOKEN_VOLUME.label)).map(({ Name }) => Name)).toEqual([kept(FIRST)]);
+  });
+
+  it("trades the token a runner left waiting when it stopped before it asked", async () => {
+    const waiting = newToken();
+    await docker.createVolume(`${kept(FIRST)}${RUNNER_TOKEN_VOLUME.waitingSuffix}`, {
+      [RUNNER_TOKEN_VOLUME.label]: waiting,
+    });
+
+    const joined = await withRunnerToken(configWith(FIRST), docker, redeem, noPause);
+
+    expect(traded.map(({ token }) => token)).toEqual([waiting]);
+    expect(joined.controlPlane?.token).toBe(waiting);
+    expect((await docker.volumes(RUNNER_TOKEN_VOLUME.label)).map(({ Name }) => Name)).toEqual([kept(FIRST)]);
+  });
+
   it("still reports with the token when Docker will not keep it, and says it needs a new code after a restart", async () => {
     const said = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const refusingStore = {
@@ -117,6 +157,7 @@ describe("a runner whose join code works once", () => {
       createVolume: async () => {
         throw new Error("no space left on device");
       },
+      removeVolume: async () => undefined,
     };
     const joined = await withRunnerToken(configWith(FIRST), refusingStore, redeem, noPause);
     expect(joined.controlPlane?.token).toBe(traded[0]!.token);

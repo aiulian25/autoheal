@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DELIVERY_ATTEMPT_LIMIT,
   DELIVERY_EVENT_LIMIT,
+  DELIVERY_PENDING_EVENTS_PER_HOST,
   DELIVERY_RETENTION_MILLISECONDS,
   notificationDueAt,
   type DeliveryContext,
@@ -275,6 +276,73 @@ describe("durable notification delivery", () => {
     await service.tick();
     expect(service.list().events).toHaveLength(0);
   });
+  it("keeps room for another host's escalation however many alerts one host has waiting", async () => {
+    channels.ntfy = null;
+    const noisy = randomUUID();
+    const quiet = randomUUID();
+    const payload = JSON.stringify(message());
+    // One host's alerts, all still waiting, fill all but one place.
+    const events = Array.from({ length: DELIVERY_EVENT_LIMIT - 1 }, (_, index) => ({
+      id: `event-${index}`,
+      dedupeKey: `key-${index}`,
+      kind: "incident_handled" as const,
+      hostId: noisy,
+      resourceKind: "system" as const,
+      priority: "high" as const,
+      messageJson: payload,
+      createdAt: now,
+    }));
+    handle.database.insert(notificationEvents).values(events).run();
+    const { channelFingerprint } = await import("./delivery-service.js");
+    handle.database
+      .insert(notificationDeliveries)
+      .values(
+        events.map((event) => ({
+          id: `delivery-${event.id}`,
+          eventId: event.id,
+          channel: "gotify" as const,
+          status: "queued" as const,
+          configFingerprint: channelFingerprint(channels.gotify!),
+          nextAttemptAt: now,
+        })),
+      )
+      .run();
+    const from = (hostId: string, key: string): DeliveryContext => ({ ...context(key), hostId });
+
+    expect(() => service.enqueue(from(noisy, "one-more"), message())).toThrow("notification_queue_full");
+    expect(service.enqueue(from(quiet, "escalated"), message("urgent", "Escalated"))).toEqual(expect.any(String));
+  });
+
+  it("counts against a host only its alerts still waiting, not those already sent", async () => {
+    const host = randomUUID();
+    const payload = JSON.stringify(message());
+    const events = Array.from({ length: DELIVERY_PENDING_EVENTS_PER_HOST }, (_, index) => ({
+      id: `sent-${index}`,
+      dedupeKey: `sent-key-${index}`,
+      kind: "incident_handled" as const,
+      hostId: host,
+      resourceKind: "system" as const,
+      priority: "high" as const,
+      messageJson: payload,
+      createdAt: now,
+    }));
+    handle.database.insert(notificationEvents).values(events).run();
+    handle.database
+      .insert(notificationDeliveries)
+      .values(
+        events.map((event) => ({
+          id: `delivery-${event.id}`,
+          eventId: event.id,
+          channel: "gotify" as const,
+          status: "accepted" as const,
+          acceptedAt: now,
+        })),
+      )
+      .run();
+
+    expect(service.enqueue({ ...context("next"), hostId: host }, message())).toEqual(expect.any(String));
+  });
+
   it("keeps an unrouted alert recoverable through explicit current-routing approval", async () => {
     channels = { gotify: null, ntfy: null, webhook: null };
     sender(null);
@@ -289,6 +357,45 @@ describe("durable notification delivery", () => {
     expect(service.list().events[0]?.id).toBe(id);
     expect(service.list().events[0]?.deliveries[0]?.status).toBe("accepted");
   });
+  it("sends no alert cancelled while an earlier one of the same tick was on its way", async () => {
+    let letGo = () => {};
+    const held = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    const titles: string[] = [];
+    service.useSender(async (_channel, given) => {
+      titles.push(given.title);
+      if (titles.length === 1) await held;
+      return null;
+    });
+    service.saveRules(actor, { rules: [ruleOf()] });
+    const taskId = randomUUID();
+    // The first due a moment earlier, so it goes out first.
+    now = NOW - 1000;
+    service.enqueue(
+      { key: "first", kind: "task_opened", resourceKind: "task", resourceId: randomUUID() },
+      message("high", "First"),
+    );
+    now = NOW;
+    const obsolete = service.enqueue(
+      { key: "second", kind: "task_opened", resourceKind: "task", resourceId: taskId },
+      message("high", "Second"),
+    );
+    const sending = service.tick();
+    await vi.waitFor(() => expect(titles).toEqual(["First"]));
+
+    // Its task resolved meanwhile: the second's alert is cancelled.
+    service.enqueue(
+      { key: "second-resolved", kind: "task_resolved", resourceKind: "task", resourceId: taskId },
+      message("medium", "Second resolved"),
+    );
+    letGo();
+    await sending;
+
+    expect(titles).toEqual(["First"]);
+    expect(service.list().events.find((event) => event.id === obsolete)?.deliveries[0]?.status).toBe("cancelled");
+  });
+
   it("cancels obsolete queued alerts and escalations when captured resolution arrives at the same timestamp", async () => {
     sender(null);
     service.saveRules(actor, { rules: [ruleOf({ escalateAfterMinutes: 5, escalationChannels: ["ntfy"] })] });

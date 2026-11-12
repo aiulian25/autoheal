@@ -85,17 +85,44 @@ export function hintsInReadme(readme: string): { hints: ProjectHints | null; com
 
 const plainHints = (image: string): ProjectHints => ({ image, ports: [], volumes: [], environment: [], leftOut: [] });
 
+// A configuration file whole, or that it went past what is read: one character more says there was more.
+async function wholeTextOf(fetchImplementation: typeof fetch, url: string, deadline?: AbortSignal) {
+  const text = await textOf(fetchImplementation, url, PROJECT_PAGE.readCharacters + 1, deadline);
+  if (text === null || text.length <= PROJECT_PAGE.readCharacters) return text;
+  return PROJECT_FILE_TOO_LARGE;
+}
+
+// What a project's configuration file is when it goes past what a preview reads: it is read whole or not at all, as a
+// part of one could read as a smaller, valid project. A README is only read for hints, and its start is enough.
+export const PROJECT_FILE_TOO_LARGE = Symbol("past what a preview reads");
+
+// Read as it comes and no further than it is kept, whatever its publisher sends; `deadline` ends a whole preview's.
 async function textOf(
   fetchImplementation: typeof fetch,
   url: string,
   characters: number = PROJECT_PAGE.readCharacters,
+  deadline?: AbortSignal,
 ): Promise<string | null> {
-  const response = await fetchImplementation(url, {
-    signal: AbortSignal.timeout(PROJECT_PAGE.timeoutMilliseconds),
-  }).catch(() => null);
+  const ownTime = AbortSignal.timeout(PROJECT_PAGE.timeoutMilliseconds);
+  const signal = deadline === undefined ? ownTime : AbortSignal.any([ownTime, deadline]);
+  const response = await fetchImplementation(url, { signal }).catch(() => null);
   if (response === null || !response.ok) return null;
-  const text = await response.text().catch(() => null);
-  return text === null ? null : text.slice(0, characters);
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < characters) {
+      const { done, value } = await reader.read();
+      if (done) return `${text}${decoder.decode()}`.slice(0, characters);
+      text += decoder.decode(value, { stream: true });
+    }
+    return text.slice(0, characters);
+  } catch {
+    return null;
+  } finally {
+    void reader.cancel().catch(() => undefined);
+  }
 }
 
 /**
@@ -106,6 +133,7 @@ export async function readProjectPage(
   address: string,
   fetchImplementation: typeof fetch = fetch,
   wantedFile: string | null = null,
+  deadline?: AbortSignal,
 ): Promise<ProjectPage> {
   const image = imageFromAddress(address);
   if (image !== null) return { kind: "found", hints: plainHints(image) };
@@ -113,23 +141,33 @@ export async function readProjectPage(
   if (project === null) return { kind: "unknownSite" };
   const raw = (file: string) => `${PROJECT_PAGE.rawBase}/${project.owner}/${project.name}/HEAD/${file}`;
   let saysCompose = false;
+  let namedImages: string[] = [];
   if (wantedFile === null) {
     for (const file of PROJECT_PAGE.readmeFiles) {
-      const readme = await textOf(fetchImplementation, raw(file));
+      const readme = await textOf(fetchImplementation, raw(file), PROJECT_PAGE.readCharacters, deadline);
       if (readme === null) continue;
       const found = hintsInReadme(readme);
       if (found.hints !== null) return { kind: "found", hints: found.hints };
       saysCompose = PROJECT_PAGE.mentionsCompose.test(readme);
+      namedImages = found.composeImages;
       break;
     }
   }
-  const files = await composeFilesOf(project, fetchImplementation);
-  const file = wantedFile !== null && files.includes(wantedFile) ? wantedFile : files[0];
-  const text = file === undefined ? null : await textOf(fetchImplementation, raw(file));
+  const files = await composeFilesOf(project, fetchImplementation, deadline);
+  // A file a person chose is that file or none: another could be another way of installing the project.
+  if (wantedFile !== null && !files.includes(wantedFile)) return { kind: "variantGone", file: wantedFile };
+  const file = wantedFile ?? files[0];
+  const text = file === undefined ? null : await wholeTextOf(fetchImplementation, raw(file), deadline);
+  if (text === PROJECT_FILE_TOO_LARGE) return { kind: "composeTooLarge" };
   if (file !== undefined && text !== null) {
     const folder = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
     return { kind: "compose", text, files, file, folder, owner: project.owner, name: project.name };
   }
+  // No Compose file of its own: the images its README's Compose example names, the one to propose or several to choose
+  // from. Either way it is a person's to review; nothing goes ahead by itself.
+  if (namedImages.length > 1) return { kind: "severalImages", images: namedImages };
+  const [named] = namedImages;
+  if (named !== undefined) return { kind: "found", hints: plainHints(named) };
   if (saysCompose) return { kind: "composeOnly" };
   return {
     kind: "guess",
@@ -158,11 +196,13 @@ function pathsIn(listing: string | null): string[] | null {
 async function composeFilesOf(
   project: { owner: string; name: string },
   fetchImplementation: typeof fetch,
+  deadline?: AbortSignal,
 ): Promise<string[]> {
   const listing = await textOf(
     fetchImplementation,
     COMPOSE_IMPORT.treeUrl(project.owner, project.name),
     COMPOSE_IMPORT.listingCharacters,
+    deadline,
   );
   const paths = pathsIn(listing);
   const found = (paths ?? [])
@@ -173,7 +213,7 @@ async function composeFilesOf(
   const usual: string[] = [];
   for (const file of PROJECT_PAGE.composeFiles) {
     const raw = `${PROJECT_PAGE.rawBase}/${project.owner}/${project.name}/HEAD/${file}`;
-    if ((await textOf(fetchImplementation, raw)) !== null) usual.push(file);
+    if ((await textOf(fetchImplementation, raw, PROJECT_PAGE.readCharacters, deadline)) !== null) usual.push(file);
   }
   return usual;
 }
@@ -182,9 +222,10 @@ async function composeFilesOf(
 export async function readProjectSettings(
   page: { owner: string; name: string; folder: string },
   fetchImplementation: typeof fetch = fetch,
-): Promise<string | null> {
+  deadline?: AbortSignal,
+): Promise<string | null | typeof PROJECT_FILE_TOO_LARGE> {
   for (const file of COMPOSE_IMPORT.settingsFiles) {
-    const text = await readProjectFile(page, file, fetchImplementation);
+    const text = await readProjectFile(page, file, fetchImplementation, deadline);
     if (text !== null) return text;
   }
   return null;
@@ -195,9 +236,11 @@ export async function readProjectFile(
   page: { owner: string; name: string; folder: string },
   file: string,
   fetchImplementation: typeof fetch = fetch,
-): Promise<string | null> {
+  deadline?: AbortSignal,
+): Promise<string | null | typeof PROJECT_FILE_TOO_LARGE> {
   const relative = file.replace(/^\.\//, "");
   if (relative.startsWith("/") || relative.split("/").includes("..")) return null;
   const path = page.folder === "" ? relative : `${page.folder}/${relative}`;
-  return textOf(fetchImplementation, `${PROJECT_PAGE.rawBase}/${page.owner}/${page.name}/HEAD/${path}`);
+  const url = `${PROJECT_PAGE.rawBase}/${page.owner}/${page.name}/HEAD/${path}`;
+  return wholeTextOf(fetchImplementation, url, deadline);
 }

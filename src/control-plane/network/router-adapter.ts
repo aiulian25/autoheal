@@ -51,6 +51,8 @@ export interface RouterAdapter {
   exposure(): Promise<ExposureSnapshot | null>;
   // False where this user may not.
   startSpeedTest(): Promise<boolean>;
+  // Every read still waiting on the router fails at once, and lets its connection go. Later reads connect afresh.
+  cancel(): void;
 }
 
 export class RouterLoginRefused extends Error {}

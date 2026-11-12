@@ -65,14 +65,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Answers by "METHOD path"; anything not listed gets an empty list. */
+/** Answers by "METHOD path", or by a function for a Response of its own; anything not listed gets an empty list. */
 function show(answers: Record<string, unknown>, hosts: readonly HostView[] = []) {
-  const fetch = vi.fn(
-    async (path: string, options?: RequestInit) =>
-      new Response(JSON.stringify(answers[`${options?.method ?? "GET"} ${path}`] ?? []), {
-        headers: { "content-type": "application/json" },
-      }),
-  );
+  const fetch = vi.fn(async (path: string, options?: RequestInit) => {
+    const answer = answers[`${options?.method ?? "GET"} ${path}`];
+    if (typeof answer === "function") return (answer as () => Response)();
+    return new Response(JSON.stringify(answer ?? []), { headers: { "content-type": "application/json" } });
+  });
   vi.stubGlobal("fetch", fetch);
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const view = render(
@@ -255,23 +254,65 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     ]);
   });
 
-  it("revokes a runner host that never joined when it is cancelled: its join code opens nothing", async () => {
+  // Up to the point a runner host's command is shown, as each of these closes it.
+  const toCommand = async (answers: Record<string, unknown>, hosts: readonly HostView[] = []) => {
     const enrolled = enrolledWith("docker compose up -d");
-    const { fetch } = show({
-      [`GET ${API_ROUTES.settings}`]: settings,
-      [`POST ${API_ROUTES.hosts}`]: enrolled,
-    });
+    const shown = show(
+      { [`GET ${API_ROUTES.settings}`]: settings, [`POST ${API_ROUTES.hosts}`]: enrolled, ...answers },
+      hosts,
+    );
     const dialog = await openDialog();
     fireEvent.change(dialog.getByRole("combobox", { name: new RegExp(`^${text.connection}`) }), {
       target: { value: "runner" },
     });
     fireEvent.click(await dialog.findByRole("button", { name: text.makeCommand }));
     await dialog.findByText(enrolled.installCommand);
+    return { ...shown, dialog };
+  };
+  const CANCEL = apiPath(API_ROUTES.hostCancelEnrollment, { hostId: "h3" });
+  const REVOKE = apiPath(API_ROUTES.hostRevoke, { hostId: "h3" });
+
+  it("asks the dashboard to take back a runner host that never joined when it is cancelled", async () => {
+    const { fetch, dialog } = await toCommand({ [`POST ${CANCEL}`]: { cancelled: true } });
     // No name given: the host's own hostname is used.
     expect(sent(fetch, "POST", API_ROUTES.hosts)).toEqual([{ address: settings.runnerAddress }]);
 
     fireEvent.click(dialog.getByRole("button", { name: text.cancel }));
+
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(sent(fetch, "POST", apiPath(API_ROUTES.hostRevoke, { hostId: "h3" }))).toEqual([null]);
+    expect(sent(fetch, "POST", CANCEL)).toEqual([null]);
+    expect(sent(fetch, "POST", REVOKE)).toEqual([]);
+  });
+
+  it("never revokes a host it last saw offline: the dashboard keeps one whose runner joined meanwhile", async () => {
+    const { fetch, dialog } = await toCommand({ [`POST ${CANCEL}`]: { cancelled: false } }, [
+      newHost({ state: "silent" }),
+    ]);
+
+    // What a browser sends the dialog on Escape.
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent(fetch, "POST", CANCEL)).toEqual([null]);
+    expect(sent(fetch, "POST", REVOKE)).toEqual([]);
+    expect(dialog.queryByRole("alert")).toBeNull();
+  });
+
+  it("stays open with what went wrong when the dashboard cannot be asked, and closes once it can", async () => {
+    let reachable = false;
+    const { dialog } = await toCommand({
+      [`POST ${CANCEL}`]: () =>
+        reachable
+          ? new Response(JSON.stringify({ cancelled: true }), { headers: { "content-type": "application/json" } })
+          : new Response(JSON.stringify({ error: "internal" }), { status: 500 }),
+    });
+
+    fireEvent.click(dialog.getByRole("button", { name: text.cancel }));
+    await waitFor(() => expect(dialog.getByRole("alert")).toBeTruthy());
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+
+    reachable = true;
+    fireEvent.click(dialog.getByRole("button", { name: text.cancel }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });

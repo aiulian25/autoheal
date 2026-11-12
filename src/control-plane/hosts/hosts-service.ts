@@ -3,7 +3,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { API_ERRORS, type EnrolledHostView, type HostView, type LocalHostView } from "../../shared/api.js";
+import {
+  API_ERRORS,
+  type CancelledEnrollmentView,
+  type EnrolledHostView,
+  type HostView,
+  type LocalHostView,
+} from "../../shared/api.js";
 import {
   ACTOR_SYSTEM,
   AUDIT_ACTIONS,
@@ -353,14 +359,47 @@ export class HostsService {
     }
     const host = this.databaseHandle.database
       .update(hosts)
-      .set({
-        status: HOST_STATUS_REVOKED,
-        revokedAt: this.clock(),
-        label: current.status === HOST_STATUS_REVOKED ? current.label : revokedLabel(current),
-      })
+      .set(this.revocationOf(current))
       .where(eq(hosts.id, hostId))
       .returning()
       .get()!;
+    this.revoked(actor, host);
+    return toHostView(host, this.clock());
+  }
+
+  /**
+   * Takes back a host whose runner never traded its join code, as closing Add a host does, and nothing else: one that
+   * joined meanwhile keeps its token, whatever the dialog last saw of it. Decided in one write, so a runner trading its
+   * code at the same moment either joins first and stays, or finds its code opens nothing.
+   */
+  cancelEnrollment(actor: Actor, hostId: string): CancelledEnrollmentView {
+    const current = this.databaseHandle.database.select().from(hosts).where(eq(hosts.id, hostId)).get();
+    if (current === undefined) {
+      throw new DomainError(API_ERRORS.hostNotFound);
+    }
+    // Only a runner host just added has no token's hint: its runner sets one by trading the code, and every other
+    // way a host joins brings its token.
+    const neverJoined = and(eq(hosts.id, hostId), eq(hosts.status, HOST_STATUS_ACTIVE), eq(hosts.tokenHint, ""));
+    const host = this.databaseHandle.database
+      .update(hosts)
+      .set({ ...this.revocationOf(current), joinCodeHash: null, joinCodeExpiresAt: null })
+      .where(neverJoined)
+      .returning()
+      .get();
+    if (host === undefined) return { cancelled: false };
+    this.revoked(actor, host);
+    return { cancelled: true };
+  }
+
+  private revocationOf(current: HostRow): Pick<HostRow, "status" | "revokedAt" | "label"> {
+    return {
+      status: HOST_STATUS_REVOKED,
+      revokedAt: this.clock(),
+      label: current.status === HOST_STATUS_REVOKED ? current.label : revokedLabel(current),
+    };
+  }
+
+  private revoked(actor: Actor, host: HostRow) {
     this.onRevoked(host.id);
     this.auditLog.recordUserAction(
       actor,
@@ -370,7 +409,6 @@ export class HostsService {
         label: host.label,
       },
     );
-    return toHostView(host, this.clock());
   }
 
   /** A revoked host brought back takes its name again, unless another has it by now. */

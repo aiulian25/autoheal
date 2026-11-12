@@ -47,6 +47,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
     "This account's code was saved under another backup passphrase, so it cannot be checked. Use a recovery code or a passkey, or ask an admin to reset your code.",
   user_not_found: "That user does not exist any more.",
   diagnostics_full: "Diagnostic preview capacity has been reached. Wait five minutes and retry.",
+  live_streams_full:
+    "This account has as many pages showing changes live as it may. Close one, and this page joins in by itself.",
   diagnostics_expired: "This diagnostic preview expired or was downloaded. Create a fresh preview.",
   maintenance_unsupported: "Update this host’s runner before enabling maintenance.",
   install_retry_refused:
@@ -117,6 +119,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   self_update_unavailable:
     "Autoheal cannot update itself here: its container needs the Docker socket and its data volume, and the image to update to.",
   self_update_newest: "Autoheal already runs that image: there is nothing newer to update to.",
+  self_update_registry_unreachable:
+    "Its registry could not be reached, so whether a newer version is out is not known. Nothing was changed: try again later.",
   self_update_running: "An update of Autoheal is going on already.",
   self_update_recovery_blocked:
     "Autoheal cannot tell how its last update went, so it will not start another one until someone has looked at the record.",
@@ -217,6 +221,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   registry_credential_sealed:
     "This credential was sealed with another backup passphrase, so it cannot be read. Give it again.",
   integration_token_required: "Give its token: a token is needed, and a changed address needs it again.",
+  integration_address_credentials:
+    "Leave the user name and password out of the address: a token goes in its own field, and is never shown again.",
   integration_not_set: "Set it up first.",
   assistant_not_tested: "Answer a test question first.",
   host_packages_not_allowed:

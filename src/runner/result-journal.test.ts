@@ -339,6 +339,49 @@ it("resumes a host result from an interrupted reservation without launching the 
   expect(journal.count(kinds)).toBe(0);
 });
 
+it("reports a host run that outlived its runner with its own end, though a starting runner settles what was cut short", async () => {
+  const f = guardStateFixture();
+  const before = await ResultJournal.open(f.store);
+  await before.reserve("job", "host-job", "host");
+  const journal = await ResultJournal.open(f.store);
+  const finished = { succeeded: true, outcome: "finished", output: null };
+  let finish!: () => void;
+  const ending = new Promise<typeof finished>((resolve) => {
+    finish = () => resolve(finished);
+  });
+  const run = vi.fn(async () => finished);
+  const reportJobResult = vi.fn(async () => {});
+  const work = new ApprovedWork(
+    {
+      controlPlane: {
+        takeWork: async () => ({ items: [], jobs: [] }),
+        reportWorkResult: async () => {},
+        reportJobResult,
+      },
+      docker: { inspect: async () => null, containerNames: async () => new Set() },
+      executor: { carryOut: async () => outcome },
+      jobs: { run },
+      // Still going on the host when the runner came back.
+      hostJobs: { run, followable: async () => [{ jobId: "host-job", result: ending }] },
+      notify: async () => {},
+      settings: { protectedContainers: new Set() },
+    },
+    journal,
+  );
+
+  // As a runner starts: the host's runs are taken up first, then whatever else was cut short is settled.
+  await work.resumeHostRuns();
+  await journal.settleInterrupted();
+  finish();
+  await new Promise((resolve) => setImmediate(resolve));
+  await work.settled();
+  await work.flush();
+
+  expect(run).not.toHaveBeenCalled();
+  expect(reportJobResult.mock.calls).toEqual([["host-job", finished]]);
+  expect(journal.count(kinds)).toBe(0);
+});
+
 it("closes a host job left behind with no run to follow, so the host's next jobs run; a container's stays blocked", async () => {
   const f = guardStateFixture();
   const before = await ResultJournal.open(f.store);

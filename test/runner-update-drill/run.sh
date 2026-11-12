@@ -8,13 +8,15 @@ set -u
 # A path other than the default is the runner's DOCKER_SOCKET_PATH too.
 RUNNER_SOCKET="${1:-/var/run/docker.sock}"
 ENGINE_IMAGE=docker:29.9.0-dind
-OLD=autoheal:runner-drill-old
-NEW=autoheal:runner-drill-new
-CHANNEL=localhost:5000/autoheal:latest
-ENGINE=autoheal-runner-drill
-STORE=autoheal-runner-drill-store
 HERE="$(cd "$(dirname "$0")" && pwd)"
-RUN_FOLDER="$HOME/.cache/autoheal-runner-drill"
+# shellcheck source=../support/owned-cleanup.sh
+. "$HERE/../support/owned-cleanup.sh"
+OLD="autoheal:runner-drill-old-$DRILL_RUN"
+NEW="autoheal:runner-drill-new-$DRILL_RUN"
+CHANNEL=localhost:5000/autoheal:latest
+ENGINE="autoheal-runner-drill-$DRILL_RUN"
+STORE="autoheal-runner-drill-store-$DRILL_RUN"
+RUN_FOLDER="$HOME/.cache/autoheal-runner-drill-$DRILL_RUN"
 SOCKET="$RUN_FOLDER/docker.sock"
 WORK="$(mktemp -d -p "$HOME/.cache")"
 ENGINE_START_SECONDS=60
@@ -22,14 +24,11 @@ ENGINE_START_SECONDS=60
 HELPER_END_SECONDS=900
 NODE=/nodejs/bin/node
 
-cleanup() {
-  unset DOCKER_HOST
-  docker rm -f "$ENGINE" >/dev/null 2>&1
-  docker volume rm "$STORE" >/dev/null 2>&1
-  docker rmi "$OLD" "$NEW" >/dev/null 2>&1
-  rm -rf "${RUN_FOLDER:?}" "${WORK:?}"
-}
-trap cleanup EXIT
+OWN_CONTAINERS=("$ENGINE")
+OWN_VOLUMES=("$STORE")
+OWN_IMAGES=("$OLD" "$NEW")
+OWN_FOLDERS=("$RUN_FOLDER" "$WORK")
+trap remove_own EXIT
 step() { printf '\n== %s\n' "$1"; }
 fail() {
   echo "DRILL FAILED: $1" >&2
@@ -118,11 +117,14 @@ echo "job: $STATUS"
 [[ "$STATUS" == succeeded* ]] || fail "the job did not hand over"
 
 step "the helper replaces the runner, waits for it to hold, and ends"
+# It stays, stopped, so the runner's page can say how its last update went.
+helper_ended() { [[ "$(inner inspect -f '{{.State.Status}}' autoheal-self-update 2>/dev/null)" == "exited" ]]; }
 for _ in $(seq "$HELPER_END_SECONDS"); do
-  [[ -z "$(inner ps -aq --filter name=^autoheal-self-update$)" ]] && break
+  helper_ended && break
   sleep 1
 done
-[[ -z "$(inner ps -aq --filter name=^autoheal-self-update$)" ]] || fail "the helper never ended"
+helper_ended || fail "the helper never ended"
+[[ "$(inner inspect -f '{{.State.ExitCode}}' autoheal-self-update)" == "0" ]] || fail "the helper ended badly"
 inner ps -a --format '{{.Names}} {{.Image}} {{.Status}}'
 
 step "the runner is back, on the new image, run as before"
@@ -144,7 +146,7 @@ done
 SOCKET_NOW=$(inner inspect -f '{{range .Mounts}}{{if eq .Source "/fixture-run/docker.sock"}}{{.Destination}}{{end}}{{end}}' autoheal)
 [[ "$SOCKET_NOW" == "$RUNNER_SOCKET" ]] || fail "the new runner has the socket at $SOCKET_NOW, not $RUNNER_SOCKET"
 LEFT=$(inner ps -a --format '{{.Names}}' | sort | tr '\n' ' ')
-[[ "$LEFT" == "autoheal autoheal-control-plane drill-registry " ]] || fail "left behind: $LEFT"
+[[ "$LEFT" == "autoheal autoheal-control-plane autoheal-self-update drill-registry " ]] || fail "left behind: $LEFT"
 SEEN=$(query "SELECT last_heartbeat_at FROM hosts WHERE id = ?" "$HOST_ID")
 (( $(date +%s) * 1000 - SEEN < 120000 )) || fail "the new runner is not reporting"
 echo "reports again: last heartbeat $(( ($(date +%s) * 1000 - SEEN) / 1000 ))s ago"

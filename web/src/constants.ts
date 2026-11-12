@@ -307,6 +307,8 @@ export const CONTAINER_TIMELINE_SHOWN = 10;
 export const LIVE_INVENTORY_BATCH_MILLISECONDS = 250;
 // How long before the live stream connects again once the browser has given up on it, as it does on a proxy's error page.
 export const LIVE_RECONNECT_MILLISECONDS = 5_000;
+// How long a runner level with Autoheal still shows that its last update from here did not go through.
+export const RUNNER_UPDATE_SHOWN_MILLISECONDS = 24 * 60 * 60 * 1000;
 // Usage meters turn amber, then red, past these percentages.
 export const METER_WARNING_PERCENT = 75;
 export const METER_DANGER_PERCENT = 90;

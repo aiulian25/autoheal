@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INSTALL_OUTCOMES } from "../shared/constants.js";
-import { INSTALL_RECIPES, draftOf, type InstallSpec } from "../shared/install.js";
+import { COMPOSE_IMPORT, INSTALL_OUTCOMES, PROJECT_PAGE } from "../shared/constants.js";
+import { INSTALL_RECIPES, OWNED_FOLDER, draftOf, type InstallSpec } from "../shared/install.js";
 import { writeScript } from "./install-script.js";
 import { Installs, type InstallsDependencies } from "./installs.js";
 
@@ -115,7 +115,7 @@ describe("checking a new app", () => {
       "a folder taken",
       { scripts: [{ exitCode: 0, output: `${OK_CHECK.output}taken=1\n` }] },
       "folder",
-      /already holds/,
+      /already has files in it/,
     ],
     [
       "a folder it cannot write",
@@ -224,6 +224,132 @@ describe("drafting a new app", () => {
 });
 
 describe("a pasted project's page", () => {
+  it("reads none of the settings files a Compose file names past how many it reads, and says so", async () => {
+    const names = Array.from({ length: COMPOSE_IMPORT.envFilesRead + 1 }, (_, index) => `settings-${index}.env`);
+    const asked: string[] = [];
+    const read = (async (url: string) => {
+      asked.push(url);
+      return url.endsWith("/HEAD/compose.yaml")
+        ? new Response("services:\n  app:\n    image: app:1\n")
+        : new Response("", { status: 404 });
+    }) as unknown as typeof fetch;
+    const config = { services: { app: { image: "app:1", env_file: names.map((path) => ({ path })) } } };
+    const made = installs({ shell: async () => ({ exitCode: 0, output: JSON.stringify(config) }) });
+    (
+      made.subject as unknown as { dependencies: { fetchImplementation: typeof fetch } }
+    ).dependencies.fetchImplementation = read;
+
+    const answer = await made.subject.answer({
+      id: "1",
+      kind: "draft",
+      image: null,
+      recipe: null,
+      project: "https://github.com/someone/many",
+    });
+
+    expect(answer.error).toBe(COMPOSE_IMPORT.tooManySettingsFiles(names.length));
+    expect(asked.filter((url) => url.includes("/settings-"))).toEqual([]);
+  });
+
+  it.each([
+    ["one its Compose file names", "settings.env", [{ path: "settings.env" }]],
+    ["the example it keeps of its own", ".env.example", []],
+  ])(
+    "refuses a settings file longer than a preview reads, %s, rather than a start of it",
+    async (_which, file, named) => {
+      const long = "A=1\n".repeat(PROJECT_PAGE.readCharacters / 4 + 1);
+      const read = (async (url: string) => {
+        if (url.endsWith("/HEAD/compose.yaml")) return new Response("services:\n  app:\n    image: app:1\n");
+        return url.endsWith(`/HEAD/${file}`) ? new Response(long) : new Response("", { status: 404 });
+      }) as unknown as typeof fetch;
+      const config = { services: { app: { image: "app:1", env_file: named } } };
+      const made = installs({ shell: async () => ({ exitCode: 0, output: JSON.stringify(config) }) });
+      (
+        made.subject as unknown as { dependencies: { fetchImplementation: typeof fetch } }
+      ).dependencies.fetchImplementation = read;
+
+      const answer = await made.subject.answer({
+        id: "1",
+        kind: "draft",
+        image: null,
+        recipe: null,
+        project: "https://github.com/someone/long",
+      });
+
+      expect(answer.error).toBe(COMPOSE_IMPORT.settingsTooLarge);
+    },
+  );
+
+  it("refuses a project whose Compose file is longer than a preview reads, drafting nothing", async () => {
+    const long = `services:\n  app:\n    image: app:1\n# ${"x".repeat(PROJECT_PAGE.readCharacters)}\n`;
+    const read = (async (url: string) =>
+      url.endsWith("/HEAD/compose.yaml")
+        ? new Response(long)
+        : new Response("", { status: 404 })) as unknown as typeof fetch;
+    const made = installs();
+    (
+      made.subject as unknown as { dependencies: { fetchImplementation: typeof fetch } }
+    ).dependencies.fetchImplementation = read;
+
+    const answer = await made.subject.answer({
+      id: "1",
+      kind: "draft",
+      image: null,
+      recipe: null,
+      project: "https://github.com/someone/long",
+    });
+
+    expect(answer).toMatchObject({ error: COMPOSE_IMPORT.composeTooLarge, draft: null });
+  });
+
+  it("says the Compose file a person chose is gone, drafting nothing in its place", async () => {
+    const chosen = "compose.postgres.yaml";
+    const read = (async (url: string) =>
+      url.includes("api.github.com")
+        ? new Response(JSON.stringify({ tree: [{ path: "compose.yaml", type: "blob" }] }))
+        : new Response("services:\n  app:\n    image: app:1\n")) as unknown as typeof fetch;
+    const made = installs();
+    (
+      made.subject as unknown as { dependencies: { fetchImplementation: typeof fetch } }
+    ).dependencies.fetchImplementation = read;
+
+    const answer = await made.subject.answer({
+      id: "1",
+      kind: "draft",
+      image: null,
+      recipe: null,
+      project: "https://github.com/someone/flavours",
+      composeFile: chosen,
+    });
+
+    expect(answer).toMatchObject({ error: COMPOSE_IMPORT.variantGone(chosen), draft: null });
+  });
+
+  it("stops at settings files holding more together than a preview reads, and says so", async () => {
+    const big = "A=1\n".repeat((COMPOSE_IMPORT.envCharacters * 0.6) / 4);
+    const read = (async (url: string) => {
+      if (url.endsWith("/HEAD/compose.yaml")) return new Response("services:\n  app:\n    image: app:1\n");
+      return url.includes("/settings-") ? new Response(big) : new Response("", { status: 404 });
+    }) as unknown as typeof fetch;
+    const config = {
+      services: { app: { image: "app:1", env_file: [{ path: "settings-1.env" }, { path: "settings-2.env" }] } },
+    };
+    const made = installs({ shell: async () => ({ exitCode: 0, output: JSON.stringify(config) }) });
+    (
+      made.subject as unknown as { dependencies: { fetchImplementation: typeof fetch } }
+    ).dependencies.fetchImplementation = read;
+
+    const answer = await made.subject.answer({
+      id: "1",
+      kind: "draft",
+      image: null,
+      recipe: null,
+      project: "https://github.com/someone/heavy",
+    });
+
+    expect(answer.error).toBe(COMPOSE_IMPORT.settingsTooLarge);
+  });
+
   it("drafts from what its README says, and says when it finds no image", async () => {
     const readme = "docker run -p 8383:8383 -v /x:/app/data 0xfurai/peekaping:latest";
     const read = (async () => new Response(readme)) as unknown as typeof fetch;
@@ -375,6 +501,21 @@ describe("taking an app back", () => {
         outcome: INSTALL_OUTCOMES.removedWithData("App"),
       });
       expect(existsSync(folder)).toBe(false);
+    });
+
+    it("keeps an older install's folder, and what is in it, when taking the app away with its data", async () => {
+      rmSync(join(folder, OWNED_FOLDER.file));
+      writeFileSync(join(folder, "notes.txt"), "kept\n");
+      const { subject } = installs({ containers: { App: installLabels(folder) }, shell: runForReal });
+
+      expect(await subject.uninstall("App", true)).toEqual({
+        succeeded: true,
+        outcome: INSTALL_OUTCOMES.removedFolderKept("App", folder),
+      });
+
+      expect(readFileSync(join(folder, "notes.txt"), "utf8")).toBe("kept\n");
+      expect(existsSync(join(folder, "data"))).toBe(true);
+      expect(existsSync(join(folder, "docker-compose.yml"))).toBe(false);
     });
 
     it("keeps the app's folder, data included, when Compose cannot take it down, and says what Compose said", async () => {

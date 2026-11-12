@@ -133,9 +133,10 @@ const journalSchema = z.object({
   id: z.string(),
   revision: z.number(),
   kind: z.enum(["backup", "restore"]),
-  // Writing means data is half-way: nothing there may start by itself. Incomplete means the data is whole but
-  // something the restore was asked for did not happen, so it is not over and nobody should act on it alone.
-  phase: z.enum(["stopped", "writing", "incomplete"]),
+  // Only stopped may be started again by itself. Writing means data is half-way. Activating means the data is whole
+  // but what it belongs with is not in place and checked yet. Incomplete means the data is whole but something the
+  // restore was asked for did not happen. None of those is over, and nobody should act on it alone.
+  phase: z.enum(["stopped", "writing", "activating", "incomplete"]),
   stopped: z.array(
     z.object({
       id: z.string(),
@@ -253,9 +254,9 @@ export class ContainerBackups {
       const parsed = journalSchema.safeParse(JSON.parse(volume.Labels?.[CONTAINER_BACKUP.journalRecord] ?? "null"));
       if (!parsed.success) continue;
       const record = parsed.data;
-      // Half-written data, or a restore that could not finish what it was asked: both wait for a person, and both
-      // are still here to be found after this runner went down.
-      if (record.phase === "writing" || record.phase === "incomplete") {
+      // Half-written data, data not yet under what it belongs with, or a restore that could not finish what it was
+      // asked: each waits for a person, and each is still here to be found after this runner went down.
+      if (record.phase !== "stopped") {
         for (const { name } of record.stopped) this.blocked.set(name, record);
         continue;
       }
@@ -914,7 +915,14 @@ export class ContainerBackups {
     restoring: ReadonlySet<string>,
   ) {
     const { stacks, docker } = this.dependencies;
-    if (!manifest.hasSettings || stacks === null) return { changed: [] as string[], note: null, refusal: null };
+    // Projects whose files are the backup's own now, saved here or already so: Compose brings them up, as what runs may
+    // not be what those files say. A restore cut off before Compose ran left the files back and the newer container.
+    const filesBack: string[] = [];
+    // Projects whose files were to come back and did not: what they say of their containers is not what this data
+    // belongs with.
+    const refused: string[] = [];
+    const refusals: string[] = [];
+    if (!manifest.hasSettings || stacks === null) return { filesBack, refused, refusals, note: null };
     const opened = await collect((output) =>
       docker.streamCommand(helper, this.command(COPY_COMMAND.reveal), {
         input: Readable.from([Buffer.from(JSON.stringify({ folder, file: CONTAINER_BACKUP.settingsFile, identity }))]),
@@ -923,7 +931,6 @@ export class ContainerBackups {
       }),
     );
     const saved = savedSettingsSchema.parse(JSON.parse(opened.text));
-    const changed: string[] = [];
     const wider: string[] = [];
     // Said rather than assumed: nothing here puts a container's own settings back, so its image is still the one it
     // ran before this restore, which may be newer than the data now under it.
@@ -943,14 +950,18 @@ export class ContainerBackups {
         if (now === undefined || now.text === text) return [];
         return [{ path, text, hash: now.hash }];
       });
-      if (edited.length === 0) continue;
-      const answer = await stacks.answer({ kind: STACK_ASK.save, id: randomUUID(), project, files: edited });
-      if (answer.error !== null) {
-        return { changed, note: null, refusal: BACKUP_TEXT.settingsNotRestored(answer.error) };
+      const error =
+        edited.length === 0
+          ? null
+          : (await stacks.answer({ kind: STACK_ASK.save, id: randomUUID(), project, files: edited })).error;
+      if (error !== null) {
+        refused.push(project);
+        refusals.push(BACKUP_TEXT.settingsNotRestored(error));
+        continue;
       }
-      changed.push(project);
+      filesBack.push(project);
     }
-    return { changed, note: wider.length === 0 ? null : wider.join(" "), refusal: null };
+    return { filesBack, refused, refusals, note: wider.length === 0 ? null : wider.join(" ") };
   }
 
   private async restore(
@@ -1133,32 +1144,43 @@ export class ContainerBackups {
             };
           }
         }
-        // Its data is whole again. A database already started is started again harmlessly, and gets its policy back.
-        record = await this.journal({ ...record, phase: "stopped" });
-        for (const name of names) this.blocked.delete(name);
+        // Its data is whole again, but not yet under what it belongs with: a runner that stops here leaves it all
+        // stopped, as half-written data is. A database already started is started again harmlessly, and gets its
+        // policy back.
+        record = await this.journal({ ...record, phase: "activating" });
         // The backup's own Compose files are back in place, so the stack comes up from them first and its containers
         // are made again at the settings this data belongs with. What those projects own is never started as it is:
         // the image running now may be newer than the data, and starting it on these bytes could change them for
         // good. One that Compose could not bring up is left stopped, and reported below as not back.
         const byCompose = new Set(
-          stopping.filter((one) => settings.changed.includes(projectOf(one) ?? "")).map(({ name }) => name),
+          stopping.filter((one) => settings.filesBack.includes(projectOf(one) ?? "")).map(({ name }) => name),
+        );
+        // Where the files could not come back, what they say now is not what this data belongs with: those stay
+        // stopped. A database is the exception, as its own tool loaded its dump into the version that runs now.
+        const dumped = new Set(members.filter(({ member }) => member.dump !== null).map(({ current }) => current.name));
+        const heldBack = new Set(
+          stopping
+            .filter((one) => settings.refused.includes(projectOf(one) ?? "") && !dumped.has(one.name))
+            .map(({ name }) => name),
         );
         // Every part that was asked for has to say it worked. A refusal is not a remark on the side: the data is
         // back, but what was wanted is not what is there, so this restore is not finished.
-        const refusals: string[] = settings.refusal === null ? [] : [settings.refusal];
-        for (const project of settings.changed) {
+        const refusals: string[] = [...settings.refusals];
+        for (const project of settings.filesBack) {
           const up = await dependencies.stacks?.run(JOB_ACTION.stackUp, { project, removeData: false });
           if (up?.succeeded !== true) refusals.push(BACKUP_TEXT.stackNotUp(project, up?.outcome ?? ""));
         }
         // Nothing is written off as done until what came back has been looked at.
-        const failed = await startRest(byCompose, false);
+        const failed = await startRest(new Set([...byCompose, ...heldBack]), false);
         const down: string[] = [...failed];
         for (const { member } of members) {
+          if (heldBack.has(member.name)) continue;
           if (!(await this.waitUp(member.name)) && !down.includes(member.name)) down.push(member.name);
         }
         const complete = down.length === 0 && refusals.length === 0;
         if (complete) {
           await this.closeJournal(record);
+          for (const name of names) this.blocked.delete(name);
         } else {
           // It stays on record, and its containers stay Autoheal's to leave alone: a restart still finds this, and
           // a person or the next restore takes it up from here.
@@ -1170,6 +1192,7 @@ export class ContainerBackups {
           complete ? BACKUP_TEXT.restored(when) : BACKUP_TEXT.restoredNotFinished(when),
           ...(down.length === 0 ? [] : [BACKUP_TEXT.restoredNotUp(down.join(", "))]),
           ...refusals,
+          ...(heldBack.size === 0 ? [] : [BACKUP_TEXT.keptStoppedForSettings([...heldBack].join(", "))]),
           ...(settings.note === null ? [] : [settings.note]),
         ];
         return { succeeded: complete, outcome: notes.join(" "), ...recovery };

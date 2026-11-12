@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exitedContainer } from "../../test/fakes/fake-docker-engine.js";
+import { containerIdOf, exitedContainer } from "../../test/fakes/fake-docker-engine.js";
 import { guardStateFixture } from "../../test/support/guard-state.js";
 import { containerSnapshot } from "../../test/support/inventory.js";
 import {
@@ -10,13 +10,15 @@ import {
   EVENT_KILL,
   MILLISECONDS_PER_MINUTE,
   OLD_CONTAINER_SUFFIX,
+  OUTCOMES,
   RECOVERY_HOLD,
   SELF_UPDATE,
   TRIGGER_DIE,
   VERDICT_ESCALATED,
+  VERDICT_SKIPPED,
 } from "../shared/constants.js";
 import type { Decision } from "../shared/decision.js";
-import type { ContainerSnapshot, IncidentSubmission } from "../shared/protocol.js";
+import type { ContainerSnapshot, IncidentSubmission, Outcome } from "../shared/protocol.js";
 import type { ContainerSummary } from "./docker-client.js";
 import type { ContainerDetails } from "./incident-report.js";
 import { GuardState } from "./guard-state.js";
@@ -48,6 +50,7 @@ function setup(
 ) {
   const asked: IncidentSubmission[] = [];
   const actions: string[] = [];
+  const outcomes: Outcome[] = [];
   const watcher = new Watcher({
     docker: {
       inspect: async (name) => docker[name] ?? exitedContainer(name),
@@ -65,7 +68,7 @@ function setup(
         const decision: Decision = { action: ACTION_ESCALATE, target: submission.report.containerName, diagnosis: "" };
         return { incidentId: null, decision, decidedBy: DECIDED_BY.model };
       },
-      recordOutcome: async () => undefined,
+      recordOutcome: async (_submission, _decided, outcome) => void outcomes.push(outcome),
     },
     executor: {
       carryOut: async (decision) => {
@@ -82,7 +85,7 @@ function setup(
     await watcher.settled();
     return asked.map(({ report }) => [report.containerName, report.trigger]);
   };
-  return { watcher, handled, asked, actions };
+  return { watcher, handled, asked, actions, outcomes };
 }
 
 describe("a failed container's report", () => {
@@ -251,5 +254,61 @@ describe("watcher shutdown", () => {
     release();
     await watcher.settled();
     expect(actions).toEqual([]);
+  });
+});
+
+describe("a restart the model decided while it took its time", () => {
+  const ORIGINAL = containerIdOf("app");
+  // The model holds its answer until told: meanwhile the container may come back, or be replaced.
+  function heldModel() {
+    let release!: () => void;
+    let entered!: () => void;
+    const asking = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const answer = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const decide = async () => {
+      entered();
+      await answer;
+      return {
+        incidentId: "incident",
+        decidedBy: DECIDED_BY.model,
+        decision: { action: "restart", target: "app", diagnosis: "synthetic" } as Decision,
+      };
+    };
+    return { decide, asking, release };
+  }
+
+  it.each([
+    ["came back by itself", { State: { Status: "running", Running: true, ExitCode: 0, OOMKilled: false, Error: "" } }],
+    ["was replaced by another", { Id: containerIdOf("app-replacement") }],
+  ])("is not carried out once the container %s, and says so", async (_meanwhile, change) => {
+    const docker: Record<string, ContainerDetails> = { app: exitedContainer("app", { Id: ORIGINAL }) };
+    const model = heldModel();
+    const { watcher, actions, outcomes } = setup(docker, [], [], model.decide);
+    watcher.catchUp([crashed("app", 1)], NOW, null);
+    await model.asking;
+
+    docker.app = exitedContainer("app", { Id: ORIGINAL, ...change });
+    model.release();
+    await watcher.settled();
+
+    expect(actions).toEqual([]);
+    expect(outcomes).toEqual([{ outcome: OUTCOMES.decidedTooLate("app"), verdict: VERDICT_SKIPPED, executed: false }]);
+  });
+
+  it("is carried out when the same container is still down", async () => {
+    const docker: Record<string, ContainerDetails> = { app: exitedContainer("app", { Id: ORIGINAL }) };
+    const model = heldModel();
+    const { watcher, actions } = setup(docker, [], [], model.decide);
+    watcher.catchUp([crashed("app", 1)], NOW, null);
+    await model.asking;
+
+    model.release();
+    await watcher.settled();
+
+    expect(actions).toEqual(["app"]);
   });
 });

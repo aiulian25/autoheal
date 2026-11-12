@@ -11,12 +11,15 @@ import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/sec
 import { API_ROUTES, apiPath, type AuditEventView, type EnrolledHostView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, HTTP_STATUS } from "../../shared/constants.js";
 import type { ImageTrustView } from "./image-trust-service.js";
+import { trustedPublishers } from "../database/schema.js";
 import { RUNNER_ROUTES, type HeartbeatResponse } from "../../shared/protocol.js";
 
 const keyPair = () => generateKeyPairSync("ec", { namedCurve: "P-256" });
 const pemOf = (pair: ReturnType<typeof keyPair>) => pair.publicKey.export({ type: "spki", format: "pem" }).toString();
-// A pasted key keeps its own text; only the whitespace around it is settled.
+// A pasted key is kept as its public part in SPKI PEM: one pasted that way keeps its text, the whitespace settled.
 const OWNER_KEY = pemOf(keyPair()).trim();
+const privatePemOf = (pair: ReturnType<typeof keyPair>) =>
+  pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 
 describe("requiring a signed image before an update", () => {
   let controlPlane: TestControlPlane;
@@ -93,6 +96,29 @@ describe("requiring a signed image before an update", () => {
       error: "publisher_key_invalid",
     });
     expect((await view()).publishers).toEqual([]);
+  });
+
+  it("refuses a private key pasted where its public half goes, keeping nothing and saying none of it", async () => {
+    const pair = keyPair();
+
+    const refused = await addPublisher({ name: "example", publicKey: privatePemOf(pair) });
+
+    expect(refused.json()).toEqual({ error: "publisher_key_invalid" });
+    expect(refused.body).not.toContain("PRIVATE KEY");
+    expect((await view()).publishers).toEqual([]);
+  });
+
+  it("gives runners only the public half of a key a row kept from before private ones were refused", async () => {
+    const pair = keyPair();
+    controlPlane.services.databaseHandle.database
+      .insert(trustedPublishers)
+      .values({ name: "example", publicKey: privatePemOf(pair), createdBy: "admin", createdAt: 1 })
+      .run();
+
+    const given = (await heartbeat()).imageTrust?.publishers;
+
+    expect(given).toEqual([{ name: "example", publicKey: pemOf(pair).trim() }]);
+    expect((await view()).publishers[0]!.publicKey).not.toContain("PRIVATE KEY");
   });
 
   it("says what kind of key each publisher has, and never calls it a secret", async () => {

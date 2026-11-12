@@ -551,11 +551,15 @@ export const OUTCOMES = {
     `Refused to restart ${target}: an update keeps it aside for rolling back, so only a person may start it.`,
   asksFirst: (target: string) =>
     `Would restart ${target}, but its host's page says to ask you first: nothing was changed.`,
+  asksFirstFor: (target: string, failed: string) =>
+    `Would restart ${target} for ${failed}, but its host's page says to ask you first about ${failed}: nothing was changed.`,
   onlyTell: (target: string) => `${target} failed, and its host's page says only to tell you: nothing was changed.`,
   actionRunning: (target: string) =>
     `${target} was being changed by an action from the dashboard; healing stood aside and changed nothing.`,
   recovered: (container: string) =>
     `${container} was no longer broken (recovered or removed) when the approved action came up; nothing was changed.`,
+  decidedTooLate: (container: string) =>
+    `${container} was no longer broken (recovered, replaced or removed) once its restart was decided; nothing was changed.`,
   approvedBy: (username: string) => `Approved by ${username}.`,
 } as const;
 
@@ -587,6 +591,8 @@ export const RUNNER_MESSAGES = {
   // A host without Docker: its system is watched, there are no containers to look after.
   systemOnly: (host: string) => `${host}: no Docker there, so its system alone is watched`,
   systemOnlyFailed: (host: string, problem: string) => `${host}: its system could not be reported: ${problem}`,
+  // Asked before any result is sent, as an older control plane cannot take one safely: the result waits to go again.
+  resultDeliveryNeeded: "Control plane needs durable result delivery support.",
   interruptedJobsSettled: (count: number) =>
     `${count} ${count === 1 ? "job" : "jobs"} an earlier runner never finished left nothing half done: closed as unknown, so their containers can be acted on again.`,
   // Said when a runner will not start, so it must read as a sentence a person can act on, not as a dump.
@@ -617,6 +623,8 @@ export const RUNNER_MESSAGES = {
     `could not trade this runner's join code for its token yet (${problem}); trying again in ${seconds}s`,
   tokenNotKept: (problem: string) =>
     `could not keep this runner's token in Docker (${problem}): it reports until it restarts, then needs a new join code from its host's page`,
+  tokenStillWaiting: (problem: string) =>
+    `could not note this runner's token as traded in Docker (${problem}): it is kept as waiting, so a restart trades it again with the same join code`,
   lookingAgain: (name: string, action: string) => `${name}: ${action}, looking again in ${SETTLE_SECONDS}s`,
   recovered: (name: string) => `${name} recovered on its own`,
   standingAside: (name: string) => `${name}: an action from the dashboard is working on it; healing stands aside`,
@@ -643,6 +651,12 @@ export const RUNNER_MESSAGES = {
   notification: (title: string, body: string) => `${title} | ${body.replaceAll("\n\n", " | ")}`,
   // On one line: Docker ends its answers with a newline, and an update helper's last line is read as how it went.
   dockerError: (status: number, body: string) => `Docker answered HTTP ${status}: ${body.trim()}`,
+  execStreamCutShort:
+    "Docker's stream of the command's output ended part-way through a piece, so what came is not all of it",
+  dockerAnswerTooLarge: "Docker's answer was larger than any it gives, so it was cut off unread",
+  dockerLineTooLong: "A line from Docker was longer than any it sends, so its stream was closed",
+  execFrameTooLarge: "A piece of the command's output was larger than Docker sends at once, so its stream was closed",
+  commandTookTooLong: "The command took too long.",
   inventoryFailed: (error: string) => `could not list this host's containers: ${error}`,
   imagesFailed: (error: string) => `could not list this host's unused images: ${error}`,
   networksFailed: (error: string) => `could not list this host's networks: ${error}`,
@@ -800,6 +814,10 @@ export const NOT_SECRET_VALUE_PATTERN = /^(\d+|true|false|yes|no|on|off|null)$/i
 export const ENVIRONMENT_ENTRY_SEPARATOR = "=";
 export const REDACTED = "[REDACTED]";
 export const redactedEnvironmentValue = (name: string) => `[REDACTED:${name}]`;
+// A key or variable whose name says its value is a secret: `db_password`, `API_KEY`, `access-token`.
+const SECRET_NAME = String.raw`[\w.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[\w.-]*`;
+// Such a key in YAML, at the start of its line or of a list item: every line indented under it is part of its value.
+export const YAML_SECRET_KEY = new RegExp(String.raw`^(\s*(?:-\s+)?)(["']?${SECRET_NAME}["']?\s*:)(?:\s[^\n]*)?$`, "i");
 export const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
   {
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
@@ -808,9 +826,12 @@ export const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[
   { pattern: /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, replacement: `$1 ${REDACTED}` },
   { pattern: /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+):[^\s@/]+@/gi, replacement: `$1:${REDACTED}@` },
   {
-    pattern:
-      /\b([\w.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?)[\w.-]*)("?\s*[=:]\s*"?)[^\s"',;&]+/gi,
-    replacement: `$1$2${REDACTED}`,
+    // Its value bare, or quoted either way with its escapes; a quote left open runs to the end of the line.
+    pattern: new RegExp(
+      String.raw`\b(${SECRET_NAME})(["']?\s*[=:]\s*)(?:(")(?:[^"\\\n]|\\.)*"?|(')(?:[^'\n]|'')*'?|[^\s"',;&]+)`,
+      "gi",
+    ),
+    replacement: `$1$2$3$4${REDACTED}$3$4`,
   },
   { pattern: /\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}/g, replacement: "[REDACTED JWT]" },
   { pattern: /\bAKIA[0-9A-Z]{16}\b/g, replacement: REDACTED },
@@ -1312,6 +1333,13 @@ export const NETWORK_COUNTER_FILES = {
 export const KILOHERTZ_PER_MEGAHERTZ = 1000;
 export const MILLIDEGREES_PER_DEGREE = 1000;
 export const BYTES_PER_MEBIBYTE = 1024 * 1024;
+// What Autoheal reads whole from an engine: an answer, a line of its events or of a pull, a piece of a command's
+// output. Far past any a real engine sends, short of what a peer at the other end of a socket could make it hold.
+export const DOCKER_READ_LIMITS = {
+  bodyBytes: 64 * BYTES_PER_MEBIBYTE,
+  lineCharacters: BYTES_PER_MEBIBYTE,
+  frameBytes: BYTES_PER_MEBIBYTE,
+} as const;
 export const NANOCPUS_PER_CPU = 1e9;
 // The kernel's CPU period when a container has a quota but no period of its own.
 export const DEFAULT_CPU_PERIOD_MICROSECONDS = 100_000;
@@ -1423,6 +1451,16 @@ export const COMPOSE_IMPORT = {
   settingsFiles: [".env", ".env.example", "example.env", ".env.sample", "sample.env", ".env.template", ".env.dist"],
   // GitHub's own limit on what it lists for one project.
   listingCharacters: 8 * 1024 * 1024,
+  // The settings files a project's Compose file may name, read for its preview, and how much they may hold together.
+  envFilesRead: 8,
+  envCharacters: 512 * 1024,
+  tooManySettingsFiles: (count: number) =>
+    `Its Compose file names ${count} settings files, more than a preview reads. Paste a Compose file that names fewer.`,
+  settingsTooLarge: "Its settings files hold more than a preview reads. Paste a Compose file with smaller ones.",
+  variantGone: (file: string) =>
+    `The Compose file you chose, ${file}, is not in the project now. Choose one of its files again.`,
+  composeTooLarge:
+    "Its Compose file is longer than a preview reads, and a part of it could pass for a smaller project. Paste the services you want instead.",
   // A blank setting is usually an option left unused: inventing a value turns on what nobody asked for. These are the
   // secrets an app or its database cannot start without.
   neededWhenBlank:
@@ -1983,6 +2021,7 @@ export const RUNNER_TOKEN_VOLUME = {
   prefix: "autoheal-runner-",
   label: "autoheal.runner.token",
   codeHashCharacters: 16,
+  waitingSuffix: "-waiting",
 } as const;
 export const AUTOHEAL_VOLUME_PREFIXES: readonly string[] = [
   "autoheal-guard-",
@@ -2058,7 +2097,7 @@ export const OWN_COMPOSE_TEXT = {
   composeSaid: (said: string) => `Compose says: ${said}`,
   nameTaken: (project: string) => `An app named ${project} already runs on this host. Choose another name.`,
   noCompose: "This host has no docker compose to run this with.",
-  folderTaken: (folder: string) => `${folder} already has a Compose file. Choose another folder.`,
+  folderTaken: (folder: string) => `${folder} already has files in it, or is a link. Choose a new or empty folder.`,
   folderChanged: (folder: string) =>
     `The files in ${folder} are no longer what the failed install wrote, so they are left as they are. Choose another folder.`,
   memberProtected: (name: string) => `${name} is kept hands-off on this host, so its app cannot be replaced.`,
@@ -2144,12 +2183,16 @@ export const STACK_OUTCOMES = {
   tagNotChanged: (reason: string) => `The tag was not changed: ${reason}.`,
   tagMoreThanTag: "Compose read the edited files as changing more than the tag, so they were put back",
   tagNoCopy: (outcome: string) => `Its data could not be copied aside first, so nothing was changed.${outcome}`,
+  notPulled: (reference: string, reason: string) =>
+    `${reference} could not be fetched to check who published it (${reason})`,
   tagPutBack: (names: readonly string[], tag: string, problem: string) =>
     `${names.join(", ")} did not come back well on the new version (${problem}). The files, the data and the containers were put back on ${tag}.`,
-  tagPutBackDataKept: (names: readonly string[], tag: string, problem: string) =>
-    `${names.join(", ")} did not come back well on the new version (${problem}). The files and the containers were put back on ${tag}; the data was too big to copy first, so it stays as the new version left it.`,
+  tagLeftOnNew: (names: readonly string[], tag: string, problem: string) =>
+    `${names.join(", ")} did not come back well on the new version (${problem}). Its data was too big to copy first, so ${tag} was not put back over what the new version may have changed: the files stay on the new version, with the ones on ${tag} kept beside them. Fix it, or recover the data by hand before putting the last file back.`,
   tagNotPutBack: (problem: string, undo: string) =>
     `It did not come back well on the new version (${problem}), and putting it back failed too (${undo}). Look at it now.`,
+  writerStillRunning: (name: string) =>
+    `${name} was still running after the stop, so the data was left as it is and its copy is kept`,
   stopped: (project: string) => `Stopped ${project}.`,
   started: (project: string) => `Started ${project}.`,
   removed: (project: string) => `Removed ${project}. Its files and data are still on the host.`,
@@ -2244,6 +2287,10 @@ export const STOP_GRACE_SECONDS = 10;
 // "qbittorrent shares", "qbittorrent, prowlarr share".
 const sharing = (containers: readonly string[]) =>
   `${containers.join(", ")} ${containers.length === 1 ? "shares" : "share"}`;
+// The tag moved on before Docker made the new container, and no copy of the data was kept: Docker fills an empty
+// volume with its image's files as it makes a container, so the old one waits for a person.
+const BACK_STOPPED =
+  "The old container is back, stopped: Docker made the new one from another image with its volumes attached, and with no copy of its data kept, an empty volume may now hold that image's files. Look at its volumes before starting it.";
 // What a container action did, in words for the task and the person who asked.
 export const JOB_OUTCOMES = {
   // A host job an earlier runner took and never finished, with no run on the host left to follow: after a reboot, or
@@ -2294,11 +2341,15 @@ export const JOB_OUTCOMES = {
   dependentNotRecreated: (dependent: string, error: string, parked: string) =>
     ` Could not recreate ${dependent} (${error}); its old container is kept as ${parked}.`,
   dependentsStarted: (dependents: readonly string[]) => ` Started ${dependents.join(", ")} again.`,
+  dependentsWaitStopped: (dependents: readonly string[]) =>
+    ` ${sharing(dependents)} its network and ${dependents.length === 1 ? "stays" : "stay"} stopped with it.`,
   missing: (name: string) => `${name} is not on this host any more.`,
   logs: (name: string) => `The last log lines of ${name}, with secrets masked.`,
   updatesChecked: (images: number, available: number, unknown: number) =>
     `Checked ${images} images: ${available} with an update, ${unknown} that could not be checked.`,
   alreadyCurrent: (name: string) => `${name} already runs the newest image behind its tag.`,
+  notTheApprovedImage: (name: string, reference: string) =>
+    `Did not update ${name}: ${reference} now names another image than the one you said yes to. Nothing was stopped; it will be asked about again.`,
   pullFailed: (reference: string, error: string) => `Could not pull ${reference}: ${error}`,
   notThereAfterPull: "the image was not there after the pull",
   updated: (name: string, reference: string) => `Updated ${name} to the newest ${reference}, and it is running.`,
@@ -2307,10 +2358,13 @@ export const JOB_OUTCOMES = {
   updatedStopped: (name: string, reference: string) =>
     `Updated ${name} to the newest ${reference}; it stays stopped, as it was.`,
   keptImage: (kept: string) => ` The image it ran before is kept as ${kept}.`,
+  originalKept: (parked: string) =>
+    ` Autoheal could not see the container it replaced go, so it keeps the copy of its data: once you are happy with the update, remove ${parked} by hand if it is still there.`,
   tagMovedMeanwhile: (reference: string) =>
     `${reference} moved to another image after it was checked, so the new container was not started`,
   restoredAfterFailure: (name: string, error: string) =>
     `Could not update ${name} (${error}). The old container is back as it was.`,
+  restoredStopped: (name: string, error: string) => `Could not update ${name} (${error}). ${BACK_STOPPED}`,
   restoreFailed: (name: string, error: string, parked: string) =>
     `Could not update ${name} (${error}), and putting the old container back failed too. Look at ${parked} on the host.`,
   startedBadly: (name: string, problem: string, parked: string) =>
@@ -2318,9 +2372,6 @@ export const JOB_OUTCOMES = {
   // A container given to Ollama: a new version that started badly is undone at once, and the roll back says how.
   undone: (name: string, problem: string) => `Updated ${name}, but ${problem}; automatic undo was requested.`,
   rolledBack: (name: string) => `Rolled ${name} back to the container it ran before the update.`,
-  // An automatic update whose data was too big to copy first: undone, the old version reads the data as the new left it.
-  rolledBackDataKept: (name: string) =>
-    `Rolled ${name} back to the container it ran before the update. Its data was too big to copy first, so it stays as the new version left it.`,
   nothingToRollBack: (parked: string) => `There is no ${parked} to roll back to.`,
   checkpointTaken: (mounts: number, size: string) =>
     ` Its data (${mounts} ${mounts === 1 ? "mount" : "mounts"}, ${size}) was kept first: rolling back restores it.`,
@@ -2356,6 +2407,8 @@ export const EDIT_OUTCOMES = {
   changedStopped: (name: string) => `Changed the settings of ${name}; it stays stopped, as it was.`,
   restoredAfterFailure: (name: string, error: string) =>
     `Could not change the settings of ${name} (${error}). The old container is back as it was.`,
+  restoredStopped: (name: string, error: string) =>
+    `Could not change the settings of ${name} (${error}). ${BACK_STOPPED}`,
   restoreFailed: (name: string, error: string, parked: string) =>
     `Could not change the settings of ${name} (${error}), and putting the old container back failed too. Look at ${parked} on the host.`,
   startedBadly: (name: string, problem: string, parked: string) =>
@@ -2372,6 +2425,7 @@ export const RECREATE_OUTCOMES = {
   recreatedHealthy: (name: string) => `Recreated ${name} from its image, and it is running and healthy.`,
   restoredAfterFailure: (name: string, error: string) =>
     `Could not recreate ${name} (${error}). The old container is back as it was.`,
+  restoredStopped: (name: string, error: string) => `Could not recreate ${name} (${error}). ${BACK_STOPPED}`,
   restoreFailed: (name: string, error: string, parked: string) =>
     `Could not recreate ${name} (${error}), and putting the old container back failed too. Look at ${parked} on the host.`,
   startedBadly: (name: string, problem: string, parked: string) =>
@@ -2432,6 +2486,8 @@ export const VERIFY_PROBLEMS = {
   restarting: "the new container keeps restarting",
   unhealthy: "it reports unhealthy",
   slow: `it was not healthy within ${minutesOf(UPDATE_VERIFY.timeoutMilliseconds)} minutes`,
+  startUnconfirmed: (error: string) =>
+    `Docker never confirmed that the new container started (${error}), so it may already have changed its data`,
 } as const;
 // A restarted container is watched for as long as its die events count as our own restart's, healthy or not.
 export const RESTART_VERIFY = {
@@ -2600,6 +2656,10 @@ export const REGISTRY = {
   // Passed on to the token endpoint as they came.
   challengeParameters: ["service", "scope"],
   tokenFields: ["token", "access_token"],
+  // A token answer is a token or two and when they end, a few kilobytes: one near this could not go in a request header.
+  tokenBytesLimit: 64 * 1024,
+  // What an Authorization header carries as a bearer token as it is, RFC 6750's b64token.
+  bearerTokenPattern: /^[\w.~+/-]+=*$/,
   secureScheme: "https",
   // Only for a registry on a loopback address, as Docker allows.
   plainScheme: "http",
@@ -2728,6 +2788,7 @@ export const REGISTRY_MESSAGES = {
   refusedRealm: (origin: string) => `refused a token address at ${origin}`,
   tokenStatus: (status: number) => `the token request answered HTTP ${status}`,
   noToken: "the token answer had no token",
+  tokenTooLarge: "the token answer was larger than a token can be",
   badStatus: (status: number) => `the registry answered HTTP ${status}`,
   noDigest: "the registry answered without a digest",
   tooLarge: "the registry's answer was larger than a manifest can be",
@@ -2838,6 +2899,8 @@ export const AUTOHEAL_ASSESSMENT = {
 } as const;
 
 export const AUTOHEAL_TEXT = {
+  newerSinceYes: (name: string) =>
+    `A newer image of ${name} came out after the yes to the one asked about, so I left it: it will be asked about in its turn.`,
   assessedUpdate: (reason: string) => `Going ahead: ${reason}`,
   assessedHold: (reason: string) => `Holding this update for you: ${reason}`,
   awaitingAssessment: (reason: string) =>
@@ -3250,6 +3313,7 @@ export const HOME_ASSISTANT_MESSAGES = {
   lost: (reason: string) => `Home Assistant connection lost (${reason}); retrying`,
   failed: (reason: string) => `Home Assistant unreachable (${reason}); retrying`,
   notPassedOn: (reason: string) => `A Home Assistant state could not be passed on (${reason})`,
+  eventNotHandled: (reason: string) => `A Home Assistant event could not be handled (${reason})`,
   tokenRefused:
     "Home Assistant refused the token. Replace the file in HOME_ASSISTANT_TOKEN_FILE and restart; " +
     "Autoheal does not retry with a refused token, so it cannot get this address banned.",
@@ -3343,6 +3407,8 @@ export const AUDIT_ACTIONS = {
   sshKeyRemoved: "ssh_key.removed",
   hostReenrolled: "host.reenrolled",
   approvalDecided: "incident.approval_decided",
+  // A runner's outcome for an incident this database does not have, as after a restore of an older copy.
+  incidentOutcomeKept: "incident.outcome_kept",
   runbookCreated: "runbook.created",
   runbookVersionSaved: "runbook.version_saved",
   runbookPublished: "runbook.published",
@@ -4110,7 +4176,7 @@ export const INSTALL_TEXT = {
   nothingAsked: "Say which image or app to install.",
   unknownSite: "Autoheal can read GitHub projects and image pages so far. Paste the image name from that page.",
   severalImages: (images: string) =>
-    `This project runs several containers together (${images}). Pasting a Compose file is coming next; until then, paste the image of the one you want.`,
+    `This project's README names several images (${images}). Paste its whole Compose file, or the one image you want.`,
   composeOnly:
     "This project is installed with Docker Compose, but its Compose file could not be found. Paste the file here and it will be set up from that.",
   noImageFound: "Could not find an image for this project in its README. Paste its image name, if it has one.",
@@ -4120,7 +4186,7 @@ export const INSTALL_TEXT = {
     compose: (command: string) => `Compose found (${command})`,
     noCompose: "This host has no Docker Compose this user can run.",
     folder: "Folder is free",
-    folderTaken: (folder: string) => `${folder} already holds a Compose file: choose another folder.`,
+    folderTaken: (folder: string) => `${folder} already has files in it, or is a link: choose a new or empty folder.`,
     folderLocked: (place: string) =>
       `This user cannot write in ${place}: create the folder there first, or choose another.`,
     name: "Name is free",
@@ -4152,6 +4218,8 @@ export const INSTALL_OUTCOMES = {
   notRemoved: (name: string, why: string) => `Could not take ${name} away. ${why}`,
   removed: (name: string, folder: string) => `Took ${name} away. Its data is still in ${folder}.`,
   removedWithData: (name: string) => `Took ${name} and its data away.`,
+  removedFolderKept: (name: string, folder: string) =>
+    `Took ${name} away with its volumes, but kept ${folder}: it was installed before Autoheal marked the folders it made, so Autoheal cannot tell everything in it is the app's. Remove it by hand if it holds nothing else.`,
 } as const;
 // What a host shell is called where a container's name would be: "shell opened in the host for admin".
 export const HOST_TERMINAL_TARGET = "the host";
@@ -5014,6 +5082,9 @@ export const REPAIR_TEXT = {
   unusableAnswer: (reason: string) => `Ollama gave no repair (${reason}): this waits for you.`,
   // The incident was decided on, or ended, while Ollama looked into it: what was done meanwhile stands.
   changedMeanwhile: "This changed while Ollama looked into it, so its answer is set aside.",
+  // The container came back, was replaced, or stopped being Ollama's to repair while it looked into it.
+  noLongerGiven:
+    "While Ollama looked into it, the container came back, was replaced or was no longer given to it, so its answer is set aside: this waits for you.",
   tooMany: (container: string, count: number) =>
     `${container} was given ${count} repairs in the last day: this one waits for you.`,
   // What Ollama found, worded for a person: in the notification and on the incident's page.
@@ -5124,6 +5195,8 @@ export const LIVE_EVENT = { inventory: "inventory", job: "job", progress: "progr
 export const BOARD_CHANGE_CHECK_MILLISECONDS = 1000;
 export type LiveEventKind = (typeof LIVE_EVENT)[keyof typeof LIVE_EVENT];
 export const LIVE_KEEPALIVE_MILLISECONDS = 15 * 1000;
+// Live streams one account may hold at once, its tabs and devices together: each has a timer that asks the database.
+export const LIVE_STREAMS_PER_ACCOUNT = 10;
 // Application-side SSE buffers per browser, including pending HTTP output. Slow readers reconnect.
 export const SSE_BUFFER_LIMIT_BYTES = 256 * 1024;
 

@@ -69,14 +69,17 @@ export function packageUnitCommand(
     SHELL_PATH,
     runPath,
   ];
-  return [
-    "set -e",
-    "umask 077",
-    line(["mkdir", "-p", SSH_PACKAGE_RUNS.directory]),
+  const start = [
     `printf '%s' ${shellQuoted(runScript)} > ${shellQuoted(runPath)}`,
     `printf '%s' ${shellQuoted(statusScript)} > ${shellQuoted(statusPath)}`,
     line(systemdRun),
-  ].join("\n");
+  ].join(" && ");
+  // A start refused for certain, or scripts not all written, leaves nothing of this job. A session lost part-way runs
+  // nothing more, so a unit that may have started keeps the scripts it needs.
+  const refused = `{ refused=$?; ${line(["rm", "-f", "--", runPath, statusPath])}; exit "$refused"; }`;
+  return ["set -e", "umask 077", line(["mkdir", "-p", SSH_PACKAGE_RUNS.directory]), `{ ${start}; } || ${refused}`].join(
+    "\n",
+  );
 }
 
 /** Package jobs started as root over the host's session, with its saved password. */

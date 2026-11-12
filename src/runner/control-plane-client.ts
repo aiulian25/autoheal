@@ -32,6 +32,7 @@ import {
   TERMINAL_INPUT_WAIT_MILLISECONDS,
   TLS_MESSAGES,
   INSTALL_FETCH,
+  RUNNER_MESSAGES,
   type RunnerCapability,
 } from "../shared/constants.js";
 import { installDetailsSchema, type InstallAnswer, type InstallDetails } from "../shared/install.js";
@@ -460,11 +461,14 @@ export class ControlPlaneClient {
     this.resultProtocol ??= this.send("GET", RUNNER_ROUTES.resultDelivery)
       .then((reply) => {
         if ((reply as { version?: number } | null)?.version !== 1)
-          throw new Error("Control plane needs durable result delivery support.");
+          throw new Error(RUNNER_MESSAGES.resultDeliveryNeeded);
       })
       .catch((error: unknown) => {
         this.resultProtocol = null;
-        throw error;
+        // An answer about the route, never about this result: a 404 here must not read as a result refused for good.
+        throw error instanceof ControlPlaneError
+          ? new Error(RUNNER_MESSAGES.resultDeliveryNeeded, { cause: error })
+          : error;
       });
     await this.resultProtocol;
     return this.post(path, body);

@@ -138,7 +138,7 @@ export class InventoryService {
       operationPreviews: heartbeat.operationPreviews === true,
       ...(heartbeat.topology === undefined ? {} : { topologyJson: JSON.stringify(heartbeat.topology) }),
       resourcePermissions: heartbeat.resourcePermissions === true,
-      serviceProbes: heartbeat.serviceProbes === true,
+      serviceProbes: heartbeat.serviceProbes === true && heartbeat.probeAttempts === true,
       maintenanceGeneration: heartbeat.maintenanceGeneration ?? null,
       clockSkewSeconds: heartbeat.clockSkewSeconds ?? null,
       containersStaleSince,

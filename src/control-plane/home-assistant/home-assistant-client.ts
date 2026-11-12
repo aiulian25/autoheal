@@ -9,6 +9,8 @@ import {
   HTTP_SCHEME_PATTERN,
   WEBSOCKET_SCHEME,
 } from "../../shared/constants.js";
+import { describeError } from "../../shared/errors.js";
+import { log } from "../../shared/log.js";
 import type { StateEntry } from "./home-assistant-views.js";
 
 export type ReadCommand = (typeof HOME_ASSISTANT_READ_COMMANDS)[keyof typeof HOME_ASSISTANT_READ_COMMANDS];
@@ -38,6 +40,19 @@ interface Waiting {
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A state as Home Assistant gives one: its entity, its state and its attributes. Anything else is not taken in. */
+export const isStateEntry = (value: unknown): value is StateEntry =>
+  isRecord(value) &&
+  typeof value.entity_id === "string" &&
+  typeof value.state === "string" &&
+  isRecord(value.attributes);
+
+const isStateChange = (value: unknown): value is StateChange =>
+  isRecord(value) && typeof value.entity_id === "string" && (value.new_state === null || isStateEntry(value.new_state));
 
 // A frame that is not JSON (a proxy's error page) is skipped: thrown inside a socket listener, the
 // error would end the whole process.
@@ -135,7 +150,10 @@ export class HomeAssistantClient {
 
   /** Every state change from now on goes to `listener`; resolves once Home Assistant confirmed it. */
   subscribeStateChanges(listener: (change: StateChange) => void): Promise<void> {
-    return this.subscribe(HOME_ASSISTANT_STATE_CHANGED, (data) => listener(data as StateChange));
+    // A change that is not one (no data, or no state where there should be) is left out, not taken in half.
+    return this.subscribe(HOME_ASSISTANT_STATE_CHANGED, (data) => {
+      if (isStateChange(data)) listener(data);
+    });
   }
 
   /** Each event of this type from now on goes to `listener`; resolves once Home Assistant confirmed it. */
@@ -179,7 +197,12 @@ export class HomeAssistantClient {
       return;
     }
     if (message.type === HOME_ASSISTANT_MESSAGE.event) {
-      this.listeners.get(message.id)?.(message.event?.data);
+      // What a listener does never reaches the socket: thrown there, it would end the whole process.
+      try {
+        this.listeners.get(message.id)?.(message.event?.data);
+      } catch (error) {
+        log(HOME_ASSISTANT_MESSAGES.eventNotHandled(describeError(error)));
+      }
       return;
     }
     const waiting = this.waiting.get(message.id);

@@ -43,8 +43,17 @@ const storedSchema = z.object({
 
 // Discord and Slack put a webhook's key in its address, so the address is kept sealed and shown up to its host.
 const isSecretAddress = (kind: IntegrationKind) => kind === INTEGRATION_KIND.webhook;
+const hasUserPart = (address: URL) => address.username !== "" || address.password !== "";
+// One the .env or an earlier version holds may still carry a user and password: they are never shown or recorded.
+function withoutUserPart(url: string) {
+  const address = new URL(url);
+  if (!hasUserPart(address)) return url;
+  address.username = "";
+  address.password = "";
+  return address.href;
+}
 const shownAddress = (kind: IntegrationKind, url: string) =>
-  isSecretAddress(kind) ? `${new URL(url).origin}${HIDDEN_ADDRESS_REST}` : url;
+  isSecretAddress(kind) ? `${new URL(url).origin}${HIDDEN_ADDRESS_REST}` : withoutUserPart(url);
 
 /** What the .env sets: it wins, and the dashboard may not change it. */
 export interface IntegrationOverrides {
@@ -151,6 +160,9 @@ export class IntegrationsService {
 
   save(actor: Actor, kind: IntegrationKind, request: IntegrationRequest) {
     this.refuseIfFromEnvironment(kind);
+    if (hasUserPart(new URL(request.url))) {
+      throw new DomainError(API_ERRORS.integrationAddressCredentials);
+    }
     const stored = this.opened(kind);
     const kept = stored !== null && stored.url === request.url ? stored.token : null;
     const token = request.token ?? kept;

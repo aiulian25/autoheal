@@ -373,6 +373,7 @@ export async function createRuntime(
     settings: config,
     wait: sleep,
     clock: Date.now,
+    provenance: provenanceSource,
   });
   const installs = new Installs({
     docker,
@@ -848,6 +849,7 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
       hostTerminal: runtime.config.hostTerminal,
       hostDeploy: runtime.config.hostDeploy,
       serviceProbes: true,
+      probeAttempts: true,
       ...(runtime.serviceProbes.reports.length === 0 ? {} : { probeResults: runtime.serviceProbes.reports }),
       ...(driftReport === null ? {} : { stackDrift: driftReport }),
       ...(clockOffSeconds === null ? {} : { clockSkewSeconds: clockOffSeconds }),
@@ -1032,6 +1034,9 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
   await runtime.shutdownJournal.settleReboots();
   await runtime.shutdownJournal.settleUntouched();
   await runtime.shutdownJournal.assertClean();
+  // Reacquire host-operation exclusion before events, healing or newly delivered work can run, and before what was cut
+  // short is settled: a host run still going is followed to its own end, not given one first.
+  await runtime.approvedWork?.resumeHostRuns();
   // Nothing is half done now: what jobs an earlier runner never finished no longer hold their containers.
   await runtime.results.settleInterrupted();
   log(
@@ -1042,8 +1047,6 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
       config.controlPlane?.url ?? RUNNER_MESSAGES.standalone,
     ),
   );
-  // Reacquire host-operation exclusion before events, healing or newly delivered work can run.
-  await runtime.approvedWork?.resumeHostRuns();
   const stopping = new AbortController();
   const watching = watchEvents(runtime, stopping.signal);
   // Shells and files only where this host's .env lets people reach inside its containers.

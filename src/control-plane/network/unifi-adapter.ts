@@ -3,8 +3,10 @@ import { connect, type ConnectionOptions } from "node:tls";
 import { Agent, request as httpsRequest, type RequestOptions } from "node:https";
 import type { Duplex } from "node:stream";
 import { z } from "zod";
+import { BYTES_PER_MEBIBYTE } from "../../shared/constants.js";
 import { describeError } from "../../shared/errors.js";
 import {
+  NETWORK_TEXT,
   ROUTER_CAPABILITY,
   ROUTER_DEVICE_KIND,
   type RouterCapability,
@@ -34,6 +36,10 @@ const STATUS_UNAUTHORIZED = 401;
 const MILLISECONDS_IN_SECOND = 1_000;
 const CSRF_HEADER = "x-csrf-token";
 const HTTPS_PORT = 443;
+// What one answer may take, from asking to its last byte, and hold: a router that keeps sending is let go all the same.
+export const UNIFI_ANSWER_LIMITS = { milliseconds: REQUEST_TIMEOUT_MILLISECONDS, bytes: 16 * BYTES_PER_MEBIBYTE };
+
+type RouterAnswer = { status: number; headers: Record<string, string | string[] | undefined>; text: string };
 
 /**
  * The certificate an address shows, and nothing else: the connection is closed the moment it is read, with no request
@@ -50,7 +56,7 @@ export function routerCertificate(url: string): Promise<string> {
       rejectUnauthorized: false,
       timeout: REQUEST_TIMEOUT_MILLISECONDS,
     });
-    socket.once("timeout", () => socket.destroy(new Error("The router took too long to answer.")));
+    socket.once("timeout", () => socket.destroy(new Error(NETWORK_TEXT.routerTooSlow)));
     socket.once("error", reject);
     socket.once("secureConnect", () => {
       const fingerprint = socket.getPeerX509Certificate()?.fingerprint256;
@@ -172,29 +178,29 @@ export class UnifiAdapter implements RouterAdapter {
   private readonly agent: PinningAgent;
   private cookie: string | null = null;
   private csrf: string | null = null;
+  private readonly asking = new Set<(error: Error) => void>();
 
-  constructor(private readonly connection: { url: string; username: string; password: string; pin: string | null }) {
+  constructor(
+    private readonly connection: { url: string; username: string; password: string; pin: string | null },
+    private readonly limits = UNIFI_ANSWER_LIMITS,
+  ) {
     this.agent = new PinningAgent(connection.pin);
   }
 
-  private send(
-    method: "GET" | "POST",
-    path: string,
-    body?: object,
-  ): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; text: string }> {
+  private send(method: "GET" | "POST", path: string, body?: object): Promise<RouterAnswer> {
     const isSpeedTest = path === SPEED_TEST_PATH && (body as { cmd?: string } | undefined)?.cmd === SPEED_TEST_COMMAND;
     if (method !== "GET" && path !== LOGIN_PATH && !isSpeedTest) {
       return Promise.reject(new Error(`Autoheal only reads from the router: refused ${method} ${path}`));
     }
     const target = new URL(path, this.connection.url);
     const payload = body === undefined ? null : JSON.stringify(body);
-    return new Promise((resolve, reject) => {
+    let stop: (error: Error) => void = () => undefined;
+    const answered = new Promise<RouterAnswer>((resolve, reject) => {
       const request = httpsRequest(
         target,
         {
           method,
           agent: this.agent,
-          timeout: REQUEST_TIMEOUT_MILLISECONDS,
           headers: {
             accept: "application/json",
             ...(payload === null ? {} : { "content-type": "application/json" }),
@@ -204,7 +210,12 @@ export class UnifiAdapter implements RouterAdapter {
         },
         (response) => {
           const chunks: Buffer[] = [];
-          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          let held = 0;
+          response.on("data", (chunk: Buffer) => {
+            held += chunk.length;
+            if (held > this.limits.bytes) stop(new Error(NETWORK_TEXT.routerAnswerTooLarge));
+            else chunks.push(chunk);
+          });
           response.on("end", () =>
             resolve({
               status: response.statusCode ?? 0,
@@ -215,9 +226,19 @@ export class UnifiAdapter implements RouterAdapter {
           response.on("error", reject);
         },
       );
-      request.on("timeout", () => request.destroy(new Error("The router took too long to answer.")));
+      // Wherever it has got to, still connecting or partway through the answer: it ends here, with its connection.
+      stop = (error) => {
+        request.destroy(error);
+        reject(error);
+      };
       request.on("error", reject);
       request.end(payload ?? undefined);
+    });
+    const deadline = setTimeout(() => stop(new Error(NETWORK_TEXT.routerTooSlow)), this.limits.milliseconds);
+    this.asking.add(stop);
+    return answered.finally(() => {
+      clearTimeout(deadline);
+      this.asking.delete(stop);
     });
   }
 
@@ -243,7 +264,7 @@ export class UnifiAdapter implements RouterAdapter {
       answer = await this.send("GET", path);
     }
     if (answer.status < STATUS_OK_FROM || answer.status > STATUS_OK_TO) {
-      throw new Error(`The router answered ${answer.status} for ${path}`);
+      throw new Error(NETWORK_TEXT.routerAnswered(answer.status, path));
     }
     const parsed = JSON.parse(answer.text) as { data?: unknown };
     return parsed.data ?? parsed;
@@ -333,7 +354,12 @@ export class UnifiAdapter implements RouterAdapter {
 
   async startSpeedTest(): Promise<boolean> {
     const answer = await this.send("POST", SPEED_TEST_PATH, { cmd: SPEED_TEST_COMMAND });
-    return !STATUS_REFUSED.has(answer.status) && answer.status >= STATUS_OK_FROM && answer.status <= STATUS_OK_TO;
+    if (STATUS_REFUSED.has(answer.status)) return false;
+    // Any other failure is the router's own trouble, no answer either way.
+    if (answer.status < STATUS_OK_FROM || answer.status > STATUS_OK_TO) {
+      throw new Error(NETWORK_TEXT.routerAnswered(answer.status, SPEED_TEST_PATH));
+    }
+    return true;
   }
 
   /** Tries every read, once, and says what each found and what the router is: what a person is shown before saving. */
@@ -365,5 +391,9 @@ export class UnifiAdapter implements RouterAdapter {
       }),
     ];
     return { name: found.router?.name ?? null, version: found.router?.version ?? null, capabilities };
+  }
+
+  cancel() {
+    for (const stop of this.asking) stop(new Error(NETWORK_TEXT.routerReadStopped));
   }
 }

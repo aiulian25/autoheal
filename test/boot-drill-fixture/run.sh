@@ -9,21 +9,19 @@ ENGINE_IMAGE=docker:29.9.0-dind
 BASE_IMAGE=docker:29.9.0-cli
 export HELPER_IMAGE="${HELPER_IMAGE:-autoheal:dev-latest}"
 export REAL_IMAGE="${REAL_IMAGE:-}"
-ENGINE=autoheal-boot-fixture
-STORE=autoheal-boot-fixture-store
 HERE="$(cd "$(dirname "$0")" && pwd)"
-RUN_FOLDER="$HOME/.cache/autoheal-boot-fixture"
+# shellcheck source=../support/owned-cleanup.sh
+. "$HERE/../support/owned-cleanup.sh"
+ENGINE="autoheal-boot-fixture-$DRILL_RUN"
+STORE="autoheal-boot-fixture-store-$DRILL_RUN"
+RUN_FOLDER="$HOME/.cache/autoheal-boot-fixture-$DRILL_RUN"
 SOCKET="$RUN_FOLDER/docker.sock"
 WORK="$(mktemp -d)"
 ENGINE_START_SECONDS=60
-
-cleanup() {
-  unset DOCKER_HOST
-  docker rm -f "$ENGINE" >/dev/null 2>&1
-  docker volume rm "$STORE" >/dev/null 2>&1
-  rm -rf "${RUN_FOLDER:?}" "${WORK:?}"
-}
-trap cleanup EXIT
+OWN_CONTAINERS=("$ENGINE")
+OWN_VOLUMES=("$STORE")
+OWN_FOLDERS=("$RUN_FOLDER" "$WORK")
+trap remove_own EXIT
 
 mkdir -p "$RUN_FOLDER"
 docker run -d --name "$ENGINE" --privileged --network none --label com.autoheal.helper=true \

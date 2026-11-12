@@ -41,8 +41,11 @@ export interface AvailabilityDependencies {
   replica: (hostId: string, containerName: string) => ReplicaFacts;
   /** Why a check does not show a replica serving; null when it does. Fresh evidence only, since the moment given. */
   probeProblem: (probeId: string, since: number) => string | null;
-  /** What every operation already under way takes down: open reboot plans and rollouts alike. */
-  underWay: () => readonly AffectedReplicas[];
+  /**
+   * What every operation already under way takes down: open reboot plans and rollouts alike. `asker`, the operation
+   * asking now, is left out: what it takes down at this step is what it asks about, not all it ever will.
+   */
+  underWay: (asker?: string) => readonly AffectedReplicas[];
   clock: () => number;
 }
 
@@ -69,8 +72,8 @@ export class AvailabilityGroupsService {
   }
 
   /** Every group with what the fleet sees of each replica now, and what would remain after what is under way. */
-  views(asking: AffectedReplicas = {}): AvailabilityGroupView[] {
-    const underWay = this.dependencies.underWay();
+  views(asking: AffectedReplicas = {}, asker?: string): AvailabilityGroupView[] {
+    const underWay = this.dependencies.underWay(asker);
     return this.rows().map((group) => {
       const members = this.membersOf(group.id);
       const standings = members.map((member) =>
@@ -98,8 +101,8 @@ export class AvailabilityGroupsService {
    * Why an operation may not go ahead: the first group it would leave short. Asked at review and again immediately
    * before the operation, so a membership or a health change between the two is caught.
    */
-  problemFor(asking: AffectedReplicas): string | null {
-    for (const group of this.views(asking)) {
+  problemFor(asking: AffectedReplicas, asker?: string): string | null {
+    for (const group of this.views(asking, asker)) {
       const touched = group.standings.some(({ goingDown }) => goingDown);
       if (!touched) continue;
       const problem = availabilityProblem(group);

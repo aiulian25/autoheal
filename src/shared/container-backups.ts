@@ -304,6 +304,8 @@ export const BACKUP_TEXT = {
     `The restore did not finish: ${reason}. ${names} stay stopped rather than start on half-written data. Try it again, or restore the backup taken just before it.`,
   restoreRefused: (reason: string) => `Nothing was changed: ${reason}`,
   settingsNotRestored: (reason: string) => `The data is back, but its Compose files were left as they are: ${reason}`,
+  keptStoppedForSettings: (names: string) =>
+    `${names} stay stopped rather than start under settings this data does not belong with. Put the files right and restore again, or start them by hand if the version they run suits this data.`,
   // A Compose file says what every service of its stack is, so putting one back and bringing the stack up would
   // recreate the rest from it, on data this restore never looked at and nobody asked about.
   // A container of no stack keeps its settings in Docker, not in a file Autoheal can put back. Its data comes back

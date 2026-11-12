@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
+import type { ServerResponse } from "node:http";
 import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 
 const fixture = (name: string) => readFileSync(`test/fixtures/tls/${name}`);
 const API = "/proxy/network/api/s/default";
+export const FAKE_UNIFI_CLIENTS_PATH = `${API}/stat/sta`;
 export const FAKE_UNIFI_LOGIN = { username: "autoheal-read", password: "a-fake-router-password" };
+// Far inside any wait between two bytes, so only a limit on the whole answer ends one.
+const TRICKLE_MILLISECONDS = 20;
 
 /** A UniFi OS router, as much of its API as Autoheal reads, over real TLS. */
 export class FakeUnifi {
@@ -15,6 +19,9 @@ export class FakeUnifi {
   rules: object[] | null = [];
   forwards: object[] | null = [];
   speedTestStatus = 200;
+  // Paths answered a space at a time and never finished, for as long as the asker keeps listening.
+  readonly trickled = new Set<string>();
+  private trickling = 0;
   private sessions = new Set<string>();
   private server!: Server;
 
@@ -31,6 +38,10 @@ export class FakeUnifi {
           const path = request.url ?? "";
           fake.requests.push({ method: request.method ?? "", path, body });
           const { status, data, headers } = fake.answer(request.method ?? "", path, body, request.headers.cookie);
+          if (fake.trickled.has(path)) {
+            fake.trickle(response, status);
+            return;
+          }
           response.writeHead(status, { "content-type": "application/json", ...headers });
           response.end(JSON.stringify(data));
         });
@@ -60,13 +71,28 @@ export class FakeUnifi {
 
   private rowsOf(path: string): object[] | null {
     const rows: Record<string, object[] | null> = {
-      [`${API}/stat/sta`]: this.clients,
+      [FAKE_UNIFI_CLIENTS_PATH]: this.clients,
       [`${API}/stat/device`]: this.devices,
       [`${API}/stat/health`]: this.health,
       [`${API}/rest/firewallrule`]: this.rules,
       [`${API}/rest/portforward`]: this.forwards,
     };
     return rows[path] ?? null;
+  }
+
+  private trickle(response: ServerResponse, status: number) {
+    response.writeHead(status, { "content-type": "application/json" });
+    this.trickling += 1;
+    const drip = setInterval(() => response.write(" "), TRICKLE_MILLISECONDS);
+    response.once("close", () => {
+      clearInterval(drip);
+      this.trickling -= 1;
+    });
+  }
+
+  // Trickled answers still open: one its asker let go of is closed, and counts no more.
+  openAnswers() {
+    return this.trickling;
   }
 
   endSessions() {

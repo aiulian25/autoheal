@@ -64,6 +64,10 @@ export function registerHostsRoutes(
     hostsService.revoke(actorOf(request), parseBody(hostParameters, request.params).hostId),
   );
 
+  app.post(API_ROUTES.hostCancelEnrollment, adminOnly, async (request) =>
+    hostsService.cancelEnrollment(actorOf(request), parseBody(hostParameters, request.params).hostId),
+  );
+
   app.get(API_ROUTES.localHost, async () => hostsService.localHost(JOIN_DIRECTORY));
 
   // This machine's revoked host: looked after in place, or by its runner container.

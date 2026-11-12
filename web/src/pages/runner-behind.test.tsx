@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { API_ROUTES, apiPath, type HostView, type SessionView } from "../../../src/shared/api.js";
 import { JOB_ACTION, RUNNER_UPDATE_REPORT } from "../../../src/shared/constants.js";
-import { RUNNER_UPDATE_COMMAND, SESSION_QUERY_KEY, TEXT } from "../constants.js";
+import { RUNNER_UPDATE_COMMAND, RUNNER_UPDATE_SHOWN_MILLISECONDS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { timeAgo } from "../format.js";
 import { settingsQuery } from "../queries.js";
 import { RunnerBehind } from "./runner-behind.js";
@@ -84,6 +84,30 @@ it("offers the button to admins only; anyone still sees the runner is behind", (
 
   expect(screen.getByText(text.runnerBehind("1.0.0+old", "1.2.0+new"))).toBeTruthy();
   expect(screen.queryByRole("button", { name: text.updateRunner })).toBeNull();
+});
+
+it("keeps an update's watch, then how it went, once the runner is level, offering no other update", () => {
+  show("1.2.0+new", "admin", { state: RUNNER_UPDATE_REPORT.state.running, finishedAt: null, message: null });
+  expect(screen.getByText(text.runnerUpdating)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: text.updateRunner })).toBeNull();
+  expect(screen.queryByText(text.runnerBehind("1.2.0+new", "1.2.0+new"))).toBeNull();
+  cleanup();
+
+  const finishedAt = Date.now() - 5 * 60_000;
+  const said = "The new version started, but its health check did not pass in time.";
+  show("1.2.0+new", "admin", { state: RUNNER_UPDATE_REPORT.state.failed, finishedAt, message: said });
+  expect(screen.getByText(text.runnerUpdateFailed(said))).toBeTruthy();
+  expect(screen.queryByRole("button", { name: text.updateRunner })).toBeNull();
+  cleanup();
+
+  show("1.2.0+new", "admin", { state: RUNNER_UPDATE_REPORT.state.succeeded, finishedAt, message: "Updated." });
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("lets a level runner's failed update from long ago go", () => {
+  const finishedAt = Date.now() - RUNNER_UPDATE_SHOWN_MILLISECONDS - 60_000;
+  show("1.2.0+new", "admin", { state: RUNNER_UPDATE_REPORT.state.failed, finishedAt, message: "Long ago." });
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 it("says nothing when the runner already runs Autoheal's release", () => {

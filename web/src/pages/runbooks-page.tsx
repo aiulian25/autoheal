@@ -207,10 +207,15 @@ export function RunbooksPage() {
   );
 }
 
+// One runbook's page at a time: a draft, and a save on its way, belong to the runbook they were made for.
 export function RunbookDetailPage() {
+  const { runbookId = "" } = useParams();
+  return <RunbookDetail key={runbookId} runbookId={runbookId} />;
+}
+
+function RunbookDetail({ runbookId }: { runbookId: string }) {
   const session = useSignedInSession();
   const asking = useAskInPlace();
-  const { runbookId = "" } = useParams();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [draft, setDraft] = useState<string | null>(null);

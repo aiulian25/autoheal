@@ -44,6 +44,8 @@ import { joinCodesMigration } from "./0070-join-codes.js";
 import { clockOffsetMigration } from "./0071-clock-offset.js";
 import { runnerUpdateMigration } from "./0072-runner-update.js";
 import { jarvisQuestionsMigration } from "./0073-jarvis-questions.js";
+import { jobExpectedDigestMigration } from "./0074-job-expected-digest.js";
+import { jarvisAnswerLineMigration } from "./0075-jarvis-answer-line.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -154,6 +156,8 @@ export const MIGRATIONS: readonly Migration[] = [
   clockOffsetMigration,
   runnerUpdateMigration,
   jarvisQuestionsMigration,
+  jobExpectedDigestMigration,
+  jarvisAnswerLineMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

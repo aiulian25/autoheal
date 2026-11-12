@@ -1,5 +1,6 @@
 import { createSocket } from "node:dgram";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FAKE_UNIFI_CLIENTS_PATH, FAKE_UNIFI_LOGIN, FakeUnifi } from "../../../test/fakes/fake-unifi.js";
 import {
   CHECK_RESULT,
   INTERNET_PROBE_EVERY_MILLISECONDS,
@@ -9,10 +10,12 @@ import {
 } from "../../shared/network.js";
 import { DatabaseHandle } from "../database/connection.js";
 import { migrate } from "../database/migrations/index.js";
+import { RestoreCoordinator } from "../database/restore-coordinator.js";
 import { NetworkReview } from "./network-review.js";
 import { NetworkStore } from "./network-store.js";
 import { NetworkWatch } from "./network-watch.js";
 import type { ExposureSnapshot, InternetHealth, RouterAdapter, RouterClient } from "./router-adapter.js";
+import { UnifiAdapter, routerCertificate } from "./unifi-adapter.js";
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -22,6 +25,8 @@ const HOUR_MILLISECONDS = 60 * 60 * 1000;
 const NAS = "00:00:5e:00:53:01";
 const PHONE = "00:00:5e:00:53:02";
 const PRIVATE_PHONE = "02:00:00:00:00:03";
+// Far past the stop a restore asks for, far short of the router's own time to answer.
+const RESTORE_WAIT_MILLISECONDS = 2_000;
 
 const client = (mac: string, overrides: Partial<RouterClient> = {}): RouterClient => ({
   mac,
@@ -49,11 +54,15 @@ describe("the network watch", () => {
   let reachable: boolean;
   let startSpeedTest: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
   let outside: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+  let clientReads: number;
+  let answering: Promise<void>;
   let watch: NetworkWatch;
 
   const adapter: RouterAdapter = {
     capabilities: async () => ({ name: null, version: null, capabilities: [] }),
     clients: async () => {
+      clientReads += 1;
+      await answering;
       if (!reachable) throw new Error("no route to the router");
       return clients;
     },
@@ -61,7 +70,30 @@ describe("the network watch", () => {
     internet: async () => internet,
     exposure: async () => exposure,
     startSpeedTest: () => startSpeedTest(),
+    cancel: () => undefined,
   };
+
+  // Reading what `reader` gives, which is a new connection whenever the router's settings change.
+  const watchReading = (reader: () => RouterAdapter) =>
+    new NetworkWatch({
+      store,
+      settings: {
+        adapter: reader,
+        contract: () => contract,
+        routerHost: () => ROUTER,
+        view: () => ({
+          configured: true,
+          kind: "unifi",
+          url: `https://${ROUTER}`,
+          username: "read",
+          certificate: null,
+          contract,
+        }),
+      },
+      clock: () => now,
+      ownCheck: () => outside(),
+      logPort: 5514,
+    });
 
   const tick = async (minutes = 1) => {
     now += minutes * MINUTE;
@@ -80,25 +112,9 @@ describe("the network watch", () => {
     reachable = true;
     startSpeedTest = vi.fn(async () => true);
     outside = vi.fn(async () => true);
-    watch = new NetworkWatch({
-      store,
-      settings: {
-        adapter: () => adapter,
-        contract: () => contract,
-        routerHost: () => ROUTER,
-        view: () => ({
-          configured: true,
-          kind: "unifi",
-          url: `https://${ROUTER}`,
-          username: "read",
-          certificate: null,
-          contract,
-        }),
-      },
-      clock: () => now,
-      ownCheck: () => outside(),
-      logPort: 5514,
-    });
+    clientReads = 0;
+    answering = Promise.resolve();
+    watch = watchReading(() => adapter);
   });
 
   afterEach(() => {
@@ -169,6 +185,44 @@ describe("the network watch", () => {
     expect(watch.judging).toBe(false);
     expect(watch.overview().problem).toContain("no route");
     expect(watch.overview().internet.outages).toBe(0);
+  });
+
+  it("polls once at a time: a minute that finds the last poll still reading lets it be", async () => {
+    let answer: () => void = () => undefined;
+    answering = new Promise<void>((resolve) => {
+      answer = () => resolve();
+    });
+    const first = tick();
+    const second = tick();
+    expect(clientReads).toBe(1);
+    answer();
+    await Promise.all([first, second]);
+    await tick();
+    expect(clientReads).toBe(2);
+  });
+
+  it("lets a restore begin at once, stopping a poll the router is slow to finish, and reads afresh after", async () => {
+    const router = await FakeUnifi.start();
+    try {
+      const pin = await routerCertificate(router.url());
+      const coordinator = new RestoreCoordinator();
+      const reader = new UnifiAdapter({ url: router.url(), ...FAKE_UNIFI_LOGIN, pin });
+      const slow = coordinator.wrap(watchReading(() => reader));
+      coordinator.onPause(() => slow.cancelPoll());
+      router.trickled.add(FAKE_UNIFI_CLIENTS_PATH);
+      const polled = slow.tick();
+      await vi.waitFor(() => expect(router.openAnswers()).toBe(1));
+      await expect(coordinator.exclusive(async () => "restored", RESTORE_WAIT_MILLISECONDS)).resolves.toBe("restored");
+      await polled;
+      await vi.waitFor(() => expect(router.openAnswers()).toBe(0));
+      expect(slow.judging).toBe(false);
+      router.trickled.clear();
+      now += MINUTE;
+      await slow.tick();
+      expect(slow.judging).toBe(true);
+    } finally {
+      await router.close();
+    }
   });
 
   it("tells of an outage only once it has lasted", async () => {
@@ -243,6 +297,42 @@ describe("the network watch", () => {
     await tick(DAY / MINUTE);
     expect(startSpeedTest).toHaveBeenCalledTimes(1);
     expect(watch.internet().speedTestRefused).toBe(true);
+  });
+
+  it("asks again when next due after failing to ask, and holds only the router's own no", async () => {
+    contract = { downMbps: 1_000, upMbps: 50 };
+    internet = { ...internet, busyMbps: 1 };
+    startSpeedTest.mockRejectedValueOnce(new Error("no route to the router"));
+    await tick(DAY / MINUTE);
+    expect(startSpeedTest).toHaveBeenCalledTimes(1);
+    expect(watch.internet().speedTestRefused).toBe(false);
+    // Not at once: when the next test is due.
+    await tick();
+    expect(startSpeedTest).toHaveBeenCalledTimes(1);
+    startSpeedTest.mockResolvedValue(false);
+    await tick(DAY / MINUTE);
+    expect(startSpeedTest).toHaveBeenCalledTimes(2);
+    expect(watch.internet().speedTestRefused).toBe(true);
+    await tick(DAY / MINUTE);
+    expect(startSpeedTest).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks afresh once the router's settings change, after a refusal", async () => {
+    contract = { downMbps: 1_000, upMbps: 50 };
+    internet = { ...internet, busyMbps: 1 };
+    let current = adapter;
+    const changing = watchReading(() => current);
+    startSpeedTest.mockResolvedValue(false);
+    now += DAY;
+    await changing.tick();
+    expect(changing.internet().speedTestRefused).toBe(true);
+
+    const replaced = vi.fn(async () => true);
+    current = { ...adapter, startSpeedTest: replaced };
+    expect(changing.internet().speedTestRefused).toBe(false);
+    now += DAY;
+    await changing.tick();
+    expect(replaced).toHaveBeenCalledTimes(1);
   });
 
   it("does not hold a test's own traffic against it, by how quiet the line was just before", async () => {

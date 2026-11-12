@@ -169,13 +169,12 @@ export class ApprovedWork {
    * with no run to follow is reported failed, saying why: kept open, it would hold up every host job after it.
    */
   async resumeHostRuns() {
-    const runs = await this.dependencies.hostJobs.followable();
-    for (const run of runs) {
-      await this.results.reserve("job", run.jobId);
+    for (const run of await this.dependencies.hostJobs.followable()) {
+      await this.results.follow("job", run.jobId, HOST_TARGET);
       this.reportWhenDone(run.jobId, run.result, true);
     }
-    const followed = new Set(runs.map(({ jobId }) => jobId));
-    for (const jobId of this.results.unfinished(HOST_TARGET).filter((id) => !followed.has(id))) {
+    for (const jobId of this.results.unfinished(HOST_TARGET)) {
+      await this.results.follow("job", jobId, HOST_TARGET);
       const interrupted = { succeeded: false, outcome: JOB_OUTCOMES.interruptedByRestart, output: null };
       this.reportWhenDone(jobId, Promise.resolve(interrupted), true);
     }

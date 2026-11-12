@@ -95,6 +95,11 @@ export const INSTALLED_LINE = `${INSTALL_LABEL}: "true"`;
 export const CONTAINER_NAME_KEY = "container_name";
 export const COMPOSE_FILE = "docker-compose.yml";
 export const ENV_FILE = ".env";
+// Left in a folder that was new or empty when Autoheal installed into it: only then is all of it the app's to remove.
+export const OWNED_FOLDER = {
+  file: ".autoheal-folder",
+  text: "Autoheal installed an app into this folder while it was empty. Taking it away with its data removes the folder.",
+} as const;
 const DATABASE_SERVICE_SUFFIX = "-db";
 const DATABASE_NAME_SUFFIX = "-DB";
 const DATABASE_DATA = { source: "./db", target: "/var/lib/postgresql/data" };
@@ -368,6 +373,10 @@ export type ProjectPage =
   | { kind: "found"; hints: ProjectHints }
   | { kind: "guess"; candidates: string[] }
   | { kind: "composeOnly" }
+  // Its Compose file is longer than a preview reads: no part of it is taken for the whole.
+  | { kind: "composeTooLarge" }
+  // The Compose file a person chose is not in the project now: no other is taken in its place.
+  | { kind: "variantGone"; file: string }
   | { kind: "compose"; text: string; files: string[]; file: string; folder: string; owner: string; name: string }
   | { kind: "severalImages"; images: string[] }
   | { kind: "unknownSite" };

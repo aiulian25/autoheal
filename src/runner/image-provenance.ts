@@ -1,5 +1,5 @@
 import { createPublicKey, verify, type KeyObject } from "node:crypto";
-import { IMAGE_PROVENANCE, PROVENANCE_MESSAGES } from "../shared/constants.js";
+import { DIGEST_SEPARATOR, IMAGE_PROVENANCE, PROVENANCE_MESSAGES } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
 import {
   PROVENANCE_STATUS,
@@ -124,14 +124,26 @@ export class ImageProvenanceReader {
     if (artifacts === null || artifacts.length === 0) {
       return answer(PROVENANCE_STATUS.unsigned, null, PROVENANCE_MESSAGES.noSignature);
     }
+    // Every signature is read, whatever order the registry keeps them in: the one a rule requires may come after
+    // another trusted publisher's, or after one for another image.
+    const signedBy = new Set<string>();
+    let forOtherImage = false;
     for (const artifact of artifacts) {
       const payload = Buffer.from(artifact.payload);
-      const opened = publishers.find((publisher) => opens(publisher, artifact, payload));
-      if (opened === undefined) continue;
+      const opened = publishers.filter((publisher) => opens(publisher, artifact, payload));
+      if (opened.length === 0) continue;
       if (!this.namesImage(artifact.payload, reference, digest)) {
-        return answer(PROVENANCE_STATUS.invalid, null, PROVENANCE_MESSAGES.otherImage);
+        forOtherImage = true;
+        continue;
       }
-      return answer(PROVENANCE_STATUS.verified, opened.name, null);
+      opened.forEach(({ name }) => signedBy.add(name));
+    }
+    const [first = null] = signedBy;
+    if (first !== null) {
+      return { ...answer(PROVENANCE_STATUS.verified, first, null), publishers: [...signedBy] };
+    }
+    if (forOtherImage) {
+      return answer(PROVENANCE_STATUS.invalid, null, PROVENANCE_MESSAGES.otherImage);
     }
     const keyless = artifacts.some((artifact) => artifact.certificate !== null);
     return answer(
@@ -180,7 +192,8 @@ export async function provenanceRefusal(
   reference: string,
   newImage: ImageDetails | null,
 ): Promise<string | null> {
-  const image = parseImageReference(reference);
+  // A rule covers a repository however its image is named: pinned to a digest too, which update checks pass over.
+  const image = parseImageReference(reference.split(DIGEST_SEPARATOR)[0]!);
   if (source === null || image === null) return null;
   const rule = ruleForImage(source.policy(), image);
   if (rule === null) return null;

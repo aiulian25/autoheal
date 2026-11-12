@@ -145,6 +145,19 @@ export class ResultJournal {
     log(RUNNER_MESSAGES.interruptedJobsSettled(interrupted.length));
   }
 
+  /**
+   * An action whose end this runner reports itself though an earlier one reserved it, as a host run still going: taken
+   * as this runner's, so settling what was cut short gives it no other result first. One not reserved yet is reserved.
+   */
+  follow(kind: ResultKind, id: string, target: string): Promise<void> {
+    return this.change(() => {
+      const key = keyOf({ kind, id });
+      const entry = this.entries.get(key);
+      if (entry === undefined) this.entries.set(key, { kind, id, target, report: null });
+      if (entry === undefined || entry.report === null) this.owned.add(key);
+    });
+  }
+
   /** False means an existing action/result: do not execute it again. */
   reserve(kind: ResultKind, id: string, target = id): Promise<boolean> {
     return this.change(() => {

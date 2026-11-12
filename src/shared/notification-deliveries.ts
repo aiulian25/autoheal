@@ -15,6 +15,8 @@ export const NOTIFICATION_DELIVERY_ROUTES = {
 } as const;
 export const DELIVERY_RETENTION_MILLISECONDS = 30 * 24 * 60 * 60_000;
 export const DELIVERY_EVENT_LIMIT = 2000;
+// No one host's alerts waiting to go out may take more than this share of them: the others' still get in.
+export const DELIVERY_PENDING_EVENTS_PER_HOST = DELIVERY_EVENT_LIMIT / 4;
 export const DELIVERY_ATTEMPT_LIMIT = 8;
 export const DELIVERY_TICK_LIMIT = 4;
 export const DELIVERY_RETRY_MILLISECONDS = 60_000;

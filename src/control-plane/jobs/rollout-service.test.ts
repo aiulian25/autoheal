@@ -5,7 +5,13 @@ import { runnerTokenOf, startTestControlPlane, type TestControlPlane } from "../
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, type EnrolledHostView } from "../../shared/api.js";
-import { HOST_SILENT_AFTER_MILLISECONDS, JOB_ACTION, JOB_STATUS } from "../../shared/constants.js";
+import {
+  AVAILABILITY_GROUPS,
+  CONTAINER_STATE_EXITED,
+  HOST_SILENT_AFTER_MILLISECONDS,
+  JOB_ACTION,
+  JOB_STATUS,
+} from "../../shared/constants.js";
 import { RUNNER_ROUTES, type ContainerSnapshot } from "../../shared/protocol.js";
 import { ROLLOUT_REASONS, type RolloutView } from "../../shared/rollouts.js";
 import type { Actor } from "../audit/audit-log.js";
@@ -32,8 +38,11 @@ describe("a rollout's own transitions", () => {
   let hostId: string;
   let admin: Actor;
   let service: RolloutService;
+  // Reported beside the canary in every heartbeat: a rollout's later targets and their replicas.
+  let beside: ContainerSnapshot[];
 
   beforeEach(async () => {
+    beside = [];
     controlPlane = await startTestControlPlane();
     const client = (await fullySignedInAdmin(controlPlane)).client;
     const enrolled = (await client.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
@@ -58,7 +67,11 @@ describe("a rollout's own transitions", () => {
     const response = await controlPlane.runnerApp.inject({
       method: "POST",
       url: RUNNER_ROUTES.heartbeat,
-      payload: heartbeatWith({ dryRun: false, containers: [containerSnapshot({ name: "canary", ...canary })] }),
+      payload: {
+        ...heartbeatWith({ dryRun: false, containers: [containerSnapshot({ name: "canary", ...canary }), ...beside] }),
+        operationPreviews: true,
+        rollouts: true,
+      },
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.statusCode).toBe(200);
@@ -67,8 +80,21 @@ describe("a rollout's own transitions", () => {
   const planNow = () => service.list()[0]!;
   const refusedWith = (code: string) => expect.objectContaining({ code });
 
+  const targetNamed = (containerName: string, jobId: string | null) => ({
+    hostId,
+    containerName,
+    targetReference: TARGET,
+    sourceContainerId: SOURCE_ID,
+    platform: PLATFORM,
+    fingerprint: FINGERPRINT,
+    members: [containerName],
+    jobId,
+    replacementId: null,
+    baselineRestarts: null,
+  });
+
   // What create() leaves once its review passed: the canary's update asked for, and collected by its runner.
-  function underWay(createdBy = admin.userId) {
+  function underWay(createdBy = admin.userId, followers: readonly string[] = []) {
     const id = randomUUID();
     const job = controlPlane.services.jobsService.request(
       { kind: "user", actor: admin },
@@ -95,20 +121,7 @@ describe("a rollout's own transitions", () => {
       updatedAt: now,
       createdBy,
       status: "updating",
-      targets: [
-        {
-          hostId,
-          containerName: "canary",
-          targetReference: TARGET,
-          sourceContainerId: SOURCE_ID,
-          platform: PLATFORM,
-          fingerprint: FINGERPRINT,
-          members: ["canary"],
-          jobId: job.id,
-          replacementId: null,
-          baselineRestarts: null,
-        },
-      ],
+      targets: [targetNamed("canary", job.id), ...followers.map((name) => targetNamed(name, null))],
       current: 0,
       observeMilliseconds: OBSERVE_MILLISECONDS,
       observeStartedAt: null,
@@ -217,5 +230,70 @@ describe("a rollout's own transitions", () => {
     underWay("someone-who-left");
     service.tick();
     expect(planNow()).toMatchObject({ status: "held", reason: ROLLOUT_REASONS.requesterUnauthorized });
+  });
+  describe("a later target whose replicas form an availability group", () => {
+    const replica = (name: string, state = "running") =>
+      containerSnapshot({ name, containerId: name.padEnd(12, "0").slice(0, 12), state } as Partial<ContainerSnapshot>);
+    const group = (...members: string[]) =>
+      controlPlane.services.availabilityGroups.add(admin, {
+        name: "app",
+        minimumAvailable: 1,
+        evidenceFreshSeconds: AVAILABILITY_GROUPS.freshSeconds.maximum,
+        members: members.map((containerName) => ({ hostId, containerName, failureDomain: null, probeId: null })),
+      });
+    const jobsFor = (containerName: string) =>
+      database().select().from(jobs).where(eq(jobs.containerName, containerName)).all();
+    const host = () => database().select().from(hosts).where(eq(hosts.id, hostId)).get()!;
+    const ready = async (jobId: string) => {
+      updated(jobId);
+      await reportAfter(SECOND);
+      await reportAfter(OBSERVE_MILLISECONDS / 2);
+      await reportAfter(OBSERVE_MILLISECONDS / 2);
+      expect(planNow().status).toBe("ready");
+    };
+    const spareStopped = async (stopped: boolean) => {
+      beside = [replica("follower"), replica("spare", stopped ? CONTAINER_STATE_EXITED : "running")];
+      await replaced();
+    };
+
+    beforeEach(() => {
+      beside = [replica("follower"), replica("spare")];
+      group("follower", "spare");
+    });
+
+    it("queues no later target once the replica it would leave serving stopped, and stays ready to try again", async () => {
+      const { id, jobId } = underWay(admin.userId, ["follower"]);
+      await ready(jobId);
+      await spareStopped(true);
+
+      expect(() => service.promote(admin, id, false)).toThrow(refusedWith(API_ERRORS.availabilityGate));
+      expect(planNow()).toMatchObject({ status: "ready", current: 0 });
+      expect(jobsFor("follower")).toEqual([]);
+
+      await spareStopped(false);
+      expect(service.promote(admin, id, false)).toMatchObject({ status: "updating", current: 1 });
+      expect(jobsFor("follower")).toHaveLength(1);
+    });
+
+    it("does not count its own later targets against the one it replaces now", async () => {
+      const { id, jobId } = underWay(admin.userId, ["follower", "spare"]);
+      await ready(jobId);
+
+      expect(service.promote(admin, id, false)).toMatchObject({ status: "updating", current: 1 });
+    });
+
+    it("hands its runner no queued later target while the replica it would leave serving is stopped", async () => {
+      const { id, jobId } = underWay(admin.userId, ["follower"]);
+      await ready(jobId);
+      service.promote(admin, id, false);
+      const handed = () => controlPlane.services.jobsService.take(host()).map(({ containerName }) => containerName);
+
+      await spareStopped(true);
+      expect(handed()).toEqual([]);
+      expect(jobsFor("follower")).toMatchObject([{ status: JOB_STATUS.pending }]);
+
+      await spareStopped(false);
+      expect(handed()).toEqual(["follower"]);
+    });
   });
 });

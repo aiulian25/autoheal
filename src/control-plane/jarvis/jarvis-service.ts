@@ -144,7 +144,10 @@ interface Switches {
 const tagsOf = ({ from, to }: JarvisMessage) => (from === undefined || to === undefined ? null : { from, to });
 
 // A line counts once: one no later than the last counted about its message, as a restart restores, is ignored.
-const isNewLine = (item: Item, at: number | null) => at === null || item.lastLineAt === null || at > item.lastLineAt;
+const isNewer = (at: number | null, last: number | null) => at === null || last === null || at > last;
+const isNewLine = (item: Item, at: number | null) => isNewer(at, item.lastLineAt);
+// An answer is weighed against answers alone: a phone pressed at once writes it in the same second as its heard.
+const isNewAnswer = (item: Item, at: number | null) => isNewer(at, item.lastAnswerAt);
 
 export type JarvisSend = (url: string, body: unknown) => Promise<boolean>;
 
@@ -232,6 +235,7 @@ export class JarvisService {
   connect(actor: Actor): JarvisConnected {
     if (this.integrations.homeAssistant() === null) throw new DomainError(API_ERRORS.integrationNotSet);
     this.revokeKey(actor);
+    this.dropOpenQuestions();
     const webhookId = `autoheal-${randomBytes(JARVIS_LIMITS.webhookIdBytes).toString("base64url")}`;
     const created = this.keys.create(actor, KEY_LABEL, JARVIS_KEY_SCOPE);
     this.store.write(SETTING_KEYS.jarvis, {
@@ -254,10 +258,21 @@ export class JarvisService {
 
   disconnect(actor: Actor) {
     this.revokeKey(actor);
+    this.dropOpenQuestions();
     this.store.remove(SETTING_KEYS.jarvis);
     this.test = null;
     this.testQuestion = null;
     this.audit(actor, AUDIT_ACTIONS.integrationRemoved);
+  }
+
+  // A question is the say of the connection that asked it: one made since, by whoever, or none, takes no answer to
+  // it, so each code given out before answers nothing any more.
+  private dropOpenQuestions() {
+    this.databaseHandle.database
+      .update(jarvisItems)
+      .set({ status: JARVIS_STATUS.dropped })
+      .where(and(isNotNull(jarvisItems.codeSealed), inArray(jarvisItems.status, [...OPEN_TO_ANSWERS])))
+      .run();
   }
 
   /** How it addresses people from now on: a few words said once in each sentence, or none when empty. */
@@ -287,6 +302,8 @@ export class JarvisService {
       askUpdates: asking.updates,
       askVersions: asking.versions,
     } satisfies Stored);
+    // A kind turned off takes its open questions with it now, not at the next look: a yes to one starts nothing.
+    this.dropWhatEnded(this.candidates());
     this.audit(actor, AUDIT_ACTIONS.integrationSaved);
   }
 
@@ -563,6 +580,8 @@ export class JarvisService {
       .all()
       .filter(({ nextAskAt }) => nextAskAt === null || nextAskAt <= now);
     for (const item of waiting) {
+      // Disconnected, paused or pointed elsewhere while the last one was on its way: nothing more goes where it went.
+      if (this.webhookUrl() !== url || this.connection()?.paused === true) return;
       const message = this.outgoing(item);
       if (message === null) {
         database.update(jarvisItems).set({ status: JARVIS_STATUS.dropped }).where(eq(jarvisItems.id, item.id)).run();
@@ -646,9 +665,11 @@ export class JarvisService {
     }
     const replies = jarvisReplies(this.address());
     const question = this.questionWithCode(line.code);
-    if (question === null || !isNewLine(question, line.at)) return;
+    if (question === null || !isNewAnswer(question, line.at)) return;
     if (ENDED_UNANSWERED.includes(question.status)) {
       this.reply(question, replies.noLongerOpen);
+      // Counted, so the same line read again, as a reconnect brings it, is not answered again.
+      this.settleWithout(question, line, question.status);
       return;
     }
     if (!OPEN_TO_ANSWERS.includes(question.status)) return;
@@ -693,13 +714,15 @@ export class JarvisService {
       this.refuse(question, line);
       return;
     }
+    // Its moment is before the hand-over, which may make its jobs at once: each job a yes made comes after it.
+    const at = this.clock();
     const refusal = this.handOverAll(question, connector, first);
     if (refusal !== null) {
       this.reply(question, refusalWords(refusal, message.host, replies));
       this.refuse(question, line);
       return;
     }
-    this.settle(question, line, connector, JARVIS_STATUS.accepted);
+    this.settle(question, line, connector, JARVIS_STATUS.accepted, at);
     const tags = tagsOf(message);
     const said =
       tags === null
@@ -708,13 +731,15 @@ export class JarvisService {
     this.reply(question, said);
   }
 
-  // Each update as it was asked about: its task open, with the same newer image. Otherwise, what a yes is told.
+  // Each update as it was asked about: its task open, still one a yes is taken for (its kind still asked about, still
+  // waiting on a person), with the same newer image. Otherwise, what a yes is told.
   private changeSince(question: Item, candidates: readonly JarvisCandidate[], replies: JarvisReplies) {
-    const brings = new Map(candidates.map(({ taskId, ask }) => [taskId, ask?.brings ?? null]));
+    const asks = new Map(candidates.map(({ taskId, ask }) => [taskId, ask ?? null]));
     const members = (this.membersOf(question) ?? []).map(memberOf);
-    const now = members.map(({ taskId, brings: asked }) => ({ asked, current: brings.get(taskId) ?? null }));
-    if (now.some(({ current }) => current === null)) return replies.gone;
-    return now.some(({ asked, current }) => current !== asked) ? replies.newerOut : null;
+    const now = members.map(({ taskId, brings }) => ({ brings, ask: asks.get(taskId) ?? null }));
+    if (now.some(({ ask }) => ask === null)) return replies.gone;
+    if (now.some(({ ask }) => ask?.askable !== true)) return replies.noLongerOpen;
+    return now.some(({ brings, ask }) => ask?.brings !== brings) ? replies.newerOut : null;
   }
 
   // The dashboard's own hand-over, as whoever connected the assistant: all of the question's updates or none, or its
@@ -723,8 +748,11 @@ export class JarvisService {
     const version = first.ask !== undefined && kindOf(first.detectorKey) === JARVIS_KIND.newerVersion;
     const tags = version ? [{ hostId: first.hostId, container: first.resource ?? "", tag: first.ask!.brings }] : [];
     const updates = version ? [] : this.taskIdsOf(question);
+    // Each update goes to the image it was asked about, or back to its person: not to one its tag moved to since.
+    const members = version ? [] : (this.membersOf(question) ?? []).map(memberOf);
+    const approved = new Map(members.map(({ taskId, brings }) => [taskId, brings]));
     try {
-      this.handOver.dispatch(connector, { updates, packages: [], incidents: [], tags });
+      this.handOver.dispatch(connector, { updates, packages: [], incidents: [], tags }, approved);
       return null;
     } catch (error) {
       if (error instanceof DomainError) return error.code;
@@ -733,18 +761,19 @@ export class JarvisService {
   }
 
   // A no to a newer version ignores that version, as Ignore this version on the dashboard does: a later one is asked.
+  // For the container its task is about: the name in the words may be cut short, or match another's.
   private ignoreVersion(question: Item, connector: Actor) {
-    const { kind, names } = this.messageOf(question);
+    const { kind } = this.messageOf(question);
     const [member] = (this.membersOf(question) ?? []).map(memberOf);
     if (kind !== JARVIS_KIND.newerVersion || member === undefined) return;
     const task = this.databaseHandle.database
-      .select({ hostId: tasks.hostId })
+      .select({ hostId: tasks.hostId, container: tasks.resourceId })
       .from(tasks)
       .where(eq(tasks.id, member.taskId))
       .get();
-    if (task?.hostId == null) return;
+    if (task?.hostId == null || task.container == null) return;
     try {
-      this.hostControl.ignoreVersions(connector, task.hostId, [{ container: names[0]!, version: member.brings }]);
+      this.hostControl.ignoreVersions(connector, task.hostId, [{ container: task.container, version: member.brings }]);
     } catch (error) {
       // Its container is gone: there is no version of it left to ignore.
       if (!(error instanceof DomainError)) throw error;
@@ -775,12 +804,12 @@ export class JarvisService {
   }
 
   // Taken: kept with the question, said on each of its tasks, and in the audit log as whoever connected it.
-  private settle(question: Item, line: Answer, connector: Actor, status: JarvisStatus) {
+  private settle(question: Item, line: Answer, connector: Actor, status: JarvisStatus, at = this.clock()) {
     const said = { answer: line.verb, how: line.how, room: line.room };
-    const answer: AssistantAnswer = { ...said, by: connector.username, at: this.clock(), outcomes: {} };
+    const answer: AssistantAnswer = { ...said, by: connector.username, at, outcomes: {} };
     this.databaseHandle.database
       .update(jarvisItems)
-      .set({ status, answerJson: JSON.stringify(answer), lastLineAt: line.at })
+      .set({ status, answerJson: JSON.stringify(answer), lastLineAt: line.at, lastAnswerAt: line.at })
       .where(eq(jarvisItems.id, question.id))
       .run();
     const author: TaskAuthor = { kind: "user", actor: connector };
@@ -799,7 +828,7 @@ export class JarvisService {
   private settleWithout(question: Item, line: Answer, status: JarvisStatus) {
     this.databaseHandle.database
       .update(jarvisItems)
-      .set({ status, lastLineAt: line.at })
+      .set({ status, lastLineAt: line.at, lastAnswerAt: line.at })
       .where(eq(jarvisItems.id, question.id))
       .run();
   }
@@ -808,7 +837,13 @@ export class JarvisService {
   private refuse(question: Item, line: Answer) {
     this.databaseHandle.database
       .update(jarvisItems)
-      .set({ status: JARVIS_STATUS.asked, nextAskAt: this.clock(), codeSealed: this.newCode(), lastLineAt: line.at })
+      .set({
+        status: JARVIS_STATUS.asked,
+        nextAskAt: this.clock(),
+        codeSealed: this.newCode(),
+        lastLineAt: line.at,
+        lastAnswerAt: line.at,
+      })
       .where(eq(jarvisItems.id, question.id))
       .run();
   }

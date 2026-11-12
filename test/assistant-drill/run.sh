@@ -6,14 +6,17 @@
 # told. Removes all it made.   test/assistant-drill/run.sh
 set -u
 ENGINE_IMAGE=docker:29.9.0-dind
-IMAGE=autoheal:assistant-drill
-APP_ONE=autoheal:assistant-drill-app-one
-APP_TWO=autoheal:assistant-drill-app-two
-APP=localhost:5000/drill-app:1
-ENGINE=autoheal-assistant-drill
-STORE=autoheal-assistant-drill-store
 HERE="$(cd "$(dirname "$0")" && pwd)"
-RUN_FOLDER="$HOME/.cache/autoheal-assistant-drill"
+# shellcheck source=../support/owned-cleanup.sh
+. "$HERE/../support/owned-cleanup.sh"
+IMAGE="autoheal:assistant-drill-$DRILL_RUN"
+APP_ONE="autoheal:assistant-drill-app-one-$DRILL_RUN"
+APP_TWO="autoheal:assistant-drill-app-two-$DRILL_RUN"
+declare -A APP_OF=([one]="$APP_ONE" [two]="$APP_TWO")
+APP=localhost:5000/drill-app:1
+ENGINE="autoheal-assistant-drill-$DRILL_RUN"
+STORE="autoheal-assistant-drill-store-$DRILL_RUN"
+RUN_FOLDER="$HOME/.cache/autoheal-assistant-drill-$DRILL_RUN"
 SOCKET="$RUN_FOLDER/docker.sock"
 WORK="$(mktemp -d -p "$HOME/.cache")"
 ENGINE_START_SECONDS=60
@@ -28,14 +31,11 @@ UPDATED_SECONDS=300
 # What fixes itself within ten minutes is never asked about: the drill moves its task's start back past that.
 SETTLED_MILLISECONDS=660000
 
-cleanup() {
-  unset DOCKER_HOST
-  docker rm -f "$ENGINE" >/dev/null 2>&1
-  docker volume rm "$STORE" >/dev/null 2>&1
-  docker rmi "$IMAGE" "$APP_ONE" "$APP_TWO" >/dev/null 2>&1
-  rm -rf "${RUN_FOLDER:?}" "${WORK:?}"
-}
-trap cleanup EXIT
+OWN_CONTAINERS=("$ENGINE")
+OWN_VOLUMES=("$STORE")
+OWN_IMAGES=("$IMAGE" "$APP_ONE" "$APP_TWO")
+OWN_FOLDERS=("$RUN_FOLDER" "$WORK")
+trap remove_own EXIT
 step() { printf '\n== %s\n' "$1"; }
 fail() {
   echo "DRILL FAILED: $1" >&2
@@ -92,7 +92,7 @@ app_image() {
 }
 app_image "$APP_ONE" one && app_image "$APP_TWO" two || exit 9
 for version in one two; do
-  docker save "autoheal:assistant-drill-app-$version" -o "$WORK/$version.tar" || exit 9
+  docker save "${APP_OF[$version]}" -o "$WORK/$version.tar" || exit 9
   mkdir "$WORK/$version" && tar -xf "$WORK/$version.tar" -C "$WORK/$version" || exit 9
 done
 TWO_ID=$(docker inspect -f '{{.Id}}' "$APP_TWO")

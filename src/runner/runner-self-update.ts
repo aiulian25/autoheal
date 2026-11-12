@@ -1,4 +1,5 @@
 import {
+  APP_VERSION,
   COMMAND_SELF_UPDATE,
   CONTAINER_STATE_EXITED,
   DEFAULT_DATA_DIRECTORY,
@@ -52,12 +53,13 @@ function sourceOf(container: ContainerDetails, destination: string): string | nu
 /**
  * The image this runner moves to, keeping the tag the person chose for it. A channel tag (latest, 1, 1.2) stays and is
  * pulled again, bringing whatever it points to now. An exact release, or a digest, moves to the control plane's
- * release when that is newer, and never back to an older one.
+ * release when that is newer, and never back to an older one. A digest names no version: the release this runner runs,
+ * as built into it, stands in for it.
  */
-export function updateTarget(own: string, release: string): string {
+export function updateTarget(own: string, release: string, running: string = APP_VERSION): string {
   const releaseTag = imageTag(release);
-  const movesToRelease = own.includes(DIGEST_SEPARATOR) || isNewerTag(imageTag(own), releaseTag);
-  return movesToRelease ? `${imageRepository(own)}${IMAGE_REFERENCE.tagSeparator}${releaseTag}` : own;
+  const current = own.includes(DIGEST_SEPARATOR) ? running : imageTag(own);
+  return isNewerTag(current, releaseTag) ? `${imageRepository(own)}${IMAGE_REFERENCE.tagSeparator}${releaseTag}` : own;
 }
 
 // The tag this runner was started from, as its compose file named it, or the one the last update noted on it.
@@ -86,11 +88,12 @@ export async function handOverToRelease(
   release: string,
   // Where the admin asks for a signed image, this one holds the Docker socket: it is held to that like any update.
   provenance: ProvenanceSource | null = null,
+  running: string = APP_VERSION,
 ): Promise<HandOver> {
   const refused = (outcome: string): HandOver => ({ handedOver: false, outcome });
   const details = await docker.inspect(own.reference);
   if (details === null) return refused(RUNNER_UPDATE_TEXT.ownContainerUnknown);
-  const reference = updateTarget(referenceOf(details, release), release);
+  const reference = updateTarget(referenceOf(details, release), release, running);
   const socket = sourceOf(details, own.socketPath);
   if (socket === null) return refused(RUNNER_UPDATE_TEXT.noSocket);
   try {

@@ -71,13 +71,14 @@ const rollbackOf = ({ path }: StackFileWrite, index: number) => {
  * A stack's files replaced as one, by one script. Everything is staged beside its file first, owner and mode kept, and
  * a failure there changes nothing. The journal then says what is being replaced, so whatever stops the renames, the
  * old version comes back: here when a rename fails, by `recoveryScript` when the script dies. Removing the journal is
- * the moment the new version counts, and the kept versions are already this save's by then.
+ * the moment the new version counts, and the kept versions are already this save's by then: each made anew, so a link
+ * put in its place is replaced, never written through.
  */
 export function commitScript({ folder, writes, forgetPrevious, keepPrevious }: StackCommit): string {
   const journal = shellQuoted(journalPath(folder));
   const temporaries = writes.flatMap((_, index) => [`"$new${index}"`, `"$old${index}"`]);
   const keptLine = ({ path }: StackFileWrite, index: number) =>
-    `if [ -n "$old${index}" ]; then cp -p "$old${index}" ${previousOf(path)}; else rm -f -- ${previousOf(path)}; fi`;
+    `rm -f -- ${previousOf(path)} && if [ -n "$old${index}" ]; then cp -p "$old${index}" ${previousOf(path)}; fi`;
   const steps = [
     ...writes.map(({ path }, index) => `mv -f "$new${index}" ${shellQuoted(path)}`),
     ...forgetPrevious.map((path) => `rm -f -- ${previousOf(path)}`),

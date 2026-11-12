@@ -1,5 +1,6 @@
 // The drill's admin connects the assistant and has it ask before updating, as its card will: a Jarvis key in their
-// name, the webhook ID sealed as Autoheal seals it, and the switch on. Run inside the control plane's container.
+// name, the webhook ID sealed as Autoheal seals it, its test question answered, and the switch on. The card turns that
+// switch on only once the test came back. Run inside the control plane's container.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import Database from "/app/node_modules/better-sqlite3/lib/index.js";
 import { SecretBox } from "/app/dist/server/control-plane/database/secret-box.js";
@@ -20,6 +21,7 @@ const connection = {
   webhookId: SecretBox.fromPassphrase(passphrase).seal(webhookId),
   keyId,
   paused: false,
+  testAnswered: { said: "yes", how: "voice", seconds: 2, at: now },
   askUpdates: true,
 };
 database

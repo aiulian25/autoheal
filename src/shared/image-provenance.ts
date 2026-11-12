@@ -28,6 +28,11 @@ export const provenanceSchema = z.object({
   digest: z.string().nullable(),
   // The publisher whose key opened the signature; null when none did.
   publisher: z.string().max(IMAGE_PROVENANCE.publisherNameLength).nullable(),
+  // Every trusted publisher whose signature over this digest holds, `publisher` first: a rule may require any of them.
+  publishers: z
+    .array(z.string().max(IMAGE_PROVENANCE.publisherNameLength))
+    .max(IMAGE_PROVENANCE.publishersLimit)
+    .optional(),
   checkedAt: z.number().int().positive(),
   // Why it is not verified, in words fit to show; null when it is.
   problem: z.string().max(IMAGE_PROVENANCE.problemLength).nullable(),
@@ -83,7 +88,8 @@ export function satisfiesRule(rule: TrustRule, provenance: ImageProvenance | nul
   if (provenance === null || provenance.status !== PROVENANCE_STATUS.verified) return false;
   if (digest === null || provenance.digest !== digest) return false;
   if (provenance.publisher === null) return false;
-  return rule.publishers.length === 0 || rule.publishers.includes(provenance.publisher);
+  const signedBy = provenance.publishers ?? [provenance.publisher];
+  return rule.publishers.length === 0 || signedBy.some((publisher) => rule.publishers.includes(publisher));
 }
 
 /** Where the registry keeps the signature for a digest, as cosign writes it: a tag beside the image itself. */

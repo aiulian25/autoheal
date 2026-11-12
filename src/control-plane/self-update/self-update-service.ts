@@ -133,11 +133,19 @@ export class SelfUpdateService {
     if (unfinished !== null && recovery !== null) {
       return this.takeUp(docker, own, unfinished, recovery.original);
     }
-    // A local image, built or loaded on this machine, is used as it is: there is nothing to pull it from.
-    await docker.pull(reference).catch(() => undefined);
+    // A local image, built or loaded on this machine, is used as it is: there is nothing to pull it from. One that came
+    // from a registry is only as new as the registry says: unanswered, nothing is claimed and nothing starts.
+    const pullFailed = await docker.pull(reference).then(
+      () => false,
+      () => true,
+    );
     const image = await docker.inspectImage(reference);
     if (image === null) {
       throw new DomainError(API_ERRORS.selfUpdateUnavailable);
+    }
+    const fromRegistry = (image.RepoDigests ?? []).length > 0;
+    if (pullFailed && fromRegistry) {
+      throw new DomainError(API_ERRORS.selfUpdateRegistryUnreachable);
     }
     if (image.Id === own.Image) {
       throw new DomainError(API_ERRORS.selfUpdateNewest);

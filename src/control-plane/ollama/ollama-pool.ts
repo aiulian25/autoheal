@@ -27,6 +27,8 @@ export interface HostModels {
     priority: JobPriority,
     work: (server: ModelServer, signal: AbortSignal) => Promise<Result>,
     onFellBack?: (from: string, reason: string) => void,
+    // Aborts when whoever asked stops waiting: work still in the queue then leaves it, never run.
+    waiting?: AbortSignal,
   ): Promise<Result>;
 }
 
@@ -35,7 +37,8 @@ export function oneServer(client: ModelServer["client"], queue: Pick<DecisionQue
   const server: ModelServer = { id: null, name: null, client };
   return {
     serverFor: () => server,
-    askFor: (_hostId, priority, work) => queue.enqueue(priority, (signal) => work(server, signal)),
+    askFor: (hostId, priority, work, _onFellBack, waiting) =>
+      queue.enqueue(priority, (signal) => work(server, signal), { owner: hostId, signal: waiting }),
   };
 }
 
@@ -122,8 +125,11 @@ export class OllamaPool implements HostModels {
     priority: JobPriority,
     work: (server: ModelServer, signal: AbortSignal) => Promise<Result>,
     onFellBack?: (from: string, reason: string) => void,
+    waiting?: AbortSignal,
   ): Promise<Result> {
-    const onDefault = () => this.defaultServer.queue.enqueue(priority, (signal) => work(this.defaultServer, signal));
+    const queuedFor = { owner: hostId, signal: waiting };
+    const onDefault = () =>
+      this.defaultServer.queue.enqueue(priority, (signal) => work(this.defaultServer, signal), queuedFor);
     const assigned = this.assignedTo(hostId);
     if (assigned === this.defaultServer) return onDefault();
     if (this.isDown(assigned)) {
@@ -131,7 +137,7 @@ export class OllamaPool implements HostModels {
       return onDefault();
     }
     try {
-      return await assigned.queue.enqueue(priority, (signal) => work(assigned, signal));
+      return await assigned.queue.enqueue(priority, (signal) => work(assigned, signal), queuedFor);
     } catch (error) {
       if (!isUnreachable(error)) throw error;
       // Known at once, so the next call does not spend its time finding out.

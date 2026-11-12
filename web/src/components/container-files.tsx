@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { FILE_CONTENT_LIMIT_BYTES, FILE_KIND, FILE_OPERATION } from "../../../src/shared/constants.js";
 import type { FileEntry } from "../../../src/shared/protocol.js";
 import { ReadableError } from "../api-client.js";
@@ -37,8 +37,10 @@ function FileEditor({
   onClose: () => void;
 }) {
   const text = TEXT.files;
+  const queryClient = useQueryClient();
+  const fileKey = ["container-file", path];
   const read = useQuery({
-    queryKey: ["container-file", path],
+    queryKey: fileKey,
     queryFn: () => ask({ operation: FILE_OPERATION.read, path }),
     gcTime: 0,
     retry: false,
@@ -47,6 +49,16 @@ function FileEditor({
   const save = useMutation({
     mutationFn: (content: string) => ask({ operation: FILE_OPERATION.write, path, content }),
   });
+  // What was saved is what the file holds now, shown and downloaded as such; an edit typed while it saved stays.
+  const saveDraft = (submitted: string) => {
+    const content = base64FromText(submitted);
+    save.mutate(content, {
+      onSuccess: () => {
+        queryClient.setQueryData(fileKey, { content });
+        setDraft((current) => (current === submitted ? null : current));
+      },
+    });
+  };
   if (read.data === undefined) {
     return read.error ? <ErrorNotice error={read.error} /> : <Loading />;
   }
@@ -87,7 +99,7 @@ function FileEditor({
               type="button"
               className="primary"
               disabled={draft === null || save.isPending}
-              onClick={() => save.mutate(base64FromText(draft!), { onSuccess: () => setDraft(null) })}
+              onClick={() => saveDraft(draft!)}
             >
               {text.save}
             </button>
@@ -133,6 +145,7 @@ export function ContainerFiles({
   const [opened, setOpened] = useState<string | null>(null);
   // What went wrong outside the list's own reading: a name not usable, a download refused, a file too big.
   const [failure, setFailure] = useState<unknown>(null);
+  const chooser = useRef<HTMLInputElement>(null);
   const ask = (body: FileBody) => askFiles(hostId, containerName, body);
   const listingKey = ["container-files", hostId, containerName, folder];
   const listing = useQuery({
@@ -254,10 +267,18 @@ export function ContainerFiles({
         <button type="button" onClick={makeFolder} disabled={change.isPending}>
           {text.newFolder}
         </button>
-        <label className="button">
+        {/* A button the keyboard reaches, as its neighbours are; the hidden input is only its chooser. */}
+        <button type="button" onClick={() => chooser.current?.click()} disabled={change.isPending}>
           {text.upload}
-          <input type="file" hidden onChange={(event) => void upload(event)} disabled={change.isPending} />
-        </label>
+        </button>
+        <input
+          ref={chooser}
+          type="file"
+          hidden
+          aria-label={text.upload}
+          onChange={(event) => void upload(event)}
+          disabled={change.isPending}
+        />
         <button type="button" onClick={() => void listing.refetch()}>
           {text.refresh}
         </button>

@@ -13,7 +13,12 @@ import {
 import { describeError } from "../../shared/errors.js";
 import { log } from "../../shared/log.js";
 import type { HomeFacts, HomeLogRecord } from "./home-review.js";
-import { HomeAssistantTokenRefused, type HomeAssistantClient, type StateChange } from "./home-assistant-client.js";
+import {
+  HomeAssistantTokenRefused,
+  isStateEntry,
+  type HomeAssistantClient,
+  type StateChange,
+} from "./home-assistant-client.js";
 import {
   countUnavailable,
   safetyDevices,
@@ -179,8 +184,10 @@ export class HomeAssistantInventory {
       this.client.command<StateEntry[]>(HOME_ASSISTANT_READ_COMMANDS.states),
     ]);
     this.useRegistries(areas, devices, entities);
-    this.states = new Map(states.map((state) => [state.entity_id, state]));
-    states.forEach((state) => this.passOn(state));
+    // One that is not a state is left out: the rest still load.
+    const usable = states.filter(isStateEntry);
+    this.states = new Map(usable.map((state) => [state.entity_id, state]));
+    usable.forEach((state) => this.passOn(state));
   }
 
   private async refreshRegistries() {

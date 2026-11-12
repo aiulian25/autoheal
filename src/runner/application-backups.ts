@@ -9,6 +9,7 @@ import {
   applicationBackupTaskSchema,
   type ApplicationBackupTask,
   type ApplicationBackupResult,
+  APPLICATION_BACKUP_VOLUME_LABEL,
   APPLICATION_BOOT_DRILL,
   APPLICATION_BOOT_READINESS,
   APPLICATION_BOOT_TEXT,
@@ -110,19 +111,25 @@ export class ApplicationBackups {
     if (!self?.Image) throw new Error(APPLICATION_HELPER_ERRORS.selfMissing);
     return self.Image;
   }
-  // What a crash left of a boot drill: nothing else can be running one as the runner starts.
-  private async sweepBootDrills() {
+  // What a crash or a removal that failed left: a boot drill's helpers and copies, and the volumes a copy passes
+  // through. Nothing else can be running one as the runner starts; a download for work the journal still holds stays.
+  private async sweepLeftovers() {
     const { docker } = this.dependencies;
     for (const { Id, Labels } of await docker.containerSummaries()) {
       if (Labels?.[APPLICATION_BOOT_DRILL.label] !== undefined) await docker.remove(Id).catch(() => undefined);
     }
-    for (const { Name } of await docker.volumes(APPLICATION_BOOT_DRILL.volumeLabel)) {
+    const drills = await docker.volumes(APPLICATION_BOOT_DRILL.volumeLabel);
+    const artifacts = await docker.volumes(APPLICATION_BACKUP_VOLUME_LABEL.artifact);
+    const downloads = (await docker.volumes(APPLICATION_BACKUP_VOLUME_LABEL.download)).filter(
+      ({ Labels }) => !this.journal.records.has(Labels?.[APPLICATION_BACKUP_VOLUME_LABEL.download] ?? ""),
+    );
+    for (const { Name } of [...drills, ...artifacts, ...downloads]) {
       await docker.removeVolume(Name).catch(() => undefined);
     }
   }
   async initialize() {
     await this.journal.initialize();
-    await this.sweepBootDrills().catch(() => undefined);
+    await this.sweepLeftovers().catch(() => undefined);
     for (const record of this.journal.records.values()) {
       if (!record.result)
         await this.journal.result(
@@ -596,12 +603,26 @@ export class ApplicationBackups {
     await this.dependencies.docker.stop(helper, STOP_GRACE_SECONDS);
     await this.dependencies.docker.removeStopped(helper);
   }
+  // The helper first, as it holds the volume, then the volume whatever became of the helper. A helper that would not go
+  // still fails the work, saying so; a volume that would not go is swept when the runner next starts.
+  private async release(helper: string | null, volume: string) {
+    const removing = helper === null ? Promise.resolve() : this.removeHelper(helper);
+    const stuck = await removing.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await this.dependencies.docker.removeVolume(volume).catch(() => undefined);
+    if (stuck !== null) throw stuck;
+  }
   private async capture(task: ApplicationBackupTask, scope: Discovery, artifactId: string, recipient: string) {
     const volume = `autoheal-application-artifact-${artifactId}`;
     const { docker, client } = this.dependencies;
-    await docker.createVolume(volume, { "autoheal.application-backup.artifact": artifactId });
-    const { helper } = await this.helper(task.id, scope, volume, "capture", recipient);
+    await docker.createVolume(volume, { [APPLICATION_BACKUP_VOLUME_LABEL.artifact]: artifactId });
+    // The volume is this capture's from here: whatever fails, it goes, after the helper using it.
+    let helper: string | null = null;
     try {
+      const ready = await this.helper(task.id, scope, volume, "capture", recipient);
+      helper = ready.helper;
       let payloadBytes = 0;
       const hash = createHash("sha256"),
         source = await docker.getArchiveStream(helper, "/artifact/payload.age");
@@ -629,47 +650,53 @@ export class ApplicationBackups {
       }
       return { payloadBytes, payloadSha256: hash.digest("hex") };
     } finally {
-      await this.removeHelper(helper);
-      await docker.removeVolume(volume).catch(() => undefined);
+      await this.release(helper, volume);
     }
   }
   private async download(task: ApplicationBackupTask) {
     const { docker, client } = this.dependencies;
     const volume = `autoheal-application-download-${task.id}`;
     await docker.createVolume(volume, {
-      "autoheal.application-backup.download": task.id,
-      // A boot drill's copy is named and swept with its clones if it cannot be removed. A restore's is left to its journal.
+      [APPLICATION_BACKUP_VOLUME_LABEL.download]: task.id,
+      // A boot drill's copy is named and swept with its clones if it cannot be removed. A restore's stays while its
+      // journal holds it.
       ...(task.operation === "boot-drill" ? { [APPLICATION_BOOT_DRILL.volumeLabel]: task.id } : {}),
     });
-    const image = await this.helperImage();
     const helper = `autoheal-application-download-${randomUUID()}`;
-    await docker.create(helper, {
-      Image: image,
-      Cmd: ["application-copy", "wait"],
-      User: HOST_HELPER.user,
-      Labels: { [HOST_HELPER.label]: HOST_HELPER.labelValue },
-      NetworkDisabled: true,
-      HostConfig: {
-        Mounts: [{ Type: "volume", Source: volume, Target: "/artifact", VolumeOptions: { NoCopy: true } }],
-        ReadonlyRootfs: true,
-        CapDrop: [HOST_HELPER.allCapabilities],
-        SecurityOpt: [HOST_HELPER.noNewPrivileges],
-        NetworkMode: HOST_HELPER.network,
-        Memory: CHECKPOINT.memoryBytes,
-        PidsLimit: HOST_HELPER.pidsLimit,
-      },
-    });
+    // The volume is handed over only once filled and its helper gone: until then it is this download's to remove.
+    let made: string | null = null;
+    let handedOver = false;
     try {
+      const image = await this.helperImage();
+      await docker.create(helper, {
+        Image: image,
+        Cmd: ["application-copy", "wait"],
+        User: HOST_HELPER.user,
+        Labels: { [HOST_HELPER.label]: HOST_HELPER.labelValue },
+        NetworkDisabled: true,
+        HostConfig: {
+          Mounts: [{ Type: "volume", Source: volume, Target: "/artifact", VolumeOptions: { NoCopy: true } }],
+          ReadonlyRootfs: true,
+          CapDrop: [HOST_HELPER.allCapabilities],
+          SecurityOpt: [HOST_HELPER.noNewPrivileges],
+          NetworkMode: HOST_HELPER.network,
+          Memory: CHECKPOINT.memoryBytes,
+          PidsLimit: HOST_HELPER.pidsLimit,
+        },
+      });
+      made = helper;
       await docker.start(helper);
       await docker.putArchiveStream(
         helper,
         "/artifact",
         await client.downloadApplicationBackup(task.id, task.artifactId, task.attempt ?? 0),
       );
-    } finally {
       await this.removeHelper(helper);
+      handedOver = true;
+      return volume;
+    } finally {
+      if (!handedOver) await this.release(made, volume);
     }
-    return volume;
   }
   private imageOf(task: ApplicationBackupTask, scope: Discovery) {
     const image = scope.members.find(({ name }) => name === task.definition.containerName)?.details.Image;

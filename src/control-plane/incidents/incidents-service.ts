@@ -9,11 +9,14 @@ import {
   type TraceEventView,
 } from "../../shared/api.js";
 import {
+  ACTOR_HOST,
+  AUDIT_ACTIONS,
   DECIDED_BY,
   INCIDENT_LIST_LIMIT,
   INCIDENT_MEMORY,
   INCIDENT_OUTCOME_LOST,
   INCIDENT_STATUS,
+  TARGET_INCIDENT,
   TRACE,
   VERDICT_ESCALATED,
   VERDICT_SKIPPED,
@@ -22,6 +25,7 @@ import {
 } from "../../shared/constants.js";
 import type { HandledIncident, IncidentSubmission, Outcome } from "../../shared/protocol.js";
 import type { IncidentReport } from "../../shared/report.js";
+import type { AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { approvals, hosts, incidentEvents, incidentReports, incidents, users } from "../database/schema.js";
 import { describeError } from "../../shared/errors.js";
@@ -81,6 +85,7 @@ export class IncidentsService {
     private readonly databaseHandle: DatabaseHandle,
     private readonly clock: () => number = Date.now,
     private readonly onCreated: IncidentListener = () => undefined,
+    private readonly auditLog: Pick<AuditLog, "record">,
   ) {}
 
   create(host: HostRow, submission: IncidentSubmission, status: IncidentStatus): IncidentRow {
@@ -151,6 +156,28 @@ export class IncidentsService {
    * report never moves an incident backwards: once a person decided, or it was resolved or
    * cancelled, only the outcome text and the trace are updated.
    */
+  /**
+   * A runner's outcome for one of its incidents. One for an incident this database does not have, as after a restore of
+   * a copy older than it, is kept in the audit log instead: what was done on the host is not lost, and the runner stops
+   * sending what could never be taken.
+   */
+  takeOutcome(host: HostRow, incidentId: string, result: Outcome) {
+    const known = this.databaseHandle.database.select().from(incidents).where(eq(incidents.id, incidentId)).get();
+    if (known !== undefined) {
+      this.recordOutcome(host, incidentId, result);
+      return;
+    }
+    this.auditLog.record({
+      actorKind: ACTOR_HOST,
+      actorId: host.id,
+      actorLabel: host.label,
+      action: AUDIT_ACTIONS.incidentOutcomeKept,
+      targetKind: TARGET_INCIDENT,
+      targetId: incidentId,
+      details: { ...result },
+    });
+  }
+
   recordOutcome(host: HostRow, incidentId: string, result: Outcome): IncidentRow {
     const incident = this.find(incidentId);
     if (incident.hostId !== host.id) {

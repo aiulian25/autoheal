@@ -118,10 +118,20 @@ export class AutohealWorker {
         this.giveBack(task);
         return;
       }
+      // A yes was to one image: a newer one out since goes back to its person, to be asked about in its turn.
+      const approved = this.approvedDigest(task);
+      if (approved !== null && container.update.remoteDigest !== approved) {
+        tasks.comment(AUTOHEAL, task.id, AUTOHEAL_TEXT.newerSinceYes(container.name));
+        this.giveBack(task);
+        return;
+      }
       // Its runner puts it back at once when the new container does not come back healthy, where its owner chose so.
       const undoIfUnhealthy = this.handedOver(task) || container.update.policy === UPDATE_POLICY.always;
       // Its result releases the task, and closes it or hands it to a person.
-      jobs.request(AUTOHEAL, container.hostId, container.name, JOB_ACTION.update, task.id, { undoIfUnhealthy });
+      jobs.request(AUTOHEAL, container.hostId, container.name, JOB_ACTION.update, task.id, {
+        undoIfUnhealthy,
+        ...(approved === null ? {} : { expectedDigest: approved }),
+      });
     } catch (error) {
       tasks.release(task.id);
       throw error;
@@ -268,6 +278,13 @@ export class AutohealWorker {
   // A person handed it to the Ollama agent this turn: they decided, whatever held it.
   private handedOver(task: TaskRow): boolean {
     return this.dependencies.tasks.latestActivity(task.id, HAND_OVER_TURN)?.kind === TASK_ACTIVITY.dispatched;
+  }
+
+  // The image this turn's hand-over said yes to, where it named one, as the assistant's does; null for any newest.
+  private approvedDigest(task: TaskRow): string | null {
+    const latest = this.dependencies.tasks.latestActivity(task.id, HAND_OVER_TURN);
+    const digest = latest?.kind === TASK_ACTIVITY.dispatched ? latest.data.digest : undefined;
+    return typeof digest === "string" ? digest : null;
   }
 
   private now() {

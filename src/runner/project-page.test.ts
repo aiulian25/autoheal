@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { PROJECT_PAGE } from "../shared/constants.js";
 import {
+  PROJECT_FILE_TOO_LARGE,
   hintsInReadme,
   parseDockerRun,
   readProjectFile,
@@ -154,6 +156,28 @@ describe("reading a project's page", () => {
     expect(chosen).toMatchObject({ kind: "compose", file: "docker/compose/docker-compose.postgres.yml" });
   });
 
+  it("takes no other file in place of one a person chose that is gone, nor when the project cannot be listed", async () => {
+    const chosen = "docker/compose/docker-compose.postgres.yml";
+    const listed = ["docker/compose/docker-compose.sqlite.yml", chosen];
+    let tree: string[] | null = listed;
+    const fetcher = (async (url: string) => {
+      if (url.includes("api.github.com")) {
+        return tree === null
+          ? new Response("", { status: 403 })
+          : new Response(JSON.stringify({ tree: tree.map((path) => ({ path, type: "blob" })) }));
+      }
+      const file = url.split("/HEAD/")[1] ?? "";
+      return tree?.includes(file) === true ? new Response(`services: {} # ${file}`) : new Response("", { status: 404 });
+    }) as unknown as typeof fetch;
+    const address = "https://github.com/paperless-ngx/paperless-ngx";
+    expect(await readProjectPage(address, fetcher, chosen)).toMatchObject({ kind: "compose", file: chosen });
+
+    tree = ["docker/compose/docker-compose.sqlite.yml"];
+    expect(await readProjectPage(address, fetcher, chosen)).toEqual({ kind: "variantGone", file: chosen });
+    tree = null;
+    expect(await readProjectPage(address, fetcher, chosen)).toEqual({ kind: "variantGone", file: chosen });
+  });
+
   it("finds a Compose file in a project of thousands of files", async () => {
     const tree = {
       tree: [
@@ -195,6 +219,35 @@ describe("reading a project's page", () => {
     expect(await readProjectSettings({ owner: "a", name: "b", folder: "" }, fetcher)).toBeNull();
   });
 
+  it.each([
+    [
+      "the one image it names",
+      "services:\n  app:\n    image: someone/app:2\n",
+      {
+        kind: "found",
+        hints: { image: "someone/app:2", ports: [], volumes: [], environment: [], leftOut: [] },
+      },
+    ],
+    [
+      "a choice between the images it names",
+      "services:\n  app:\n    image: someone/app:2\n  db:\n    image: postgres:16\n",
+      { kind: "severalImages", images: ["someone/app:2", "postgres:16"] },
+    ],
+  ])("offers, from a README's Compose example and no Compose file, %s", async (_what, example, expected) => {
+    const readme = `# App\n\nStart it with docker compose:\n\n\`\`\`yaml\n${example}\`\`\`\n`;
+    expect(await readProjectPage("https://github.com/someone/app", page({ "README.md": readme }))).toEqual(expected);
+  });
+
+  it("still takes a project's own Compose file over the images its README names", async () => {
+    const readme = "```yaml\nservices:\n  app:\n    image: someone/app:1\n```\n";
+    const compose = "services:\n  app:\n    image: someone/app:2\n";
+    const found = await readProjectPage(
+      "https://github.com/someone/app",
+      page({ "README.md": readme, "compose.yaml": compose }),
+    );
+    expect(found).toMatchObject({ kind: "compose", text: compose });
+  });
+
   it("does not guess at an image when its README says Compose and no file can be found", async () => {
     const readme = "The easiest way to deploy is `docker compose`.";
     expect(await readProjectPage("https://github.com/a/b", page({ "README.md": readme }))).toEqual({
@@ -213,6 +266,54 @@ describe("reading a project's page", () => {
     expect(asked).toEqual(["https://raw.githubusercontent.com/a/b/HEAD/docker/compose/docker-compose.env"]);
     expect(await readProjectFile(source, "../../../etc/passwd", fetcher)).toBeNull();
     expect(await readProjectFile(source, "/etc/passwd", fetcher)).toBeNull();
+  });
+
+  it("refuses a Compose file longer than it reads, rather than a start of it that reads as a smaller project", async () => {
+    const first = "services:\n  app:\n    image: someone/app:2\n";
+    const comment = `# ${"x".repeat(PROJECT_PAGE.readCharacters)}\n`;
+    const second = "  database:\n    image: postgres:16\n";
+    const found = await readProjectPage(
+      "https://github.com/someone/app",
+      page({ "README.md": "# Just words", "compose.yaml": `${first}${comment}${second}` }),
+    );
+    expect(found).toEqual({ kind: "composeTooLarge" });
+  });
+
+  it("reads a Compose file of exactly what it reads, whole", async () => {
+    const first = "services:\n  app:\n    image: someone/app:2\n";
+    const whole = `${first}${"#".repeat(PROJECT_PAGE.readCharacters - first.length)}`;
+    const found = await readProjectPage("https://github.com/someone/app", page({ "compose.yaml": whole }));
+    expect(found).toMatchObject({ kind: "compose", text: whole });
+  });
+
+  it("reads no more of a file than it keeps, however much its publisher sends", async () => {
+    const piece = new TextEncoder().encode("x".repeat(64 * 1024));
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 16 * 1024 * 1024) return controller.close();
+        pulled += piece.length;
+        controller.enqueue(piece);
+      },
+    });
+    const fetcher = (async () => new Response(body)) as unknown as typeof fetch;
+
+    const text = await readProjectFile({ owner: "a", name: "b", folder: "" }, "big.env", fetcher);
+
+    expect(text).toBe(PROJECT_FILE_TOO_LARGE);
+    expect(pulled).toBeLessThan(PROJECT_PAGE.readCharacters + 4 * piece.length);
+  });
+
+  it("tells each read to stop once the whole preview's time is up", async () => {
+    const told: (AbortSignal | null | undefined)[] = [];
+    const fetcher = (async (_url: string, init?: RequestInit) => {
+      told.push(init?.signal);
+      return new Response("A=1");
+    }) as unknown as typeof fetch;
+
+    await readProjectFile({ owner: "a", name: "b", folder: "" }, "a.env", fetcher, AbortSignal.abort());
+
+    expect(told[0]?.aborted).toBe(true);
   });
 
   it("offers a guess under the project's own name when nothing says, and knows no other site", async () => {

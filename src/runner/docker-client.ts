@@ -2,7 +2,7 @@ import { request as httpRequest, type ClientRequestArgs, type IncomingMessage } 
 import { once } from "node:events";
 import { type Duplex, type Readable, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import {
   REGISTRY_CREDENTIALS,
   RUNNER_MESSAGES,
@@ -15,6 +15,7 @@ import {
   DOCKER_PATH_PARAMETER,
   DOCKER_CLEANUP_TIMEOUT_MILLISECONDS,
   DOCKER_PULL_TIMEOUT_MILLISECONDS,
+  DOCKER_READ_LIMITS,
   DOCKER_REQUEST_TIMEOUT_MILLISECONDS,
   EVENT_TYPE_CONTAINER,
   HTTP_STATUS,
@@ -73,17 +74,21 @@ class ExecFrames {
     return this.errors.trim();
   }
 
+  /** What is left of a frame once the stream ends was cut short, however well the command itself says it ended. */
   async readAll(socket: Readable) {
     for await (const chunk of socket) {
       this.waiting = Buffer.concat([this.waiting, chunk as Buffer]);
       await this.drain();
     }
     this.output.end();
+    if (this.waiting.length > 0) throw new DockerError(RUNNER_MESSAGES.execStreamCutShort);
   }
 
   private async drain() {
     while (this.waiting.length >= EXEC_HEADER_BYTES) {
       const size = this.waiting.readUInt32BE(4);
+      // Docker sends output in pieces of tens of kilobytes: one said to be bigger is never held while it comes.
+      if (size > DOCKER_READ_LIMITS.frameBytes) throw new DockerError(RUNNER_MESSAGES.execFrameTooLarge);
       if (this.waiting.length < EXEC_HEADER_BYTES + size) return;
       const kind = this.waiting[0];
       const piece = this.waiting.subarray(EXEC_HEADER_BYTES, EXEC_HEADER_BYTES + size);
@@ -214,17 +219,27 @@ const isFailure = (status: number) => status >= HTTP_STATUS.badRequest;
 
 export const stripSlash = (name: string) => name.replace(/^\//, "");
 
+// One JSON value a line. A line never held past the limit: leaving the loop by throwing closes the stream.
 async function* parseJsonLines<Line>(response: IncomingMessage): AsyncGenerator<Line> {
-  for await (const line of createInterface({ input: response, crlfDelay: Infinity })) {
-    if (line.trim()) {
-      yield JSON.parse(line) as Line;
-    }
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  for await (const chunk of response) {
+    const lines = `${pending}${decoder.write(chunk as Buffer)}`.split("\n");
+    pending = lines.pop()!;
+    if (pending.length > DOCKER_READ_LIMITS.lineCharacters) throw new DockerError(RUNNER_MESSAGES.dockerLineTooLong);
+    for (const line of lines.filter((each) => each.trim() !== "")) yield JSON.parse(line) as Line;
   }
+  const last = `${pending}${decoder.end()}`;
+  if (last.trim() !== "") yield JSON.parse(last) as Line;
 }
 
+// An answer read whole, never past the limit: leaving the loop by throwing closes the stream.
 async function readAll(response: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let bytes = 0;
   for await (const chunk of response) {
+    bytes += (chunk as Buffer).length;
+    if (bytes > DOCKER_READ_LIMITS.bodyBytes) throw new DockerError(RUNNER_MESSAGES.dockerAnswerTooLarge);
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
@@ -605,8 +620,17 @@ export class DockerClient {
     });
     this.assertOk(created.status, created.body);
     const execId = (JSON.parse(created.body.toString()) as { Id: string }).Id;
-    const socket = await this.upgrade(path(DOCKER_PATHS.execStart, execId), { Detach: false, Tty: false });
-    const timer = setTimeout(() => socket.destroy(new DockerError("The command took too long.")), timeoutMilliseconds);
+    // One deadline from the moment its stream is asked for, Docker's handshake included: one never begun holds nothing.
+    const signal = AbortSignal.timeout(timeoutMilliseconds);
+    const socket = await this.upgrade(
+      path(DOCKER_PATHS.execStart, execId),
+      { Detach: false, Tty: false },
+      signal,
+    ).catch((error: unknown) => {
+      throw signal.aborted ? new DockerError(RUNNER_MESSAGES.commandTookTooLong) : error;
+    });
+    const tooLong = () => socket.destroy(new DockerError(RUNNER_MESSAGES.commandTookTooLong));
+    signal.addEventListener("abort", tooLong, { once: true });
     const frames = new ExecFrames(output);
     try {
       const feed = async (source: Readable) => {
@@ -624,7 +648,7 @@ export class DockerClient {
       const exec = JSON.parse(inspected.body.toString()) as { Running?: boolean; ExitCode?: number | null };
       return { exitCode: exec.Running ? null : (exec.ExitCode ?? null), stderr: frames.stderr() };
     } finally {
-      clearTimeout(timer);
+      signal.removeEventListener("abort", tooLong);
       socket.destroy();
     }
   }
@@ -923,9 +947,12 @@ export class DockerClient {
         }
         resolve(socket);
       });
+      // A refusal: what it says, or why it could not be read. Either way the operation hears it, and nothing is left
+      // to reject on its own.
       outgoing.on("response", (response) => {
-        void readAll(response).then((body) =>
-          reject(new DockerError(RUNNER_MESSAGES.dockerError(response.statusCode ?? 0, body.toString()))),
+        void readAll(response).then(
+          (body) => reject(new DockerError(RUNNER_MESSAGES.dockerError(response.statusCode ?? 0, body.toString()))),
+          reject,
         );
       });
       outgoing.on("error", reject);

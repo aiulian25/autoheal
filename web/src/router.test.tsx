@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
-import type { SessionView } from "../../src/shared/api.js";
+import type { BoardView, SessionView } from "../../src/shared/api.js";
 import { PATHS, SESSION_QUERY_KEY, TEXT } from "./constants.js";
 import { boardQuery, integrationsQuery, ollamaQuery, overviewQuery } from "./queries.js";
 import { routes } from "./router.js";
@@ -52,7 +52,8 @@ let client: QueryClient;
 function show(path: string, signedIn: SessionView | null) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(SESSION_QUERY_KEY, signedIn);
-  client.setQueryData(boardQuery.queryKey, { needsYou: [] });
+  const emptyBoard: BoardView = { needsYou: [], autoheal: [], noticed: [], done: [] };
+  client.setQueryData(boardQuery.queryKey, emptyBoard);
   client.setQueryData(ollamaQuery.queryKey, { reachable: true });
   client.setQueryData(overviewQuery.queryKey, { homeAssistant: null });
   client.setQueryData(integrationsQuery.queryKey, []);
@@ -86,6 +87,10 @@ it("loads a page's code the first time it is opened, not with the dashboard", as
   expect(loaded.has("board")).toBe(false);
   await router.navigate(PATHS.board);
   await waitFor(() => expect(loaded.has("board")).toBe(true), FIRST_PAGE_LOAD);
+  // Drawn, not only loaded: its columns, and no notice that it failed.
+  const column = TEXT.board.columns.needsYou.title;
+  expect(await screen.findByRole("region", { name: column }, FIRST_PAGE_LOAD)).toBeTruthy();
+  expect(screen.queryByText(TEXT.routeError.message)).toBeNull();
 });
 
 it("keeps the navigation and the session when a page fails to render, says so, and lets the person move on", async () => {

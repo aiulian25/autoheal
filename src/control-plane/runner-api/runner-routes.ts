@@ -217,7 +217,7 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
     const { incidentId } = parseBody(incidentParameters, request.params);
     const result = parseBody(outcomeSchema, request.body);
     services.resultReceipts.accept(request.runnerHost!.id, "incident", incidentId, result, () =>
-      services.incidentsService.recordOutcome(request.runnerHost!, incidentId, result),
+      services.incidentsService.takeOutcome(request.runnerHost!, incidentId, result),
     );
     return reply.code(HTTP_STATUS.noContent).send();
   });

@@ -14,6 +14,59 @@ const abortable = (gate: Promise<string>, signal: AbortSignal) =>
   });
 
 describe("DecisionQueue", () => {
+  it("takes another host's live work before more of the host it just served", async () => {
+    const queue = new DecisionQueue();
+    const first = deferred();
+    const order: string[] = [];
+    const work = (name: string) => async () => {
+      order.push(name);
+      return name;
+    };
+    const asked = [
+      queue.enqueue(
+        "live",
+        async () => {
+          order.push("a1");
+          return first.promise;
+        },
+        { owner: "a" },
+      ),
+      queue.enqueue("live", work("a2"), { owner: "a" }),
+      queue.enqueue("live", work("a3"), { owner: "a" }),
+      queue.enqueue("live", work("b1"), { owner: "b" }),
+    ];
+
+    first.resolve("a1");
+    await Promise.all(asked);
+
+    expect(order).toEqual(["a1", "b1", "a2", "a3"]);
+  });
+
+  it("lets go at once of waiting work its runner gave up on, and never runs it", async () => {
+    const queue = new DecisionQueue();
+    const first = deferred();
+    const gone = new AbortController();
+    let ran = false;
+    const running = queue.enqueue("live", () => first.promise, { owner: "a" });
+    const abandoned = queue.enqueue(
+      "live",
+      async () => {
+        ran = true;
+        return "late";
+      },
+      { owner: "a", signal: gone.signal },
+    );
+    expect(queue.pending).toBe(1);
+
+    gone.abort(new Error("runner gone"));
+
+    expect(queue.pending).toBe(0);
+    await expect(abandoned).rejects.toThrow("runner gone");
+    first.resolve("done");
+    await running;
+    expect(ran).toBe(false);
+  });
+
   it("cancels queued work and isolates late completion from the resumed queue", async () => {
     const queue = new DecisionQueue();
     const old = deferred();

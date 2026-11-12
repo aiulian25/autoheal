@@ -15,6 +15,9 @@ import {
   topLevelBlocks,
   yamlProblems,
 } from "./home-config-scan.js";
+import { startTestControlPlane } from "../../../test/support/control-plane.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
+import { API_ROUTES, apiPath } from "../../shared/api.js";
 import { HOME_SCAN_INCOMPLETE } from "../../shared/home-review.js";
 import { HomeReview, type HomeFacts, type HomeLogRecord } from "./home-review.js";
 
@@ -491,6 +494,41 @@ describe("the review", () => {
     expect(answer?.unknownEntities).toEqual(["light.made_up"]);
   });
 
+  it("sends a room's automations with no value named like a secret, however the YAML writes it", async () => {
+    writeFileSync(
+      join(root, "automations.yaml"),
+      `- id: a
+  alias: Hall light
+  triggers:
+  - entity_id: binary_sensor.hall_motion
+    trigger: state
+  actions:
+  - action: rest_command.hall
+    data:
+      password: 'single marker'
+      api_key: "double \\" marker"
+      token: plain marker words
+      'secret': 'it''s a marker'
+      credentials:
+        user: nested-marker
+      private_key: |
+        block-marker
+      note: kept in view
+    target:
+      entity_id: light.hall
+`,
+    );
+    const ask = vi.fn(async () => '{"suggestions":[]}');
+    const review = reviewWith({ ask });
+    expect(review.suggestForRoom("hall")).toBe(true);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalled());
+    const [, user] = ask.mock.calls[0] as unknown as [string, string];
+    expect(user).not.toContain("marker");
+    expect(user).toContain("Hall light");
+    expect(user).toContain("note: kept in view");
+    expect(user).toContain("entity_id: light.hall");
+  });
+
   it("sends a model nothing from a file reached through a link, and shows that it was not read", async () => {
     writeFileSync(join(root, "secrets.yaml"), "# Kitchen fan never-to-be-seen\n");
     symlinkSync(join(root, "secrets.yaml"), join(root, "kitchen.yaml"));
@@ -519,5 +557,49 @@ describe("the review", () => {
     expect(user).not.toContain("hunter2");
     expect(await review.suggestFix("nothing")).toBe(false);
     expect(review.suggestForRoom("nowhere")).toBe(false);
+  });
+
+  it.each([
+    ["an answer", (answer: { resolve: (text: string) => void }) => answer.resolve('{"suggestions":[]}')],
+    ["a failure", (answer: { reject: (error: Error) => void }) => answer.reject(new Error("the model went away"))],
+  ])("keeps nothing of %s the model gives after a restore", async (_what, release) => {
+    let answer!: { resolve: (text: string) => void; reject: (error: Error) => void };
+    const ask = vi.fn(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          answer = { resolve, reject };
+        }),
+    );
+    const review = reviewWith({ ask });
+    const runOf = async () => (await review.view()).rooms.find(({ id }) => id === "hall")?.run.status;
+    expect(review.suggestForRoom("hall")).toBe(true);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+
+    review.reset();
+    release(answer);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(await runOf()).toBe("idle");
+  });
+});
+
+describe("the review in the dashboard", () => {
+  it("starts afresh after a restore, and when another Home Assistant is set", async () => {
+    const controlPlane = await startTestControlPlane();
+    try {
+      const reset = vi.spyOn(controlPlane.services.homeReview, "reset");
+      await controlPlane.services.databaseHandle.restore.exclusive(async () => undefined);
+      expect(reset).toHaveBeenCalledTimes(1);
+
+      const { client: admin } = await fullySignedInAdmin(controlPlane);
+      const saved = await admin.put(apiPath(API_ROUTES.integration, { kind: "homeAssistant" }), {
+        url: "https://home.example.test",
+        token: "a-made-up-token",
+      });
+      expect(saved.statusCode, saved.body).toBeLessThan(300);
+      expect(reset).toHaveBeenCalledTimes(2);
+    } finally {
+      await controlPlane.app.close();
+      await controlPlane.runnerApp.close();
+    }
   });
 });

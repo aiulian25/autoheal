@@ -80,6 +80,11 @@ export const ARTIFACT_OPENING_OPERATIONS: readonly ApplicationBackupOperation[] 
 export const APPLICATION_BACKUP_ARTIFACT_STATUS = { pending: "pending", ready: "ready", failed: "failed" } as const;
 export type ApplicationBackupArtifactStatus =
   (typeof APPLICATION_BACKUP_ARTIFACT_STATUS)[keyof typeof APPLICATION_BACKUP_ARTIFACT_STATUS];
+// The volumes a backup's copy passes through on its way out and back in: only ever the runner's own.
+export const APPLICATION_BACKUP_VOLUME_LABEL = {
+  artifact: "autoheal.application-backup.artifact",
+  download: "autoheal.application-backup.download",
+} as const;
 // Starting a backed-up application on its restored copy, only for a plan that asks: fresh volumes, its own image, no
 // network, nothing of the live container's settings but its user.
 export const APPLICATION_BOOT_DRILL = {

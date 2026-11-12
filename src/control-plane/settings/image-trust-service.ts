@@ -1,4 +1,4 @@
-import { createPublicKey, randomUUID } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { API_ERRORS } from "../../shared/api.js";
@@ -39,18 +39,33 @@ export interface ImageTrustView {
 const scopeOf = (rule: { registry: string; repository: string | null }) =>
   rule.repository === null ? rule.registry : `${rule.registry}/${rule.repository}`;
 
-/** What kind of key it is, for the card to show; a key that does not read as one is refused before it is kept. */
-function keyTypeOf(publicKey: string): string {
+/**
+ * A key's public part as SPKI PEM, and what kind of key it is, for the card to show. Derived from whatever is kept: a
+ * row from before private keys were refused may hold one, and only its public part ever leaves here.
+ */
+function publicPartOf(key: string): { publicKey: string; keyType: string } {
   try {
-    return createPublicKey(publicKey).asymmetricKeyType ?? "";
+    const derived = createPublicKey(key);
+    const publicKey = derived.export({ type: "spki", format: "pem" }).toString().trim();
+    return { publicKey, keyType: derived.asymmetricKeyType ?? "" };
   } catch {
     throw new DomainError(API_ERRORS.publisherKeyInvalid);
   }
 }
 
+// Whether a pasted key is a signing key's private half, which is meant for nobody here and is never kept.
+const isPrivateKey = (key: string) => {
+  try {
+    createPrivateKey(key);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Which publishers an admin trusts, and where a signed image is required before Autoheal puts one in place. Nothing
- * here is secret: a public key is kept as it was given. The revision is what every runner caches its evidence
+ * here is secret: a key is kept as its public part, and a private one pasted by mistake is refused. The revision is what every runner caches its evidence
  * under, so adding a key or a rule makes every host ask again rather than believe what it read before.
  */
 export class ImageTrustService {
@@ -65,8 +80,7 @@ export class ImageTrustService {
     return {
       publishers: publishers.map((row) => ({
         name: row.name,
-        publicKey: row.publicKey,
-        keyType: keyTypeOf(row.publicKey),
+        ...publicPartOf(row.publicKey),
         createdBy: row.createdBy,
         createdAt: row.createdAt,
       })),
@@ -93,12 +107,13 @@ export class ImageTrustService {
   }
 
   addPublisher(actor: Actor, body: PublisherBody) {
-    const keyType = keyTypeOf(body.publicKey);
+    if (isPrivateKey(body.publicKey)) throw new DomainError(API_ERRORS.publisherKeyInvalid);
+    const { publicKey, keyType } = publicPartOf(body.publicKey);
     const existing = this.publisherRows().some((row) => row.name === body.name);
     if (existing) throw new DomainError(API_ERRORS.publisherNameTaken);
     this.databaseHandle.database
       .insert(trustedPublishers)
-      .values({ ...body, createdBy: actor.username, createdAt: this.clock() })
+      .values({ name: body.name, publicKey, createdBy: actor.username, createdAt: this.clock() })
       .run();
     this.auditLog.recordUserAction(actor, AUDIT_ACTIONS.trustedPublisherAdded, this.target(body.name), { keyType });
   }

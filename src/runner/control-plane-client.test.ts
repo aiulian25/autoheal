@@ -13,6 +13,7 @@ import {
   JoinCodeRefusedError,
   PinMismatchError,
   redeemJoinCode,
+  refusedForGood,
 } from "./control-plane-client.js";
 
 const TOKEN = `ahk_${"a".repeat(43)}`;
@@ -211,6 +212,34 @@ describe("the runner's connection to the control plane", () => {
       "/runner/v1/jobs/job/result",
       "/runner/v1/jobs/job/result",
     ]);
+  });
+
+  it("keeps a result to send again when the server cannot say how it takes results, never as refused", async () => {
+    const material = ownCertificate(directory, ["127.0.0.1"], Date.now()).material;
+    let upgraded = false;
+    const paths: string[] = [];
+    server = createServer({ key: material.key, cert: material.certificate }, (request, response) => {
+      paths.push(request.url!);
+      const asking = request.url === "/runner/v1/result-delivery";
+      // An older control plane has no such route: it answers as it would a result it will never take.
+      response.statusCode = asking ? (upgraded ? 200 : 404) : 204;
+      response.end(asking ? JSON.stringify(upgraded ? { version: 1 } : { error: "not_found" }) : undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = new ControlPlaneClient({
+      url: `https://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      token: TOKEN,
+      pin: material.pin,
+    });
+    const result = { succeeded: true, outcome: "done", output: null };
+
+    const failure = await client.reportJobResult("job", result).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(refusedForGood(failure)).toBe(false);
+
+    upgraded = true;
+    await client.reportJobResult("job", result);
+    expect(paths).toEqual(["/runner/v1/result-delivery", "/runner/v1/result-delivery", "/runner/v1/jobs/job/result"]);
   });
 
   describe("asking for an install's details", () => {

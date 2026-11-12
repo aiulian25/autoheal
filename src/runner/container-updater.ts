@@ -114,11 +114,10 @@ interface ReplaceMode {
   keepData: boolean;
   startAlways: boolean;
   requireCheckpoint?: boolean;
-  // Set once a copy of the data did not complete, so nothing may be put back over data that was never kept.
+  // Set once a copy of the data did not complete, so nothing may be put back over data that was never kept. An
+  // automatic update goes on without copies too big to make (its owner's choice, 2026-11-06); the old version then
+  // waits aside, stopped, as it might not read what the new one wrote (2026-11-12).
   dataUnkept?: boolean;
-  // Set when the only copies not made were too big to make: an automatic update goes on without them (its owner's
-  // choice, 2026-11-06), and an undo puts the old container back over the data as the new version left it.
-  oversized?: boolean;
 }
 const UPDATING: ReplaceMode = { keepData: true, startAlways: false };
 const EDITING: ReplaceMode = { keepData: false, startAlways: false };
@@ -285,10 +284,14 @@ function dependentNamesOf(name: string, id: string, summaries: readonly Containe
     .toSorted();
 }
 
+// Docker made the new container from another image than the one decided on: its tag moved meanwhile.
+class TagMoved extends Error {}
+
 // Where a replace ended: the old container back (the new one never ran), the new one started badly with the old
 // one kept aside, or the new one started and checked.
 type Swapped =
-  | { state: "back"; result: ActionResult }
+  // `keptStopped`: put back without starting it, as Docker may have put another image's files in its volumes.
+  | { state: "back"; result: ActionResult; keptStopped?: boolean }
   | { state: "aside"; result: ActionResult }
   | { state: "started"; newId: string; healthy: boolean; warning: string };
 
@@ -296,11 +299,13 @@ interface ReplaceProgress {
   wasRunning: boolean;
   renamed: boolean;
   newId: string | null;
+  startRequested: boolean;
 }
 
 /** How a recreate is told, an update's or an edit's: when the old container came back, or stayed aside. */
 interface ReplaceWording {
   restoredAfterFailure: (name: string, error: string) => string;
+  restoredStopped: (name: string, error: string) => string;
   restoreFailed: (name: string, error: string, parked: string) => string;
   startedBadly: (name: string, problem: string, parked: string) => string;
   // An update's, of a group: the containers in its network, left stopped for the roll back.
@@ -324,9 +329,10 @@ function keptNameOf(reference: string) {
 /**
  * Updates a container to the newest image behind its tag: pull, recreate with the same settings,
  * and check the new one runs (and is healthy, if it has a health check). A new container that
- * never ran is replaced by the old one at once. One that started but went wrong is not: it may
- * already have migrated its data, so the old container is kept aside and a person rolls back, with
- * the data kept before the update when there is a checkpoint of it.
+ * never ran is replaced by the old one at once. One that started but went wrong is not, nor one
+ * whose start Docker never confirmed: it may already have migrated its data, so the old container
+ * is kept aside and a person rolls back, with the data kept before the update when there is a
+ * checkpoint of it.
  */
 export class ContainerUpdater {
   constructor(
@@ -354,14 +360,20 @@ export class ContainerUpdater {
 
   /**
    * `undoIfUnhealthy`: a container given to Ollama. A new version that starts badly is undone at once, its data put
-   * back as it was, rather than kept aside for a person to roll back. A person updating one by hand on a host that
-   * cannot keep its data goes ahead without that undo, since there is no data to put back.
+   * back as it was, rather than kept aside for a person to roll back. One whose data was not copied first, by hand on
+   * a host that cannot keep it or as too big to copy, goes ahead without that undo, since there is no data to put back.
    */
   async update(
     name: string,
     undoIfUnhealthy = false,
     steps: UpdateSteps = UNWATCHED,
-    options: { allowWithoutCheckpoint?: boolean; authorize?: () => Promise<boolean>; rollout?: RolloutJob } = {},
+    options: {
+      allowWithoutCheckpoint?: boolean;
+      authorize?: () => Promise<boolean>;
+      rollout?: RolloutJob;
+      // The registry digest of the image a person said yes to.
+      expectedDigest?: string;
+    } = {},
   ): Promise<ActionResult> {
     const recovering = await this.journal.find(name);
     if (recovering !== null) return failed(JOB_OUTCOMES.rollbackPending(recovering.owner));
@@ -442,6 +454,12 @@ export class ContainerUpdater {
       if (details.Image !== undefined) this.confirmCurrent(details.Image, reference);
       return { succeeded: true, outcome: JOB_OUTCOMES.alreadyCurrent(name) };
     }
+    // A yes was to one image: another the tag moved to since waits for a yes of its own, and nothing stops.
+    const approved = options.expectedDigest;
+    const isApproved = (digest: string) => digest.split(DIGEST_SEPARATOR)[1] === approved;
+    if (approved !== undefined && !newImage.RepoDigests?.some(isApproved)) {
+      return failed(JOB_OUTCOMES.notTheApprovedImage(name, reference));
+    }
     if (rollout && Object.keys(newImage.Config?.Volumes ?? {}).length > 0)
       return failed(
         "The reviewed target image declares persistent volumes. Stateless rollout was refused before stopping the source.",
@@ -449,8 +467,9 @@ export class ContainerUpdater {
     const specification = { ...recreateSpecification(details, configOf(oldImage), reference), image: newImage.Id };
     const dataUnkept =
       this.checkpoints === null && [details, ...dependents].some((member) => dataMountsOf(member).length > 0);
-    // A person may go ahead though its data cannot be copied first; an automatic update may not. Whether it is
-    // then undone is known only once the copy has been tried: nothing is put back over data that was never kept.
+    // A person may go ahead though its data cannot be copied first; an automatic update may not, unless there is only
+    // too much of it. Whether it is then undone is known only once the copy has been tried: nothing is put back over
+    // data that was never kept.
     const mode: ReplaceMode = { ...UPDATING, requireCheckpoint: options.allowWithoutCheckpoint !== true, dataUnkept };
     const undoing = () => undoIfUnhealthy && mode.dataUnkept !== true;
     const wording: ReplaceWording = {
@@ -498,11 +517,9 @@ export class ContainerUpdater {
     // What the new version said before it goes: why it did not hold.
     const said = await this.lastWords(name);
     steps.enter(UPDATE_PHASE.undoing);
-    const keepCurrentData = mode.oversized === true;
-    const undone = await this.rollBack(name, undefined, { keepCurrentData });
-    const undoneSaid = keepCurrentData && undone.succeeded ? JOB_OUTCOMES.rolledBackDataKept(name) : undone.outcome;
+    const undone = await this.rollBack(name);
     const output = result.output === undefined ? said : `${result.output}${said === null ? "" : `\n\n${said}`}`;
-    return { ...failed(`${result.outcome} ${undoneSaid}`), ...(output === null ? {} : { output }) };
+    return { ...failed(`${result.outcome} ${undone.outcome}`), ...(output === null ? {} : { output }) };
   }
 
   private async lastWords(name: string): Promise<string | null> {
@@ -595,15 +612,7 @@ export class ContainerUpdater {
    * Puts back the container an update kept aside, removing the one that replaced it, and the data kept before the
    * update with it. Data that cannot be put back leaves it stopped: the old version must not run on the new data.
    */
-  /**
-   * `keepCurrentData`: put the old container back over the data as the new version left it, for an automatic update
-   * whose data was too big to copy first. Every other roll back restores the data kept before the update.
-   */
-  async rollBack(
-    name: string,
-    authorize?: () => Promise<boolean>,
-    options: { keepCurrentData?: boolean } = {},
-  ): Promise<ActionResult> {
+  async rollBack(name: string, authorize?: () => Promise<boolean>): Promise<ActionResult> {
     let operation: RollbackOperation | null = null;
     try {
       operation = await this.journal.find(name);
@@ -642,9 +651,7 @@ export class ContainerUpdater {
           ) {
             throw new Error(`${member.name} is no longer this group's replacement.`);
           }
-          const restore =
-            options.keepCurrentData !== true &&
-            (group !== null || original.Image === undefined || replacement?.Image !== original.Image);
+          const restore = group !== null || original.Image === undefined || replacement?.Image !== original.Image;
           const available = restore ? await this.checkpointAvailable(member.name, original) : NO_DATA_KEPT;
           if (available.problem !== null) return failed(JOB_OUTCOMES.rollbackRefused(member.name, available.problem));
           if (member.name === name) at = available.at;
@@ -948,9 +955,10 @@ export class ContainerUpdater {
     const wasRunning = details.State.Running === true;
     const starts = wasRunning || mode.startAlways;
     // How far it got, so a failure undoes exactly that.
-    const progress: ReplaceProgress = { wasRunning, renamed: false, newId: null };
+    const progress: ReplaceProgress = { wasRunning, renamed: false, newId: null, startRequested: false };
     let kept = "";
     let warning = "";
+    let dataKept = false;
     try {
       if (wasRunning) {
         steps.enter(UPDATE_PHASE.stopping);
@@ -975,24 +983,40 @@ export class ContainerUpdater {
             throw new Error(verified.problem);
           }
         }
+        dataKept = complete;
         warning = complete ? "" : kept;
-        if (!complete && !tooBig) mode.dataUnkept = true;
-        if (tooBig) mode.oversized = true;
+        if (!complete) mode.dataUnkept = true;
       }
       steps.enter(UPDATE_PHASE.starting);
       await this.docker.rename(oldId, parked);
       progress.renamed = true;
-      const newId = await this.createOn(name, specification.create, specification.image);
-      progress.newId = newId;
+      const newId = await this.createOn(name, specification.create, specification.image, (created) => {
+        progress.newId = created;
+      });
       for (const [network, endpoint] of specification.extraNetworks) {
         await this.docker.connect(network, newId, endpoint);
       }
       // A stopped container is updated and left stopped, as it was; a repair starts it.
       if (starts) {
+        progress.startRequested = true;
         await this.docker.start(newId);
       }
     } catch (error) {
-      return { state: "back", result: await this.restore(name, oldId, progress, describeError(error), wording) };
+      const reason = describeError(error);
+      // Docker may have started it though its answer never came back, and a new version may have moved the data on.
+      const mayHaveChangedData = progress.startRequested && specification.image !== details.Image;
+      if (mayHaveChangedData) {
+        const problem = VERIFY_PROBLEMS.startUnconfirmed(reason);
+        return { state: "aside", result: failed(`${wording.startedBadly(name, problem, parked)}${kept}`) };
+      }
+      // Made from another image with its volumes attached, an empty one may hold that image's files: what was kept of
+      // its data goes back first. With nothing kept it cannot be undone, so the old one comes back stopped, for a person
+      // to look at first (its owner's choice, 2026-11-12).
+      const filled = error instanceof TagMoved && dataMountsOf(details).some(({ type }) => type === MOUNT_TYPE_VOLUME);
+      const dataBack = filled && dataKept ? details : null;
+      const keptStopped = filled && !dataKept;
+      const result = await this.restore(name, oldId, progress, reason, wording, dataBack, keptStopped);
+      return { state: "back", result, keptStopped };
     }
     const newId = progress.newId!;
     if (starts) {
@@ -1008,14 +1032,21 @@ export class ContainerUpdater {
 
   /**
    * Created by its tag, which Compose and the dashboard go on reading, then kept only if it runs the image decided on:
-   * should another pull have moved the tag meanwhile, the new container is removed before it ever starts.
+   * should another pull have moved the tag meanwhile, the new container is removed before it ever starts. `created`
+   * hears its ID the moment Docker gives it, so a look at it that fails still leaves it known, to be taken away.
    */
-  private async createOn(name: string, create: Record<string, unknown>, image: string | undefined): Promise<string> {
+  private async createOn(
+    name: string,
+    create: Record<string, unknown>,
+    image: string | undefined,
+    created: (id: string) => void = () => undefined,
+  ): Promise<string> {
     const newId = await this.docker.create(name, create);
+    created(newId);
     const runs = (await this.docker.inspect(newId))?.Image;
     if (runs !== undefined && runs === image) return newId;
     await this.docker.remove(newId).catch(() => undefined);
-    throw new Error(JOB_OUTCOMES.tagMovedMeanwhile(String(create.Image)));
+    throw new TagMoved(JOB_OUTCOMES.tagMovedMeanwhile(String(create.Image)));
   }
 
   // The new one holds: the old one goes, and nothing can roll back to it any more.
@@ -1027,9 +1058,23 @@ export class ContainerUpdater {
     steps: UpdateSteps,
   ) {
     steps.enter(UPDATE_PHASE.finishing);
-    await this.docker.remove(details.Id!).catch(() => undefined);
+    const kept = await this.removeOriginal(name, details.Id!);
+    return `${await wording.finished(healthy)}${kept}`;
+  }
+
+  /**
+   * The container a replace set aside goes, and the copy of its data with it, but only once Docker shows it gone. One
+   * still there, or that cannot be looked at, keeps its copy and is named in what the update says.
+   */
+  private async removeOriginal(name: string, originalId: string): Promise<string> {
+    await this.docker.remove(originalId).catch(() => undefined);
+    const gone = await this.docker.inspect(originalId).then(
+      (found) => found === null,
+      () => false,
+    );
+    if (!gone) return JOB_OUTCOMES.originalKept(parkedNameOf(name));
     await this.checkpoints?.discard(name);
-    return wording.finished(healthy);
+    return "";
   }
 
   private problemOf(containerId: string) {
@@ -1110,6 +1155,7 @@ export class ContainerUpdater {
     const group: UpdateGroup = { version: 1, provider: member(details), dependents: dependents.map(member) };
     const prepared: string[] = [];
     const checkpointWarnings: string[] = [];
+    const copyWarnings = () => checkpointWarnings.map((warning) => ` ${warning}`).join("");
     // swap stops the provider before this callback, so every known group writer is quiescent.
     const prepare = async () => {
       steps.enter(UPDATE_PHASE.keepingData);
@@ -1131,8 +1177,7 @@ export class ContainerUpdater {
         }
         if (!taken.complete) {
           checkpointWarnings.push(`${dependentName}: ${taken.outcome || JOB_OUTCOMES.checkpointRequired}`);
-          if (tooBig) mode.oversized = true;
-          else mode.dataUnkept = true;
+          mode.dataUnkept = true;
         }
         if (mode.requireCheckpoint && this.checkpoints !== null && !tooBig) {
           const verified = await this.checkpoints.verify(dependentName, dependent);
@@ -1152,13 +1197,18 @@ export class ContainerUpdater {
     };
     const swapped = await this.swap(name, details, specification, mode, wording, steps, prepare);
     if (swapped.state === "back") {
-      const started = await this.startEach(running);
+      // They run inside its network: kept stopped, it keeps them stopped too.
+      const waiting = swapped.keptStopped === true;
+      const started = waiting ? [] : await this.startEach(running);
       for (const dependentName of prepared) await this.checkpoints?.discard(dependentName);
-      return failed(`${swapped.result.outcome}${startedText(started)}`);
+      const stillStopped = waiting && running.length > 0 ? JOB_OUTCOMES.dependentsWaitStopped(running.map(nameOf)) : "";
+      return failed(`${swapped.result.outcome}${startedText(started)}${stillStopped}`);
     }
     if (swapped.state === "aside") {
       return {
-        ...failed(`${swapped.result.outcome}${wording.dependentsStopped?.(dependents.map(nameOf)) ?? ""}`),
+        ...failed(
+          `${swapped.result.outcome}${wording.dependentsStopped?.(dependents.map(nameOf)) ?? ""}${copyWarnings()}`,
+        ),
         output: JSON.stringify(group, null, 2),
       };
     }
@@ -1175,20 +1225,18 @@ export class ContainerUpdater {
     if (problems.length > 0) {
       return {
         succeeded: false,
-        outcome: `${JOB_OUTCOMES.groupRetained(name)}${problems.join("")}${swapped.warning}${checkpointWarnings.join(" ")}`,
+        outcome: `${JOB_OUTCOMES.groupRetained(name)}${problems.join("")}${swapped.warning}${copyWarnings()}`,
         output: JSON.stringify(group, null, 2),
       };
     }
     // Group commit: no original or checkpoint is discarded until every dependent verifies.
-    for (const dependent of dependents) {
-      await this.docker.remove(dependent.Id!).catch(() => undefined);
-      await this.checkpoints?.discard(nameOf(dependent));
-    }
+    const kept: string[] = [];
+    for (const dependent of dependents) kept.push(await this.removeOriginal(nameOf(dependent), dependent.Id!));
     const finished = await this.finish(name, details, swapped.healthy, wording, steps);
     const recreatedText = recreated.length === 0 ? "" : JOB_OUTCOMES.groupRecreated(recreated);
     return {
       succeeded: true,
-      outcome: `${finished}${recreatedText}${swapped.warning}${checkpointWarnings.join(" ")}`,
+      outcome: `${finished}${recreatedText}${kept.join("")}${swapped.warning}${copyWarnings()}`,
     };
   }
 
@@ -1246,13 +1294,16 @@ export class ContainerUpdater {
     return kept.reference;
   }
 
-  // The new container never ran its application, so putting the old one back is safe, and its data needs no help.
+  // The new container never ran its application, or runs the old one's own image: putting the old one back is safe,
+  // and its data needs no help unless `dataBack`, the old one's, says to put back what was kept of it first.
   private async restore(
     name: string,
     oldId: string,
     progress: ReplaceProgress,
     error: string,
     wording: ReplaceWording,
+    dataBack: ContainerDetails | null = null,
+    keptStopped = false,
   ) {
     try {
       if (progress.newId !== null) {
@@ -1261,14 +1312,18 @@ export class ContainerUpdater {
       if (progress.renamed) {
         await this.docker.rename(oldId, name);
       }
-      if (progress.wasRunning) {
+      const data = dataBack === null ? null : await this.checkpoints?.restore(name, dataBack);
+      if (data?.problem != null) {
+        return failed(JOB_OUTCOMES.restoreDataFailed(name, `${error}; ${data.problem}`));
+      }
+      if (progress.wasRunning && !keptStopped) {
         await this.docker.start(oldId);
       }
     } catch {
       return failed(wording.restoreFailed(name, error, parkedNameOf(name)));
     }
     await this.checkpoints?.discard(name);
-    return failed(wording.restoredAfterFailure(name, error));
+    return failed(keptStopped ? wording.restoredStopped(name, error) : wording.restoredAfterFailure(name, error));
   }
 }
 

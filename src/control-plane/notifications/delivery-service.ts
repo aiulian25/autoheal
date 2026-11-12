@@ -1,5 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { API_ERRORS, type NotificationDeliveryView } from "../../shared/api.js";
 import {
   AUDIT_ACTIONS,
@@ -11,6 +26,7 @@ import {
 import {
   DELIVERY_ATTEMPT_LIMIT,
   DELIVERY_EVENT_LIMIT,
+  DELIVERY_PENDING_EVENTS_PER_HOST,
   DELIVERY_LIST_LIMITS,
   DELIVERY_RESOURCE,
   DELIVERY_RETENTION_MILLISECONDS,
@@ -127,7 +143,8 @@ export class DeliveryService {
     if (before) return before.id;
     const now = this.clock();
     this.prune(now);
-    if (this.database.select({ count: count() }).from(notificationEvents).get()!.count >= DELIVERY_EVENT_LIMIT) {
+    const total = this.database.select({ count: count() }).from(notificationEvents).get()!.count;
+    if (total >= DELIVERY_EVENT_LIMIT || this.waitingFrom(hostId) >= DELIVERY_PENDING_EVENTS_PER_HOST) {
       this.database
         .update(notificationRouting)
         .set({ overflowCount: sql`${notificationRouting.overflowCount} + 1`, lastOverflowAt: now })
@@ -230,6 +247,16 @@ export class DeliveryService {
       })
       .onConflictDoNothing()
       .run();
+  }
+  // How many of one host's alerts still wait to go out; the control plane's own are not counted against a host.
+  private waitingFrom(hostId: string | null): number {
+    if (hostId === null) return 0;
+    return this.database
+      .select({ count: countDistinct(notificationEvents.id) })
+      .from(notificationEvents)
+      .innerJoin(notificationDeliveries, eq(notificationDeliveries.eventId, notificationEvents.id))
+      .where(and(eq(notificationEvents.hostId, hostId), inArray(notificationDeliveries.status, [...PENDING])))
+      .get()!.count;
   }
   private prune(now: number) {
     this.database
@@ -395,11 +422,13 @@ export class DeliveryService {
           DELIVERY_RETRY_MILLISECONDS * 2 ** Math.min(DELIVERY_RETRY_DOUBLINGS, attempts - 1),
         ),
     );
-    this.database
+    // Taken only while it is still queued: one cancelled since this tick looked, as a resolution does, is not sent.
+    const claimed = this.database
       .update(notificationDeliveries)
       .set({ status: "sending", attempts, lastAttemptAt: now, nextAttemptAt: next, failureCode: null })
-      .where(eq(notificationDeliveries.id, delivery.id))
+      .where(and(eq(notificationDeliveries.id, delivery.id), eq(notificationDeliveries.status, "queued")))
       .run();
+    if (claimed.changes === 0) return;
     let failure: DeliveryFailure | null;
     try {
       failure = await this.sender!(delivery.channel, message);

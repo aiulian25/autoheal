@@ -38,6 +38,12 @@ export function useRefreshSession() {
   return () => queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY });
 }
 
+/**
+ * Open while a sign-in step shows what is given only once (recovery codes, the backup passphrase) and the person has not
+ * yet said they saved it. In memory alone, for this page: gone on Done, on leaving the page and on being signed out.
+ */
+export const oneTimeHandoff = { open: false };
+
 /** Where a signed-in person must go before the dashboard opens, or null when nothing is left. */
 export function requiredStep(session: SessionView | null): string | null {
   if (session === null) {

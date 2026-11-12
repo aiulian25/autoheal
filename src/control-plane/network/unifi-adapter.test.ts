@@ -1,16 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FAKE_UNIFI_LOGIN, FakeUnifi } from "../../../test/fakes/fake-unifi.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FAKE_UNIFI_CLIENTS_PATH, FAKE_UNIFI_LOGIN, FakeUnifi } from "../../../test/fakes/fake-unifi.js";
+import { NETWORK_TEXT } from "../../shared/network.js";
 import { RouterCertificateChanged, RouterLoginRefused } from "./router-adapter.js";
-import { UnifiAdapter, routerCertificate } from "./unifi-adapter.js";
+import { UNIFI_ANSWER_LIMITS, UnifiAdapter, routerCertificate } from "./unifi-adapter.js";
 
 const WIRED_MAC = "00:00:5E:00:53:01";
 const SWITCH_MAC = "00:00:5E:00:53:0A";
+// Short enough to wait for here, long enough for a sign-in on this machine while every test file runs.
+const SECOND_TO_ANSWER = { ...UNIFI_ANSWER_LIMITS, milliseconds: 1_000 };
+const KIBIBYTE_ANSWER = { ...UNIFI_ANSWER_LIMITS, bytes: 1_024 };
+const MANY_CLIENTS = 64;
 
 describe("the UniFi adapter", () => {
   let router: FakeUnifi;
   let pin: string;
-  const adapter = (overrides: { password?: string; pin?: string | null } = {}) =>
-    new UnifiAdapter({ url: router.url(), ...FAKE_UNIFI_LOGIN, pin, ...overrides });
+  const adapter = (overrides: { password?: string; pin?: string | null } = {}, limits = UNIFI_ANSWER_LIMITS) =>
+    new UnifiAdapter({ url: router.url(), ...FAKE_UNIFI_LOGIN, pin, ...overrides }, limits);
 
   beforeEach(async () => {
     router = await FakeUnifi.start();
@@ -148,11 +153,42 @@ describe("the UniFi adapter", () => {
     expect((await reader.devices())[0]?.upgradeTo).toBe("7.1");
   });
 
+  it("lets go of an answer still coming once its time is up", async () => {
+    const reader = adapter({}, SECOND_TO_ANSWER);
+    await reader.devices();
+    router.trickled.add(FAKE_UNIFI_CLIENTS_PATH);
+    await expect(reader.clients()).rejects.toThrow(NETWORK_TEXT.routerTooSlow);
+    await vi.waitFor(() => expect(router.openAnswers()).toBe(0));
+  });
+
+  it("stops reading an answer larger than it keeps", async () => {
+    router.clients = Array.from({ length: MANY_CLIENTS }, (_, index) => ({
+      mac: `00:00:5E:00:53:${index.toString(16).padStart(2, "0")}`,
+      hostname: "a-device",
+    }));
+    await expect(adapter({}, KIBIBYTE_ANSWER).clients()).rejects.toThrow(NETWORK_TEXT.routerAnswerTooLarge);
+  });
+
+  it("stops what it is still asking when told to, and asks afresh after", async () => {
+    router.trickled.add(FAKE_UNIFI_CLIENTS_PATH);
+    const reader = adapter();
+    const reading = reader.clients();
+    await vi.waitFor(() => expect(router.openAnswers()).toBe(1));
+    reader.cancel();
+    await expect(reading).rejects.toThrow(NETWORK_TEXT.routerReadStopped);
+    await vi.waitFor(() => expect(router.openAnswers()).toBe(0));
+    router.trickled.clear();
+    expect(await reader.clients()).toEqual([]);
+  });
+
   it("takes a refused speed test as a no", async () => {
     const reader = adapter();
     await reader.clients();
     expect(await reader.startSpeedTest()).toBe(true);
     router.speedTestStatus = 403;
     expect(await reader.startSpeedTest()).toBe(false);
+    // The router's own trouble is no answer either way.
+    router.speedTestStatus = 502;
+    await expect(reader.startSpeedTest()).rejects.toThrow("The router answered 502");
   });
 });

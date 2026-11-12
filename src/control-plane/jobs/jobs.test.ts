@@ -19,6 +19,7 @@ import {
 import {
   BYTES_PER_GIBIBYTE,
   AUTOHEAL_ASSESSMENT,
+  AUTOHEAL_TEXT,
   HEARTBEAT_INTERVAL_MILLISECONDS,
   JOB_ANSWER_MILLISECONDS,
   JOB_EXPIRY_MILLISECONDS,
@@ -517,6 +518,47 @@ describe("container actions", () => {
         return taken;
       });
       expect(jobs).toEqual([expect.objectContaining({ action: "update", containerName: "whoami" })]);
+    });
+
+    describe("a hand-over that said yes to one image", () => {
+      const adminId = () =>
+        (controlPlane.services.databaseHandle.sqlite.prepare("SELECT id FROM users").get() as { id: string }).id;
+      const handOver = (taskId: string, digest: string) =>
+        controlPlane.services.dispatchService.dispatch(
+          { userId: adminId(), username: "admin", ip: "127.0.0.1", requestId: "r" },
+          { updates: [taskId], packages: [], incidents: [], tags: [] },
+          new Map([[taskId, digest]]),
+        );
+
+      it("sends its update to that image alone", async () => {
+        const task = await whoamiTask();
+        handOver(task.id, update.remoteDigest);
+        await controlPlane.services.autohealWorker.run();
+
+        const jobs = await vi.waitFor(async () => {
+          const taken = (await takeWork()).jobs;
+          expect(taken).toHaveLength(1);
+          return taken;
+        });
+        expect(jobs[0]).toMatchObject({
+          action: "update",
+          containerName: "whoami",
+          expectedDigest: update.remoteDigest,
+        });
+      });
+
+      it("gives it back, asking nothing of the runner, once a newer image is out than the one it said yes to", async () => {
+        const task = await whoamiTask();
+        handOver(task.id, `sha256:${"b".repeat(64)}`);
+        await controlPlane.services.autohealWorker.run();
+
+        await vi.waitFor(async () => {
+          const back = await detail(task.id);
+          expect(back.assignee).toMatchObject({ kind: "user" });
+          expect(back.comments.at(-1)?.body).toBe(AUTOHEAL_TEXT.newerSinceYes("whoami"));
+        });
+        expect((await takeWork()).jobs).toEqual([]);
+      });
     });
 
     it("waits for Ollama's word when it cannot be asked, then hands the update to a person, never going ahead alone", async () => {

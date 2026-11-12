@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HostPackagesSetting } from "../shared/constants.js";
 import type { HostJob } from "../shared/protocol.js";
 import type { ContainerSummary } from "./docker-client.js";
+import { LOCAL_HOST_FILES, type HostFiles } from "./host-files.js";
 import { HostPackageJobs } from "./host-package-jobs.js";
 import type { ContainerDetails } from "./incident-report.js";
 import { RemedyGuard } from "./remedy-guard.js";
@@ -71,6 +72,8 @@ interface Scenario {
   // Containers running once the run ended.
   runningAfter?: string[];
   journal?: ConstructorParameters<typeof HostPackageJobs>[0]["journal"];
+  // How the host's files are read; its folder under the test's root unless given.
+  files?: HostFiles;
 }
 
 describe("package jobs on the runner's host", () => {
@@ -141,6 +144,7 @@ describe("package jobs on the runner's host", () => {
       },
       guard,
       journal: scenario.journal,
+      files: scenario.files,
       applicationRecoveryPending: scenario.applicationRecoveryPending,
       progress: async (jobId, output) => {
         progress.push([jobId, output]);
@@ -669,6 +673,28 @@ describe("package jobs on the runner's host", () => {
       "data recovery for app is incomplete",
     );
     expect(created).toEqual([]);
+  });
+
+  it("after a restart, asks the date of a run's log only, whatever else the folder holds", async () => {
+    supportedHost();
+    const longAgo = new Date(NOW - 3 * 3600_000);
+    for (const verb of ["check", "upgrade", "autoremove"]) {
+      leaveRun(verb, "", null);
+      utimesSync(join(hostRoot, `var/log/autoheal/${JOB}-${verb}.log`), longAgo, longAgo);
+    }
+    for (let index = 0; index < 20; index += 1)
+      writeFileSync(join(hostRoot, `var/log/autoheal/notes-${index}.txt`), "");
+    const asked: string[] = [];
+    const files: HostFiles = {
+      ...LOCAL_HOST_FILES,
+      modifiedAt: (path) => {
+        asked.push(path);
+        return LOCAL_HOST_FILES.modifiedAt(path);
+      },
+    };
+
+    expect(await jobsFor({ helperSays: null, running: [], files }).followable()).toEqual([]);
+    expect(asked).toHaveLength(3);
   });
 
   it("after a restart, follows the recent runs it finds on the host, and leaves old ones alone", async () => {

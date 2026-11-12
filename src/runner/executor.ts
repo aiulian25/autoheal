@@ -101,6 +101,11 @@ export class Executor {
     if (isParkedContainer(target)) {
       return escalated(OUTCOMES.parkedTarget(target));
     }
+    // Ask me first is the failed container's answer for whatever is done about its failure: a dependency restarted
+    // for it waits for a person too, whatever the dependency's own answer allows.
+    if (!approved && target !== failed && this.restartChoice(failed) === RESTART_CHOICE.ask) {
+      return escalated(OUTCOMES.asksFirstFor(target, failed));
+    }
     if (!approved && this.restartChoice(target) !== RESTART_CHOICE.restart) {
       return escalated(OUTCOMES.asksFirst(target));
     }

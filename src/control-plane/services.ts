@@ -458,9 +458,14 @@ export function createControlPlaneServices(
   );
   // An incident opens its container's task, or joins the one already open.
   const incidentsService = tracked(
-    new IncidentsService(databaseHandle, clock, (incident, host) => {
-      tasksService.openOrJoin(incidentFinding(incident, host, tasksService.owner()));
-    }),
+    new IncidentsService(
+      databaseHandle,
+      clock,
+      (incident, host) => {
+        tasksService.openOrJoin(incidentFinding(incident, host, tasksService.owner()));
+      },
+      auditLog,
+    ),
   );
   const diagnostics = tracked(
     new DiagnosticsService(
@@ -575,6 +580,10 @@ export function createControlPlaneServices(
       clock,
     }),
   );
+  // Another Home Assistant has other rooms: what was suggested for the last one's is not kept.
+  integrationsService.onChange((kind) => {
+    if (kind === INTEGRATION_KIND.homeAssistant) homeReview.reset();
+  });
   // A model chosen in Settings shows in the Ollama status at once, not at the next minute's check.
   ollamaSettings.onChange(() => void ollamaMonitor.check());
   const hostPackages = tracked(
@@ -618,7 +627,10 @@ export function createControlPlaneServices(
         };
       },
       probeProblem: (probeId, since) => probes.evidence(probeId, since),
-      underWay: () => [{ hostIds: rebootPlans.hostsDownNow() }, { containers: rollouts.containersStillToReplace() }],
+      underWay: (asker) => [
+        { hostIds: rebootPlans.hostsDownNow() },
+        { containers: rollouts.containersStillToReplace(asker) },
+      ],
       clock,
     }),
   );
@@ -662,7 +674,7 @@ export function createControlPlaneServices(
       jobsService,
       (hostId, name) => maintenance.held(hostId, name),
       clock,
-      { problemFor: (asking) => availabilityGroups.problemFor(asking) },
+      { problemFor: (asking, asker) => availabilityGroups.problemFor(asking, asker) },
     ),
   );
   const applicationBackups = tracked(
@@ -928,7 +940,9 @@ export function createControlPlaneServices(
     topology.reset();
     diagnostics.reset();
     homeAssistant.stop();
+    homeReview.reset();
     ollamaPool.cancelAll();
+    networkWatch.cancelPoll();
     services.terminals.resetForRestore();
     services.files.reset();
     services.containerSettings.reset();
@@ -943,7 +957,6 @@ export function createControlPlaneServices(
   });
   lifecycle.onResume(() => {
     if (lifecycle.shuttingDown) return;
-    rebootPlans.pauseAfterRestore();
     ollamaPool.resume();
     trustedProxies.reload();
     jobsService.resetProgress();

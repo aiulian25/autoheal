@@ -9,6 +9,7 @@ import {
   PROBE_LIMITS,
   PROBE_SCOPE,
   PROBE_TEXT,
+  PROBE_WEB_PROTOCOL,
   type ProbeBody,
   type ProbeScope,
   type ProbeTarget,
@@ -118,7 +119,7 @@ async function askWeb(target: Extract<ProbeTarget, { kind: "http" }>, scope: Pro
   // The address just approved is the one connected to, so a name cannot change between the two. A redirect is only an
   // answer to compare: it is never followed.
   const { address, family } = addresses[0]!;
-  const send = target.url.startsWith("https:") ? httpsRequest : httpRequest;
+  const send = new URL(target.url).protocol === PROBE_WEB_PROTOCOL.https ? httpsRequest : httpRequest;
   const status = await new Promise<number>((resolve, reject) => {
     const request = send(
       target.url,

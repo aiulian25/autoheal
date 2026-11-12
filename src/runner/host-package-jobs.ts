@@ -184,10 +184,12 @@ export class HostPackageJobs {
     const logs = manager === null ? [] : await this.files.list(directory);
     const runs: FollowedRun[] = [];
     for (const match of logs.map((file) => HOST_PACKAGE_RUN_PATTERN.exec(file))) {
-      const [file = "", jobId = "", verb = ""] = match ?? [];
+      // A name that is not a run's log is passed over before its date is asked: over SSH each ask is a round trip.
+      if (match === null) continue;
+      const [file = "", jobId = "", verb = ""] = match;
       const modifiedAt = (await this.files.modifiedAt(join(directory, file))) ?? 0;
       const recent = this.now() - modifiedAt < LONGEST_RUN_MILLISECONDS + HOST_PACKAGE_FOLLOW.marginMilliseconds;
-      if (match !== null && manager !== null && recent) {
+      if (manager !== null && recent) {
         runs.push({ jobId, result: this.follow(jobId, verb as HostPackageVerb, manager, [], true) });
       }
     }

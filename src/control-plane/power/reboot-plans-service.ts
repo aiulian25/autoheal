@@ -436,15 +436,6 @@ export class RebootPlansService {
   }
 
   /** After a database restore: its plans may be from before reboots that have since happened, so a person decides. */
-  pauseAfterRestore() {
-    const running = this.openOrUnknown().plans.filter(({ status }) => status === REBOOT_PLAN_STATUS.running);
-    for (const plan of running) {
-      plan.status = REBOOT_PLAN_STATUS.paused;
-      plan.reason = REBOOT_PLAN_TEXT.restored;
-      this.save(plan);
-    }
-  }
-
   findings(): RebootPlanFinding[] {
     return this.openOrUnknown().plans.flatMap((plan) => {
       if (plan.status !== REBOOT_PLAN_STATUS.paused) return [];

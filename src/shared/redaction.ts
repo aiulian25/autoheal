@@ -1,8 +1,10 @@
 import {
   ENVIRONMENT_ENTRY_SEPARATOR,
   NOT_SECRET_VALUE_PATTERN,
+  REDACTED,
   REDACTION_MINIMUM_VALUE_LENGTH,
   SECRET_PATTERNS,
+  YAML_SECRET_KEY,
   redactedEnvironmentValue,
 } from "./constants.js";
 
@@ -29,4 +31,23 @@ export function redactSecrets(text: string, environment: readonly string[] = [])
     (redacted, { pattern, replacement }) => redacted.replace(pattern, replacement),
     withoutEnvironmentValues,
   );
+}
+
+const indentationOf = (line: string) => line.length - line.trimStart().length;
+
+/**
+ * Mask secrets in YAML before it leaves the host. A key named like a secret keeps its name and loses its value, however
+ * that is written: bare words, a block, a quote that wraps, or a mapping of secrets indented under it. Then as text.
+ */
+export function redactYamlSecrets(yaml: string): string {
+  const kept: string[] = [];
+  let secretKeyColumn: number | null = null;
+  for (const line of yaml.split("\n")) {
+    const partOfSecret = secretKeyColumn !== null && (line.trim() === "" || indentationOf(line) > secretKeyColumn);
+    if (partOfSecret) continue;
+    const secret = YAML_SECRET_KEY.exec(line);
+    secretKeyColumn = secret === null ? null : secret[1]!.length;
+    kept.push(secret === null ? line : `${secret[1]}${secret[2]} ${REDACTED}`);
+  }
+  return redactSecrets(kept.join("\n"));
 }

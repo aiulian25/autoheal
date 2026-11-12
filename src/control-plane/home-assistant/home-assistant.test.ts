@@ -174,6 +174,44 @@ describe("the Home Assistant inventory", () => {
     expect(zigbee[0]).toMatchObject({ available: null, lastSeen: null });
   });
 
+  it("takes no state change that is not one, keeping what it shows readable and its connection up", async () => {
+    home.fire("state_changed", undefined);
+    home.fire("state_changed", { entity_id: "sensor.half" });
+    home.fire("state_changed", { entity_id: "sensor.odd", new_state: { entity_id: "sensor.odd", attributes: {} } });
+    home.setState("switch.kitchen_fridge_plug", "unavailable");
+    home.setState("sensor.fridge_link", "unavailable");
+
+    await eventually(() => inventory.view().zigbee[1]!.available === false);
+    expect(inventory.view().status).toMatchObject({ connected: true, error: null });
+    expect(inventory.summary().zigbee).toMatchObject({ unavailable: 1 });
+  });
+
+  it("keeps its connection when a listener throws, as nothing thrown may reach the socket", async () => {
+    const client = new HomeAssistantClient({ url: home.url(), token: home.token });
+    await client.connect(() => undefined);
+    await client.subscribe("autoheal_drill", () => {
+      throw new Error("listener broke");
+    });
+
+    home.fire("autoheal_drill", {});
+
+    expect(Array.isArray(await client.command("get_states"))).toBe(true);
+    client.close();
+  });
+
+  it("leaves out a state that is not one when it reads them all, and keeps the rest", async () => {
+    home.states.set("sensor.broken", null as never);
+    const reading = new HomeAssistantInventory(
+      new HomeAssistantClient({ url: home.url(), token: home.token }),
+      QUICK_RETRIES,
+    );
+    await reading.connect();
+
+    expect(reading.view().status).toMatchObject({ connected: true });
+    expect(reading.view().zigbee.map(({ name }) => name)).toEqual(inventory.view().zigbee.map(({ name }) => name));
+    reading.stop();
+  });
+
   it("follows Home Assistant live: a device dropping off the mesh shows at once", async () => {
     home.setState("switch.kitchen_fridge_plug", "unavailable");
     home.setState("sensor.fridge_link", "unavailable");

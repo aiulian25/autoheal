@@ -7,7 +7,7 @@ import { apiPath } from "../../shared/api.js";
 import { sha256Hex } from "../../shared/hash.js";
 import { RUNNER_ROUTES, type IncidentSubmission } from "../../shared/protocol.js";
 import { approvals, hosts, incidentEvents, incidents, jobs, users, workItems } from "../database/schema.js";
-import { JOB_NO_ANSWER } from "../../shared/constants.js";
+import { ACTOR_HOST, AUDIT_ACTIONS, JOB_NO_ANSWER } from "../../shared/constants.js";
 import { eq } from "drizzle-orm";
 
 const submission: IncidentSubmission = {
@@ -168,6 +168,40 @@ describe("idempotent runner completion delivery", () => {
       expect((await send(url, report.result, "wrong-token")).statusCode).toBe(401);
     },
   );
+
+  it("keeps an outcome for an incident this database no longer has, once, and takes it so it is not sent for ever", async () => {
+    // As after a restore of a copy older than the incident.
+    const gone = randomUUID();
+    const url = apiPath(RUNNER_ROUTES.incidentOutcome, { incidentId: gone });
+    const kept = () =>
+      cp.services.auditLog.recent().filter(({ action }) => action === AUDIT_ACTIONS.incidentOutcomeKept);
+
+    expect((await send(url, outcome)).statusCode).toBe(204);
+    expect((await send(url, outcome)).statusCode).toBe(204);
+
+    expect(kept()).toEqual([
+      expect.objectContaining({ actorKind: ACTOR_HOST, actorLabel: "fixture", targetId: gone, details: outcome }),
+    ]);
+    expect((await send(url, { ...outcome, outcome: "different" })).statusCode).toBe(409);
+  });
+
+  it("still refuses an outcome for another host's incident, and keeps none of it", async () => {
+    const db = cp.services.databaseHandle.database;
+    const otherId = randomUUID();
+    db.insert(hosts)
+      .values({ id: otherId, label: "other", tokenHash: sha256Hex("other"), tokenHint: "other", enrolledAt: 1 })
+      .run();
+    const theirs = cp.services.incidentsService.create(
+      db.select().from(hosts).where(eq(hosts.id, otherId)).get()!,
+      submission,
+      "deciding",
+    );
+
+    expect((await send(apiPath(RUNNER_ROUTES.incidentOutcome, { incidentId: theirs.id }), outcome)).statusCode).toBe(
+      404,
+    );
+    expect(cp.services.auditLog.recent().map(({ action }) => action)).not.toContain(AUDIT_ACTIONS.incidentOutcomeKept);
+  });
 
   it.each(["job", "work"] as const)("accepts delayed %s evidence after the missing-result timeout", async (kind) => {
     const { report, url } = await prepared(kind, true);

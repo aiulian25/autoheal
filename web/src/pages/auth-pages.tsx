@@ -10,7 +10,7 @@ import { ErrorNotice, PasswordInput } from "../components/common.js";
 import { PATHS, QR_MARGIN_MODULES, QR_PIXELS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { answerWithPasskey } from "../passkey-prompt.js";
 import { passkeyStatusQuery } from "../queries.js";
-import { useRefreshSession } from "../session.js";
+import { oneTimeHandoff, useRefreshSession } from "../session.js";
 
 const valueOf = (form: FormData, name: string) => String(form.get(name) ?? "");
 
@@ -179,7 +179,17 @@ export function TotpSetupPage() {
   const setup = useMutation({ mutationFn: () => api<TotpSetupView>("POST", API_ROUTES.totpSetup) });
   const confirm = useMutation({
     mutationFn: (code: string) => api<TotpEnabledView>("POST", API_ROUTES.totpConfirm, { code }),
+    onSuccess: () => {
+      oneTimeHandoff.open = true;
+    },
   });
+  // Leaving the page, by Done or by being signed out, lets what it showed once go.
+  useEffect(
+    () => () => {
+      oneTimeHandoff.open = false;
+    },
+    [],
+  );
   const finish = async () => {
     await refreshSession();
     void navigate(PATHS.home);

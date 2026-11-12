@@ -142,6 +142,8 @@ export const API_ROUTES = {
   hosts: "/api/hosts",
   host: "/api/hosts/:hostId",
   hostRevoke: "/api/hosts/:hostId/revoke",
+  // Closing Add a host: takes back a runner host only if its runner never traded its join code.
+  hostCancelEnrollment: "/api/hosts/:hostId/cancel-enrollment",
   // A new join code for a runner host: its runner joins again with it, as the same host.
   hostJoinCode: "/api/hosts/:hostId/join-code",
   // The runner on the dashboard's own machine, which joins through the volume both share: revoked or not.
@@ -391,6 +393,8 @@ export const API_ERRORS = {
   resourceRunnerRequired: "resource_runner_required",
   permissionConflict: "permission_conflict",
   diagnosticsFull: "diagnostics_full",
+  // An account already has as many live streams open as it may: its page asks again a few seconds later.
+  liveStreamsFull: "live_streams_full",
   diagnosticsExpired: "diagnostics_expired",
   maintenanceUnsupported: "maintenance_unsupported",
   maintenanceFull: "maintenance_full",
@@ -424,6 +428,8 @@ export const API_ERRORS = {
   hostHasNoDocker: "host_has_no_docker",
   selfUpdateUnavailable: "self_update_unavailable",
   selfUpdateNewest: "self_update_newest",
+  // Its registry did not answer: whether a newer version is out is not known, and nothing was changed.
+  selfUpdateRegistryUnreachable: "self_update_registry_unreachable",
   selfUpdateRunning: "self_update_running",
   selfUpdateRecoveryBlocked: "self_update_recovery_blocked",
   selfUpdateUnsigned: "self_update_unsigned",
@@ -473,6 +479,8 @@ export const API_ERRORS = {
   integrationFromEnvironment: "integration_from_environment",
   // A new address needs its token again: a stored token never follows a changed address.
   integrationTokenRequired: "integration_token_required",
+  // A user or password in an address would be shown with it: a token has its own field.
+  integrationAddressCredentials: "integration_address_credentials",
   integrationNotSet: "integration_not_set",
   // Asking turned on before a test question was answered: nothing asked could be answered.
   assistantNotTested: "assistant_not_tested",
@@ -1294,6 +1302,11 @@ export interface SshHostDetailsView {
   settings: SshHostSettings;
   // How a saved root password is used; null while none is saved. The password itself is never sent back.
   rootMethod: RootMethod | null;
+}
+
+/** What closing Add a host did: false where the runner had joined meanwhile, which then stays. */
+export interface CancelledEnrollmentView {
+  cancelled: boolean;
 }
 
 export interface EnrolledHostView {

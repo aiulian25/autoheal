@@ -5,7 +5,7 @@ import { Layout } from "./components/layout.js";
 import { RouteError } from "./components/route-error.js";
 import { PATHS } from "./constants.js";
 import { NotFoundPage } from "./pages/not-found-page.js";
-import { isAdmin, requiredStep, useSession, useSignedInSession } from "./session.js";
+import { isAdmin, oneTimeHandoff, requiredStep, useSession, useSignedInSession } from "./session.js";
 
 // Each page's code arrives the first time it is opened, not with the dashboard itself.
 const pageFrom = <Name extends string>(load: () => Promise<Record<Name, ComponentType>>, name: Name) =>
@@ -53,8 +53,12 @@ function SessionBoundary() {
 
 /** One of the sign-in steps: shown only when it is the step this session needs next. */
 function Step({ path, children }: { path: string; children: ReactNode }) {
-  const next = requiredStep(useSession().data ?? null);
-  return next === path ? children : <Navigate to={next ?? PATHS.home} replace />;
+  const session = useSession().data ?? null;
+  const next = requiredStep(session);
+  // What is shown only once stays until the person says they saved it, for as long as they are signed in.
+  const holding = path === PATHS.totpSetup && session !== null && oneTimeHandoff.open;
+  const shown = next === path || holding;
+  return shown ? children : <Navigate to={next ?? PATHS.home} replace />;
 }
 
 /** The signed-in dashboard, mounted only while the session needs no other step first. */

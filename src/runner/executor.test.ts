@@ -150,6 +150,32 @@ describe("Executor", () => {
     expect(restarted).toEqual([FAILED]);
   });
 
+  it("asks you first about a dependency restarted for a container that asks first, though the dependency need not", async () => {
+    const { executor, restarted } = setup({ asksFirst: [FAILED] });
+
+    expect(await executor.carryOut(decision("restart_dependency", "tika"), FAILED)).toEqual({
+      outcome:
+        "Would restart tika for paperless, but its host's page says to ask you first about paperless: nothing was changed.",
+      verdict: "needs you",
+      executed: false,
+    });
+    expect(restarted).toEqual([]);
+    expect(await executor.carryOut(decision("restart_dependency", "tika"), FAILED, true)).toMatchObject({
+      executed: true,
+    });
+    expect(restarted).toEqual(["tika"]);
+  });
+
+  it("still asks first about a dependency that itself asks first, for a container that may be restarted", async () => {
+    const { executor, restarted } = setup({ asksFirst: ["tika"] });
+
+    expect(await executor.carryOut(decision("restart_dependency", "tika"), FAILED)).toMatchObject({
+      outcome: "Would restart tika, but its host's page says to ask you first: nothing was changed.",
+      executed: false,
+    });
+    expect(restarted).toEqual([]);
+  });
+
   it("only tells about a container its host's page says only to tell about, whatever was decided", async () => {
     const { executor, restarted } = setup({ onlyTells: [FAILED] });
 

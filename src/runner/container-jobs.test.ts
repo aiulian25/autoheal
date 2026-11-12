@@ -347,6 +347,39 @@ describe("ContainerJobs", () => {
     expect(updates).toBe(1);
   });
 
+  describe("a delegated update whose provider's namespace gains a container after it was admitted", () => {
+    // Another Docker client starts one in the provider's namespace, then the updater looks and acts.
+    const updatingWith = (joinsMeanwhile: boolean) => {
+      const dependents: string[] = [];
+      const stopped: string[] = [];
+      const fixture = jobsWith({ dependents });
+      fixture.dependencies.authorizeOperator = async () => true;
+      fixture.dependencies.updater.update = async (name, _undo, _steps, options) => {
+        if (joinsMeanwhile) dependents.push("intruder");
+        if (!(await options?.authorize?.())) return { succeeded: false, outcome: "refused" };
+        stopped.push(...dependents, name);
+        return { succeeded: true, outcome: `updated ${name}` };
+      };
+      return { fixture, stopped };
+    };
+
+    it("stops nothing, as the operator was granted only what the job was admitted on", async () => {
+      const { fixture, stopped } = updatingWith(true);
+
+      const result = await fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }));
+
+      expect(result.succeeded).toBe(false);
+      expect(stopped).toEqual([]);
+    });
+
+    it("goes ahead when nothing joined", async () => {
+      const { fixture, stopped } = updatingWith(false);
+
+      expect((await fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }))).succeeded).toBe(true);
+      expect(stopped).toEqual(["paperless"]);
+    });
+  });
+
   it("rechecks a delegated log read before reading its data", async () => {
     const fixture = jobsWith({ logs: "private-log" });
     fixture.dependencies.authorizeOperator = async () => false;

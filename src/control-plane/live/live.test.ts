@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
-import { API_ROUTES } from "../../shared/api.js";
-import { HTTP_HEADERS, LIVE_KEEPALIVE_MILLISECONDS } from "../../shared/constants.js";
+import { API_ERRORS, API_ROUTES } from "../../shared/api.js";
+import {
+  HTTP_HEADERS,
+  HTTP_STATUS,
+  LIVE_KEEPALIVE_MILLISECONDS,
+  LIVE_STREAMS_PER_ACCOUNT,
+} from "../../shared/constants.js";
 
 describe("the live stream", () => {
   let controlPlane: TestControlPlane;
@@ -57,6 +62,20 @@ describe("the live stream", () => {
     await stream;
     expect(() => vi.advanceTimersByTime(LIVE_KEEPALIVE_MILLISECONDS)).not.toThrow();
     expect(subscribe.mock.results[0]!.value()).toBe(false);
+  });
+
+  it("refuses an account one stream past its share, as too many at once", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const subscribe = vi.spyOn(controlPlane.services.live, "subscribe");
+    const streams = Array.from({ length: LIVE_STREAMS_PER_ACCOUNT }, () => admin.get(API_ROUTES.live));
+    while (subscribe.mock.calls.length < LIVE_STREAMS_PER_ACCOUNT)
+      await new Promise((resolve) => setImmediate(resolve));
+    const refused = await admin.get(API_ROUTES.live);
+    expect(refused.statusCode).toBe(HTTP_STATUS.tooManyRequests);
+    expect(refused.json<{ error: string }>().error).toBe(API_ERRORS.liveStreamsFull);
+    expect((await admin.post(API_ROUTES.logout)).statusCode).toBe(204);
+    vi.advanceTimersByTime(LIVE_KEEPALIVE_MILLISECONDS);
+    await Promise.all(streams);
   });
 
   it("is not for a browser that is not signed in", async () => {

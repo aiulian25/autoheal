@@ -4,6 +4,7 @@ import {
   COMPOSE_PROJECT_LABEL,
   COMPOSE_SERVICE_LABEL,
   JOB_ACTION,
+  RUNNER_MESSAGES,
 } from "../shared/constants.js";
 import {
   BACKUP_TEXT,
@@ -436,6 +437,23 @@ describe("backing up", () => {
       const { succeeded, outcome } = await backUp(context, { target });
       expect(succeeded).toBe(false);
       expect(outcome).toContain("no such role");
+      expect(context.events).not.toContain("finish");
+    });
+
+    it("fails plainly when the stream of its dump was cut short, and keeps nothing", async () => {
+      const context = setup({ db: DATABASE });
+      const streamCommand = context.docker.streamCommand;
+      context.docker.streamCommand = async (reference, command, options) => {
+        if (!command.join(" ").includes("pg_dumpall")) return streamCommand(reference, command, options);
+        // What the Docker client does with a piece left unfinished: it ends the output, then says so.
+        options.output.end(Buffer.from("SQL, only the first part of it"));
+        throw new Error(RUNNER_MESSAGES.execStreamCutShort);
+      };
+
+      const { succeeded, outcome } = await backUp(context, { target });
+
+      expect(succeeded).toBe(false);
+      expect(outcome).toContain(RUNNER_MESSAGES.execStreamCutShort);
       expect(context.events).not.toContain("finish");
     });
 
@@ -1070,14 +1088,14 @@ describe("restoring", () => {
       return { context, state };
     };
 
-    it("stays blocked at every durable step of the retry, until the data is whole", async () => {
+    it("stays blocked at every durable step of the retry, until it has finished", async () => {
       const { context, state } = failingFirst();
       await restore(context);
       const seen = phases(context);
       state.failRestore = false;
       expect((await restore(context)).succeeded).toBe(true);
 
-      expect(seen.at(-1)).toBe("stopped");
+      expect(seen.at(-1)).toBe("activating");
       expect(seen.slice(0, -1).length).toBeGreaterThan(0);
       expect(seen.slice(0, -1).every((phase) => phase === "writing")).toBe(true);
     });
@@ -1642,13 +1660,100 @@ describe("a stack's Compose files", () => {
       expect(order(context)).toEqual(["stop web", "stack up", "start web"]);
     });
 
-    it("starts it as it was when the files did not change, so there is nothing newer to wait for", async () => {
+    it("comes up from Compose too when its files are already the backup's, as what runs may not be", async () => {
       const { context, run } = withStacks("image: wiki:1");
 
-      await restore(context, { target });
+      const { succeeded } = await restore(context, { target });
 
+      expect(succeeded).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(order(context)).toEqual(["stop web", "stack up", "start web"]);
+    });
+
+    it("keeps it stopped when its files could not come back, rather than start what runs now on this data", async () => {
+      const { context, run } = withStacks("image: wiki:2", "the host keeps these to itself");
+
+      const { succeeded, outcome } = await restore(context, { target });
+
+      // The data was written, and nothing started on it afterwards: neither the image that runs now nor Compose.
+      expect(context.events).toContain(COPY_COMMAND.restore);
+      expect(order(context)).toEqual(["stop web"]);
       expect(run).not.toHaveBeenCalled();
-      expect(order(context)).toEqual(["stop web", "start web"]);
+      expect(succeeded).toBe(false);
+      expect(outcome).toContain(BACKUP_TEXT.keptStoppedForSettings("web"));
+      expect(outcome).not.toContain(BACKUP_TEXT.restoredNotUp("web"));
+      expect(context.backups.isBlocked("web")).toBe(true);
+    });
+
+    it("finishes when restored again once its files can come back, and only Compose starts it", async () => {
+      const made = withStacks("image: wiki:2", "the host keeps these to itself");
+      await restore(made.context, { target });
+      const reading = made.answer.getMockImplementation()!;
+      made.answer.mockImplementation(async (request) => (request.kind === "save" ? { error: null } : reading(request)));
+      made.context.events.length = 0;
+
+      const { succeeded } = await restore(made.context, { target });
+
+      expect(succeeded).toBe(true);
+      expect(order(made.context)).toEqual(["stack up", "start web"]);
+      expect(made.context.backups.isBlocked("web")).toBe(false);
+      expect(
+        [...made.context.volumes.keys()].filter((name) => name.startsWith(CONTAINER_BACKUP.journalPrefix)),
+      ).toEqual([]);
+    });
+
+    // A runner that dies while the data is back but not yet under its own files, and the one started after it.
+    const afterCrash = async (left: Map<string, Record<string, string>>, running: boolean) => {
+      const later = setup({ web: WEB });
+      for (const [name, labels] of left) later.volumes.set(name, labels);
+      later.running.set("web", running);
+      later.policies.set("web", "no");
+      await later.backups.recover();
+      return later;
+    };
+
+    it.each([
+      ["before Compose brings it up", false],
+      ["after Compose brought it up, before it was looked at", true],
+    ])("starts nothing on its own when the runner dies %s, and keeps the block", async (_when, composeRan) => {
+      const made = withStacks("image: wiki:2");
+      let left: Map<string, Record<string, string>> | null = null;
+      made.run.mockImplementation(async () => {
+        if (!composeRan) left = new Map(made.context.volumes);
+        made.context.events.push("stack up");
+        await made.context.docker.start("web");
+        if (composeRan) left = new Map(made.context.volumes);
+        return { succeeded: true, outcome: "", output: null };
+      });
+      await restore(made.context, { target });
+
+      const later = await afterCrash(left!, composeRan);
+
+      expect(later.backups.isBlocked("web")).toBe(true);
+      expect(later.events.filter((event) => /^(start|policy) /.test(event))).toEqual([]);
+      expect(later.running.get("web")).toBe(composeRan);
+    });
+
+    it("comes up from Compose when restored again after a runner died with the files back, before Compose", async () => {
+      const made = withStacks("image: wiki:2");
+      let left: Map<string, Record<string, string>> | null = null;
+      made.run.mockImplementation(async () => {
+        left = new Map(made.context.volumes);
+        throw new Error("the runner went down here");
+      });
+      await restore(made.context, { target });
+      // The next runner, on a host where the cut-off restore had already put the backup's files back.
+      const later = withStacks("image: wiki:1");
+      for (const [name, labels] of left!) later.context.volumes.set(name, labels);
+      later.context.running.set("web", false);
+      later.context.policies.set("web", "no");
+      await later.context.backups.recover();
+
+      const { succeeded } = await restore(later.context, { target });
+
+      expect(order(later.context)).toEqual(["stack up", "start web"]);
+      expect(succeeded).toBe(true);
+      expect(later.context.backups.isBlocked("web")).toBe(false);
     });
 
     it("leaves it stopped and says it is not back when Compose could not bring it up", async () => {
@@ -1706,11 +1811,11 @@ describe("a stack's Compose files", () => {
     expect(run).toHaveBeenCalledWith(JOB_ACTION.stackUp, { project: PROJECT, removeData: false });
   });
 
-  it("are left alone when they are the same", async () => {
+  it("are left alone when they are the same, and the stack still comes up from them", async () => {
     const { context, answer, run } = withStacks("image: wiki:1");
     await restore(context, { target });
     expect(answer).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "save" }));
-    expect(run).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledWith(JOB_ACTION.stackUp, { project: PROJECT, removeData: false });
   });
 
   it("say so if they could not be, and the restore does not pass for having the data back", async () => {

@@ -290,6 +290,48 @@ describe("joining runners", () => {
     expect((await viewer.post(API_ROUTES.localHostReenroll)).statusCode).toBe(403);
   });
 
+  describe("closing Add a host", () => {
+    const cancel = (hostId: string) => admin.post(apiPath(API_ROUTES.hostCancelEnrollment, { hostId }));
+    const statusOf = async (hostId: string) =>
+      controlPlane.services.databaseHandle.database.select().from(hostRows).where(eq(hostRows.id, hostId)).get()!
+        .status;
+
+    it("takes back a host whose runner never traded its code, and that code then opens nothing", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+
+      const cancelled = await cancel(enrolled.host.id);
+
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect(cancelled.json()).toEqual({ cancelled: true });
+      expect(await statusOf(enrolled.host.id)).toBe("revoked");
+      expect((await redeem(enrolled.joinCode, newToken())).statusCode).toBe(401);
+    });
+
+    it("leaves a host whose runner traded its code first, and that runner goes on reporting", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Birch" })).json<EnrolledHostView>();
+      const token = newToken();
+      expect((await redeem(enrolled.joinCode, token)).statusCode).toBe(204);
+
+      expect((await cancel(enrolled.host.id)).json()).toEqual({ cancelled: false });
+
+      expect(await statusOf(enrolled.host.id)).toBe("active");
+      expect((await heartbeat(token)).statusCode).toBe(200);
+    });
+
+    it("leaves a host that joined before and was given a new code to join again", async () => {
+      const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Cedar" })).json<EnrolledHostView>();
+      const token = newToken();
+      expect((await redeem(enrolled.joinCode, token)).statusCode).toBe(204);
+      expect((await admin.post(apiPath(API_ROUTES.hostJoinCode, { hostId: enrolled.host.id }), {})).statusCode).toBe(
+        200,
+      );
+
+      expect((await cancel(enrolled.host.id)).json()).toEqual({ cancelled: false });
+
+      expect((await heartbeat(token)).statusCode).toBe(200);
+    });
+  });
+
   describe("a join code that works once, within the hour", () => {
     it("is traded once for the token its runner made, asked with no token; a second token gets nothing", async () => {
       const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();

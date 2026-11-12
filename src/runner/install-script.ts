@@ -3,6 +3,7 @@ import {
   CONTAINER_NAME_KEY,
   ENV_FILE,
   INSTALLED_LINE,
+  OWNED_FOLDER,
   composeOf,
   envLine,
   mountSourcesOf,
@@ -20,7 +21,14 @@ export const INSTALL_EXIT = {
   notOurs: 8,
   notItsFolder: 9,
   notTakenDown: 10,
+  folderKept: 11,
 } as const;
+
+// A folder holding anything at all, a link, or a path that is no folder: someone's, so a first install keeps out. An
+// empty one may be used, as one made a moment ago for it is; a link would send what is written here elsewhere.
+export const FOLDER_IN_USE = '[ -L "$dir" ] || { [ -e "$dir" ] && { [ ! -d "$dir" ] || [ -n "$(ls -A "$dir")" ]; }; }';
+// Run as root, as a helper is: whoever really keeps the folder above, through any link to it, keeps the app's files.
+export const KEEPER_LINE = `keeper=$(stat -L -c '%u:%g' "$(dirname "$dir")")`;
 export const COMPOSE_COMMANDS = { plugin: "docker compose", standalone: "docker-compose" } as const;
 
 // A NAS keeps its tools outside what an SSH session's PATH has.
@@ -33,7 +41,6 @@ const composeLine = [
 
 export const COMPOSE_PREAMBLE = [PATH_LINE, composeLine].join("\n");
 
-const composePath = (spec: Pick<InstallSpec, "folder">) => `${spec.folder}/${COMPOSE_FILE}`;
 const sourcePath = (spec: InstallSpec, source: string) =>
   source.startsWith("./") ? `${spec.folder}/${source.slice(2)}` : source;
 
@@ -43,7 +50,8 @@ export function checkScript(spec: Pick<InstallSpec, "folder" | "networks">): str
     PATH_LINE,
     composeLine,
     `echo "compose=$compose"`,
-    `[ -e ${shellQuoted(composePath(spec))} ] && echo taken=1`,
+    `dir=${shellQuoted(spec.folder)}`,
+    `if ${FOLDER_IN_USE}; then echo taken=1; fi`,
     // The nearest folder that is there is the one a new folder is made in.
     `place=${shellQuoted(spec.folder)}`,
     'while [ ! -e "$place" ] && [ "$place" != "/" ]; do place=$(dirname "$place"); done',
@@ -56,16 +64,20 @@ export function checkScript(spec: Pick<InstallSpec, "folder" | "networks">): str
   ].join("\n");
 }
 
-/** Writes its folder, data folders, Compose file and .env, refusing a folder that already holds an app. */
+/**
+ * Writes its folder, data folders, Compose file and .env, refusing a folder that already holds anything, and marks
+ * the folder as all the app's.
+ */
 export function writeScript(spec: InstallSpec): string {
   const encoded = Buffer.from(composeOf(spec)).toString("base64");
-  const folders = mountSourcesOf(spec).map((source) => sourcePath(spec, source));
-  const quotedFolders = folders.map(shellQuoted).join(" ");
+  const folders = mountSourcesOf(spec).map((source) => shellQuoted(sourcePath(spec, source)));
+  const quotedFolders = folders.join(" ");
+  const dataOwner = spec.owner ?? '"$keeper"';
   return [
     "set -e",
     PATH_LINE,
     `dir=${shellQuoted(spec.folder)}`,
-    `[ -e "$dir/${COMPOSE_FILE}" ] && exit ${INSTALL_EXIT.folderTaken}`,
+    `if ${FOLDER_IN_USE}; then exit ${INSTALL_EXIT.folderTaken}; fi`,
     // Readable by the host's people, as their other app folders are: only the .env is kept to its owner.
     "umask 022",
     'mkdir -p "$dir"',
@@ -77,13 +89,16 @@ export function writeScript(spec: InstallSpec): string {
       (entry) => `printf '${entry.name}=%s\\n' "$(secret ${entry.characters})" >> "$dir/${ENV_FILE}"`,
     ),
     `printf %s ${shellQuoted(encoded)} | base64 -d > "$dir/${COMPOSE_FILE}"`,
+    `printf '%s\\n' ${shellQuoted(OWNED_FOLDER.text)} > "$dir/${OWNED_FOLDER.file}"`,
+    // A data folder already there is someone's, and may be reached through a link: only one made here is handed over.
+    ...folders.map((folder, index) => `made${index}=; [ -e ${folder} ] || [ -L ${folder} ] || made${index}=1`),
     ...(folders.length === 0 ? [] : [`mkdir -p ${quotedFolders}`]),
-    // Run as root, as a helper is: the files go to whoever keeps the folder they are in, so a person can read them,
-    // and its data to whoever the app runs as.
+    // The files go to whoever keeps the folder they are in, so a person can read them, and its data to whoever the app
+    // runs as. Never through a link.
     'if [ "$(id -u)" = 0 ]; then',
-    `  keeper=$(stat -c '%u:%g' "$(dirname "$dir")")`,
-    `  chown "$keeper" "$dir" "$dir/${COMPOSE_FILE}" "$dir/${ENV_FILE}"`,
-    ...(folders.length === 0 ? [] : [`  chown ${spec.owner ?? '"$keeper"'} ${quotedFolders}`]),
+    `  ${KEEPER_LINE}`,
+    `  chown -h "$keeper" "$dir" "$dir/${COMPOSE_FILE}" "$dir/${ENV_FILE}" "$dir/${OWNED_FOLDER.file}"`,
+    ...folders.map((folder, index) => `  [ -z "$made${index}" ] || chown -h ${dataOwner} ${folder}`),
     "fi",
   ].join("\n");
 }
@@ -102,9 +117,17 @@ const namingLines = (name: string) =>
     .map((value) => `-e ${shellQuoted(`${CONTAINER_NAME_KEY}: ${value}`)}`)
     .join(" ");
 
-/** Takes down what it started and its files, and its data folder only when asked. */
+/**
+ * Takes down what it started and its files, and its data folder only when asked and only where the folder is marked
+ * as all the app's. An older install's folder, from before the mark, keeps what is in it.
+ */
 export function downScript(folder: string, name: string, removeData: boolean): string {
   const quoted = shellQuoted(folder);
+  const files = `${quoted}/${COMPOSE_FILE} ${quoted}/${ENV_FILE}`;
+  const owned = `${quoted}/${OWNED_FOLDER.file}`;
+  const removal = removeData
+    ? `if [ -f ${owned} ]; then rm -rf ${quoted}; else rm -f ${files}; exit ${INSTALL_EXIT.folderKept}; fi`
+    : `rm -f ${files} ${owned}`;
   return [
     PATH_LINE,
     composeLine,
@@ -116,7 +139,7 @@ export function downScript(folder: string, name: string, removeData: boolean): s
     // Nothing goes unless Compose took the app down: its files are what anyone needs to take down what still runs.
     `${removeData ? "$compose down -v" : "$compose down"} || exit ${INSTALL_EXIT.notTakenDown}`,
     "cd /",
-    removeData ? `rm -rf ${quoted}` : `rm -f ${quoted}/${COMPOSE_FILE} ${quoted}/${ENV_FILE}`,
+    removal,
   ].join("\n");
 }
 

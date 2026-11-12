@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAKE_UNIFI_LOGIN, FakeUnifi } from "../../../test/fakes/fake-unifi.js";
 import { FakeOllama } from "../../../test/fakes/fake-ollama.js";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
@@ -37,6 +37,12 @@ describe("the router's settings and the network's pages", () => {
     await controlPlane.runnerApp.close();
     await router.close();
     await ollama.close();
+  });
+
+  it("stops the router poll still reading when a restore begins", async () => {
+    const stopped = vi.spyOn(controlPlane.services.networkWatch, "cancelPoll");
+    await controlPlane.services.databaseHandle.restore.exclusive(async () => undefined);
+    expect(stopped).toHaveBeenCalledOnce();
   });
 
   it("keeps it all from viewers", async () => {

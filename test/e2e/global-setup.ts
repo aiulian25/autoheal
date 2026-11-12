@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, uptime } from "node:os";
 import { join } from "node:path";
@@ -39,8 +39,10 @@ export const E2E_APP_IMAGE = `localhost:${E2E_REGISTRY_PORT}/${E2E_APP}:stable`;
 export const E2E_APP_NEXT_IMAGE = `localhost:${E2E_REGISTRY_PORT}/${E2E_APP}:next`;
 // Where its images say its code lives: a GitHub repository, whose releases page the dashboard links.
 export const E2E_APP_SOURCE = "https://github.com/example/autoheal-e2e-app";
+// How much of what the control plane said is shown when setup fails: why it did is near the end.
+const FAILED_SETUP_LOG_LINES = 25;
 
-// stderr is captured, not shown: "remove if present" and early health probes fail on purpose.
+// stderr is captured, not shown: early health probes fail on purpose.
 const docker = (...args: string[]) =>
   execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -91,11 +93,8 @@ function removeEverything() {
     ["network", E2E_NETWORK],
     ["volume", E2E_VOLUME],
   ] as const) {
-    try {
-      docker(kind, "rm", name);
-    } catch {
-      // Not there: nothing to clean.
-    }
+    // Looked for first, so a removal the engine refuses is seen, not taken for one with nothing to remove.
+    if (docker(kind, "ls", "--format", "{{.Name}}").split("\n").includes(name)) docker(kind, "rm", name);
   }
   if (ownsSafety) {
     // Every fixture host/runner has been removed above, so no delegated host unit can still execute.
@@ -116,12 +115,44 @@ async function waitFor(check: () => boolean, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/** Shown before a failed setup's clean-up removes the control plane: why it did not start is in what it said. */
+function showControlPlaneLogs() {
+  const said = spawnSync("docker", ["logs", "--tail", String(FAILED_SETUP_LOG_LINES), CONTROL_PLANE_CONTAINER], {
+    encoding: "utf8",
+  });
+  if (said.status !== 0) return;
+  console.error(`${CONTROL_PLANE_CONTAINER} said:\n${said.stdout}${said.stderr}`);
+}
+
+export default async function globalSetup() {
+  removeEverything();
+  // Started first, so the clean-up has it before anything else is made.
+  const ollama = await FakeOllama.start("plain", "0.0.0.0");
+  let closing: Promise<void> | null = null;
+  const teardown = async () => {
+    try {
+      removeEverything();
+    } finally {
+      closing ??= ollama.close();
+      await closing;
+      rmSync(E2E_SESSION_DIRECTORY, { recursive: true, force: true });
+    }
+  };
+  try {
+    await startStack(ollama);
+  } catch (failure) {
+    showControlPlaneLogs();
+    await teardown().catch((leftBehind: unknown) => console.error("LEFT BEHIND:", leftBehind));
+    throw failure;
+  }
+  return teardown;
+}
+
 /**
  * A fresh stack from the real image, set up the way the README says: the control plane gets its
  * address and a plain-http Ollama, nothing else; it makes its own certificate and passphrase.
  */
-export default async function globalSetup() {
-  removeEverything();
+async function startStack(ollama: FakeOllama) {
   rmSync(E2E_SESSION_DIRECTORY, { recursive: true, force: true });
   mkdirSync(E2E_SESSION_DIRECTORY, { mode: 0o700 });
   docker("volume", "create", "--label", E2E_LABEL, E2E_SAFETY_OWNER);
@@ -151,7 +182,6 @@ export default async function globalSetup() {
     .filter(Boolean)
     .join(",");
 
-  const ollama = await FakeOllama.start("plain", "0.0.0.0");
   ollama.handler = (request) => {
     const isVictim = request.messages[1]!.content.includes(`Failed container: ${VICTIM}`);
     const ruleApplies = request.messages[0]!.content.includes(RUNBOOK_MARKER);
@@ -210,10 +240,4 @@ export default async function globalSetup() {
     throw new Error("the control plane did not print a first-run password");
   }
   process.env.E2E_ADMIN_PASSWORD = firstRun[1];
-
-  return async () => {
-    removeEverything();
-    await ollama.close();
-    rmSync(E2E_SESSION_DIRECTORY, { recursive: true, force: true });
-  };
 }

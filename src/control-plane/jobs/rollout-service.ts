@@ -79,9 +79,14 @@ export class RolloutService {
     // What an application's replicas say about replacing this container; absent where no group is set up.
     private readonly availability?: Pick<AvailabilityGroupsService, "problemFor">,
   ) {
+    // Asked again as its runner collects the job and before it acts: a replica may have stopped since it was queued.
     jobsService.rolloutDispatchAllowed = (jobId) =>
       this.plans().some(
-        (plan) => plan.status === "updating" && plan.targets[plan.current]?.jobId === jobId && this.actorAllowed(plan),
+        (plan) =>
+          plan.status === "updating" &&
+          plan.targets[plan.current]?.jobId === jobId &&
+          this.actorAllowed(plan) &&
+          this.availabilityProblem(plan) === null,
       );
     jobsService.onFinished((job, succeeded) => {
       if (!job.rolloutJson) return;
@@ -113,10 +118,13 @@ export class RolloutService {
     return this.database.select().from(rollouts).orderBy(desc(rollouts.createdAt)).limit(ROLLOUT_LIMITS.retained).all();
   }
   // The plans this version can read, newest first: the only ones anything here acts on.
-  /** The containers a rollout under way still has to replace: what an availability group counts as going down. */
-  containersStillToReplace(): { hostId: string; containerName: string }[] {
+  /**
+   * The containers a rollout under way still has to replace: what an availability group counts as going down. `asker`,
+   * the rollout asking about its own next step, is left out.
+   */
+  containersStillToReplace(asker?: string): { hostId: string; containerName: string }[] {
     return this.plans()
-      .filter(active)
+      .filter((plan) => active(plan) && plan.id !== asker)
       .flatMap((plan) =>
         plan.targets.slice(plan.current).map(({ hostId, containerName }) => ({ hostId, containerName })),
       );
@@ -278,10 +286,16 @@ export class RolloutService {
     );
     return plan;
   }
+  // What the current target's replicas say about replacing it now: a plan's approval is no promise about later steps.
+  private availabilityProblem(plan: RolloutView): string | null {
+    const { hostId, containerName } = plan.targets[plan.current]!;
+    return this.availability?.problemFor({ containers: [{ hostId, containerName }] }, plan.id) ?? null;
+  }
   private dispatch(plan: RolloutView, actor: Actor) {
     this.requireAdmin(actor);
     const target = plan.targets[plan.current]!;
     if (this.maintenanceHeld(target.hostId, target.containerName)) throw new DomainError(API_ERRORS.maintenanceActive);
+    if (this.availabilityProblem(plan) !== null) throw new DomainError(API_ERRORS.availabilityGate);
     const job = this.jobsService.request(
       { kind: "user", actor },
       target.hostId,

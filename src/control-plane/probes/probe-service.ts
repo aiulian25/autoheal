@@ -86,6 +86,8 @@ export interface Vantages {
 /** A check handed to a host, and when: the deadline its runner has to answer within. */
 interface HandedOut {
   generation: string;
+  // Only a result giving this back answers it, and only once.
+  attempt: string;
   at: number;
 }
 
@@ -197,7 +199,8 @@ export class ProbeService {
       const overdue =
         waiting !== undefined && now - waiting.at >= PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND;
       const cannot = waiting === undefined && this.dependencies.vantages?.canCheck(body.vantage!) !== true;
-      if (overdue || cannot) {
+      const quiet = waiting === undefined && this.vantageWentQuiet(probe.lastCheckedAt, body, now);
+      if (overdue || cannot || quiet) {
         this.waiting.delete(probe.id);
         this.noteUnknown(probe.id, body.vantage!);
       }
@@ -205,6 +208,19 @@ export class ProbeService {
     const here = due.filter(({ body }) => body.vantage === null);
     const free = Math.max(0, PROBE_LIMITS.atOnce - this.inFlight.size);
     await Promise.all(here.slice(0, free).map(({ probe, body }) => this.checkOne(probe.id, probe.hostId, body)));
+  }
+
+  /**
+   * Since a check's last answer its host has had the interval and the deadline after it to take the check again, and
+   * has not reported at all within the deadline: what it last saw is past its time. One still reporting only has
+   * checks waiting their turn.
+   */
+  private vantageWentQuiet(lastCheckedAt: number | null, body: ProbeBody, now: number) {
+    if (lastCheckedAt === null) return false;
+    const deadline = PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND;
+    const lastReport = this.dependencies.vantages?.lastReportAt(body.vantage!) ?? null;
+    const reporting = lastReport !== null && now - lastReport < deadline;
+    return !reporting && now - lastCheckedAt >= body.intervalSeconds * MILLISECONDS_PER_SECOND + deadline;
   }
 
   /**
@@ -229,14 +245,17 @@ export class ProbeService {
       const body = this.bodyOf(probe.bodyJson);
       if (body === null) return [];
       const generation = generationOf(probe.bodyJson);
-      this.waiting.set(probe.id, { generation, at: now });
-      return [{ id: probe.id, generation, body }];
+      const attempt = randomUUID();
+      this.waiting.set(probe.id, { generation, attempt, at: now });
+      return [{ id: probe.id, generation, attempt, body }];
     });
   }
 
   /**
-   * What a host saw for the checks it was given. A report for a check that is not that host's to make, or for a
-   * version of it that has since changed, is no answer to anything asked and is left alone.
+   * What a host saw for the checks it was given. A report for a check that is not that host's to make, for a version
+   * of it that has since changed, or for anything but its latest hand-out within the deadline, is no answer to anything
+   * asked and is left alone. A hand-out is answered once: the same report sent again, after its answer was lost,
+   * changes nothing more.
    */
   recordReports(hostId: string, reports: readonly ProbeReport[]) {
     for (const report of reports.slice(0, PROBE_LIMITS.resultsPerReport)) {
@@ -244,10 +263,18 @@ export class ProbeService {
       const body = row === undefined ? null : this.bodyOf(row.bodyJson);
       if (row === undefined || body === null || body.vantage !== hostId) continue;
       if (generationOf(row.bodyJson) !== report.generation) continue;
+      if (!this.answersHandOut(report)) continue;
       this.waiting.delete(report.id);
-      const { id: _id, generation: _generation, ...result } = report;
-      this.record(report.id, body, this.inMaintenance(hostId) ? null : result);
+      const { id: _id, generation: _generation, attempt: _attempt, ...result } = report;
+      // Maintenance is the host's the check is about, as for a check made here: not the one that made it.
+      this.record(report.id, body, this.inMaintenance(row.hostId) ? null : result);
     }
+  }
+
+  private answersHandOut({ id, attempt }: ProbeReport) {
+    const waiting = this.waiting.get(id);
+    if (waiting === undefined || waiting.attempt !== attempt) return false;
+    return this.dependencies.clock() - waiting.at < PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND;
   }
 
   /**

@@ -506,17 +506,16 @@ function ConnectHostDialog({ hosts, onClosed }: { hosts: readonly HostView[]; on
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
-  // What to take back goes with the click, as the dialog shows it then: a runner host that joined stays.
+  // The dashboard decides what to take back, not what this dialog last saw: a runner host that joined meanwhile stays,
+  // offline or not. Closed only once that is settled, so a failure stays on screen to try again.
   const cancel = useMutation({
     mutationFn: async () => {
-      const unjoined =
-        enrolled !== null && !hosts.some((host) => host.id === enrolled && host.state === HOST_STATE.online);
       await Promise.all(
         storedKeys.map((keyId) => api("DELETE", apiPath(API_ROUTES.sshKey, { keyId })).catch(() => undefined)),
       );
-      if (unjoined) await api("POST", apiPath(API_ROUTES.hostRevoke, { hostId: enrolled }));
+      if (enrolled !== null) await api("POST", apiPath(API_ROUTES.hostCancelEnrollment, { hostId: enrolled }));
     },
-    onSettled: async () => {
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: hostsQuery.queryKey });
       await queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
       onClosed();

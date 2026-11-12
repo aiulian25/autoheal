@@ -217,6 +217,27 @@ describe("what a runner says it can do", () => {
     return { connection: { url, token: "fixture", pin: material.pin }, heartbeats };
   }
 
+  it("takes up the host's runs an earlier runner left going before it settles what was cut short", async () => {
+    const { connection } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    const order: string[] = [];
+    const settle = runtime.results.settleInterrupted.bind(runtime.results);
+    runtime.results.settleInterrupted = async () => {
+      order.push("settle what was cut short");
+      await settle();
+    };
+    const resume = runtime.approvedWork!.resumeHostRuns.bind(runtime.approvedWork);
+    runtime.approvedWork!.resumeHostRuns = async () => {
+      order.push("take up the host's runs");
+      await resume();
+    };
+
+    const stop = await startRunner(runtime);
+    await stop();
+
+    expect(order).toEqual(["take up the host's runs", "settle what was cut short"]);
+  });
+
   it.each([
     ["everything a tag change needs on", {}, true],
     ["container access off", { containerAccess: false }, false],
@@ -244,6 +265,8 @@ describe("what a runner says it can do", () => {
       operationPreviews: true,
       resourcePermissions: true,
       rollouts: true,
+      serviceProbes: true,
+      probeAttempts: true,
       tagChanges: changesTags,
     });
   });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { RUNNER_UPDATE_REPORT, SELF_UPDATE, SELF_UPDATE_TEXT } from "../shared/constants.js";
+import { DIGEST_SEPARATOR, RUNNER_UPDATE_REPORT, SELF_UPDATE, SELF_UPDATE_TEXT } from "../shared/constants.js";
 import type { ContainerDetails } from "./incident-report.js";
 import { handOverToRelease, lastUpdateOf, type RunnerUpdateDocker, updateTarget } from "./runner-self-update.js";
 
@@ -56,6 +56,29 @@ describe("a sidecar runner moving to its control plane's release", () => {
   const own = { reference: "runner-id", socketPath: "/var/run/docker.sock", socketGroup: 998 };
   beforeEach(() => {
     world = engine();
+  });
+
+  it("never hands a runner pinned to the digest of a newer release an older one", async () => {
+    const pinned = `ghcr.io/example/autoheal@${OLD}`;
+    world.state.containers.set("runner-id", runner({ Config: { Image: pinned } } as never));
+    // Its own digest is the image it runs; the release's tag is another.
+    world.docker.inspectImage = async (reference) =>
+      ({ Id: reference.includes(DIGEST_SEPARATOR) ? OLD : NEW }) as never;
+
+    const result = await handOverToRelease(world.docker, own, RELEASE, null, "2.0.0");
+
+    expect(result.handedOver).toBe(false);
+    expect(world.state.created).toEqual([]);
+    expect(world.state.calls).toEqual([`pull ${pinned}`]);
+  });
+
+  it("hands a runner pinned to the digest of an older release the newer one", async () => {
+    world.state.containers.set("runner-id", runner({ Config: { Image: `ghcr.io/example/autoheal@${OLD}` } } as never));
+
+    const result = await handOverToRelease(world.docker, own, RELEASE, null, "1.1.0");
+
+    expect(result.handedOver).toBe(true);
+    expect(world.state.calls[0]).toBe(`pull ${RELEASE}`);
   });
 
   it("pulls the release and hands its own container to the helper, from the new image", async () => {
@@ -243,8 +266,16 @@ describe("which image a runner updates to, keeping the person's choice of tag", 
     ["registry.example/autoheal:1.1.0", "registry.example/autoheal:1.2.0"],
     ["registry.example/autoheal:1.2.0", "registry.example/autoheal:1.2.0"],
     ["registry.example/autoheal:1.3.0", "registry.example/autoheal:1.3.0"],
-    [`registry.example/autoheal@${OLD}`, "registry.example/autoheal:1.2.0"],
   ])("%s → %s", (own, expected) => {
     expect(updateTarget(own, RELEASE)).toBe(expected);
+  });
+
+  // A digest names no version: the release the runner runs, as built into it, stands in for it.
+  it.each([
+    ["1.1.0", "registry.example/autoheal:1.2.0"],
+    ["1.2.0", `registry.example/autoheal@${OLD}`],
+    ["2.0.0", `registry.example/autoheal@${OLD}`],
+  ])("a digest, with the runner on %s → %s", (running, expected) => {
+    expect(updateTarget(`registry.example/autoheal@${OLD}`, RELEASE, running)).toBe(expected);
   });
 });
