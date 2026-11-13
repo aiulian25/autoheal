@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,8 @@ import type { Actor } from "../audit/audit-log.js";
 
 const GUARD_LABEL = "autoheal.guard.state";
 const GUARD_RECORD = "autoheal.guard.record";
+const JOURNAL_LABEL = "autoheal.shutdown.journal";
+const JOURNAL_RECORD = "autoheal.shutdown.record";
 
 describe("an SSH host's runner inside the control plane", () => {
   let engine: FakeDockerEngine;
@@ -335,6 +338,52 @@ describe("an SSH host's runner inside the control plane", () => {
       () => runners.connectionOf(hostId),
       (connection) => connection === null,
     );
+  });
+
+  // A host job a runner handed to systemd, as its record on the host says once that runner is gone.
+  const handedOver = (extra: Record<string, unknown> = {}) => {
+    const id = randomUUID();
+    const jobId = randomUUID();
+    const name = `autoheal-shutdown-${id}-1`;
+    const record = { version: 1, id, operation: `host:${jobId}`, target: "", step: 1, phase: "delegated", ...extra };
+    const labels = { [JOURNAL_LABEL]: "1", [JOURNAL_RECORD]: JSON.stringify({ ...record, reference: jobId, at: 1 }) };
+    engine.volumes.set(name, { Name: name, Labels: labels });
+  };
+  const journalVolumes = () => [...engine.volumes.values()].filter((volume) => volume.Labels?.[JOURNAL_LABEL] === "1");
+
+  it("starts past a reboot that a runner up to 1.5.3 handed over with no boot to compare, as from the dashboard", async () => {
+    handedOver({ bootId: null });
+    controlPlane.services.embeddedRunners.begin();
+    await online();
+    expect(journalVolumes()).toEqual([]);
+  });
+
+  it("closes the files a start that failed opened, so trying again never runs the host out of sessions", async () => {
+    server.sudoPassword = "alex's own";
+    const runners = controlPlane.services.embeddedRunners;
+    runners.begin();
+    await online();
+    // An upgrade handed to systemd whose status files are gone: a person has to look, and each start stops there,
+    // once the root password the host's package jobs need has its runner follow them.
+    handedOver();
+    await admin.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "alex's own" });
+    await until(host, (view) => view.ssh?.reason?.includes("needs operator reconciliation") === true);
+    // What the session keeps open of its own: each try has to give back what it opened, or sshd soon refuses more.
+    const kept = server.openSessions;
+    for (let tries = 0; tries < 4; tries += 1) {
+      const before = server.sftpRequests;
+      runners.tick();
+      await until(
+        () => server.sftpRequests,
+        (requests) => requests > before,
+      );
+      await until(
+        () => server.openSessions,
+        (open) => open <= kept,
+      );
+    }
+    // Still the full runner it tries, its Docker still asked for: not the host's system alone, for want of a channel.
+    expect((await host()).ssh?.reason).toContain("needs operator reconciliation");
   });
 });
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ShutdownJournal } from "./shutdown-journal.js";
 import type { DockerVolume } from "./docker-client.js";
@@ -120,11 +121,11 @@ describe("shutdown write-ahead records", () => {
     expect((await storage.volumes()).length).toBeGreaterThan(0);
   });
 
-  it("clears a reboot's record and removes its helper once the host has booted again, and not before", async () => {
+  it("clears a reboot's record and removes its helper at the next start, booted again or not", async () => {
     const storage = store();
     const removed: string[] = [];
     const engine = { ...storage, remove: async (name: string) => void removed.push(name) };
-    const journal = new ShutdownJournal(engine, () => "boot-a");
+    const journal = new ShutdownJournal(engine);
     const entered = barrier();
     const docker = journal.docker({
       start: async (_name: string) => {
@@ -136,26 +137,57 @@ describe("shutdown write-ahead records", () => {
     void journal.run("host:job-1", "", () => docker.start!("autoheal-helper-job-1"), { reboot: true });
     await entered.promise;
 
-    // Started again in the same boot: the reboot did not happen, so a person decides.
-    const sameBoot = new ShutdownJournal(engine, () => "boot-a");
-    await sameBoot.settleReboots();
-    await expect(sameBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
-    // Where the boot cannot be read, nothing counts as rebooted.
-    const unknownBoot = new ShutdownJournal(engine);
-    await unknownBoot.settleReboots();
-    await expect(unknownBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
-    expect(removed).toEqual([]);
-
-    const nextBoot = new ShutdownJournal(engine, () => "boot-b");
-    await nextBoot.settleReboots();
-    await nextBoot.assertClean();
+    const next = new ShutdownJournal(engine);
+    await next.settleReboots();
+    await next.assertClean();
     expect(removed).toEqual(["autoheal-helper-job-1"]);
     expect(await storage.volumes()).toEqual([]);
   });
 
-  it("leaves any other interrupted host job for a person, even after the host booted again", async () => {
+  it("lets a runner start past a reboot handed to systemd, whose run is never followed again", async () => {
     const storage = store();
-    const journal = new ShutdownJournal(storage, () => "boot-a");
+    const journal = new ShutdownJournal(storage);
+    const handedOver = barrier();
+    void journal.run(
+      "host:job-3",
+      "",
+      async () => {
+        await journal.delegate("job-3");
+        handedOver.release();
+        await new Promise(() => undefined);
+      },
+      { reboot: true },
+    );
+    await handedOver.promise;
+
+    const next = new ShutdownJournal(storage);
+    await next.settleReboots();
+    await next.assertClean();
+    await next.reconcileHostRuns([]);
+    expect(await storage.volumes()).toEqual([]);
+  });
+
+  it("clears a reboot's record that a runner up to 1.5.3 left on a host reached over SSH, with no boot", async () => {
+    const storage = store();
+    const id = randomUUID();
+    const record = { version: 1, id, operation: "host:job-4", target: "", at: 1, bootId: null };
+    const labels = (step: number, phase: string, reference: string | null) => ({
+      "autoheal.shutdown.journal": "1",
+      "autoheal.shutdown.record": JSON.stringify({ ...record, step, phase, reference }),
+    });
+    await storage.createVolume(`autoheal-shutdown-${id}-0`, labels(0, "admitted", null));
+    await storage.createVolume(`autoheal-shutdown-${id}-1`, labels(1, "delegated", "job-4"));
+
+    const journal = new ShutdownJournal(storage);
+    await journal.settleReboots();
+    await journal.assertClean();
+    await journal.reconcileHostRuns([]);
+    expect(await storage.volumes()).toEqual([]);
+  });
+
+  it("leaves any other interrupted host job for a person", async () => {
+    const storage = store();
+    const journal = new ShutdownJournal(storage);
     const entered = barrier();
     const docker = journal.docker({
       start: async (_name: string) => {
@@ -165,9 +197,9 @@ describe("shutdown write-ahead records", () => {
     });
     void journal.run("host:job-2", "", () => docker.start!("autoheal-helper-job-2"));
     await entered.promise;
-    const nextBoot = new ShutdownJournal(storage, () => "boot-b");
-    await nextBoot.settleReboots();
-    await expect(nextBoot.assertClean()).rejects.toThrow("needs clearing before this runner can start");
+    const next = new ShutdownJournal(storage);
+    await next.settleReboots();
+    await expect(next.assertClean()).rejects.toThrow("needs clearing before this runner can start");
   });
 
   describe("an action interrupted before it changed anything", () => {

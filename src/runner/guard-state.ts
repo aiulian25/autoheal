@@ -63,14 +63,6 @@ export interface GuardTiming {
 export const monotonicSeconds = () => performance.now() / 1000;
 // The kernel's id for this boot: the host's, even inside the runner's container.
 const KERNEL_BOOT_ID = "/proc/sys/kernel/random/boot_id";
-/** The host's boot id now, or null where it cannot be read. */
-export function kernelBootId(): string | null {
-  try {
-    return readFileSync(KERNEL_BOOT_ID, "utf8").trim() || null;
-  } catch {
-    return null;
-  }
-}
 const timing: GuardTiming = {
   clock: monotonicSeconds,
   wall: () => Date.now() / 1000,

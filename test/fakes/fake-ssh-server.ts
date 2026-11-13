@@ -116,6 +116,8 @@ export class FakeSshServer {
   readonly shells: { term: string; columns: number; rows: number; resizes: string[] }[] = [];
   // Every SFTP request answered, for a test to count what one reading costs.
   sftpRequests = 0;
+  // The session channels open now, commands, shells and SFTP alike, as sshd counts them against its MaxSessions.
+  openSessions = 0;
   // The host's files: SFTP serves this directory as its /. Null answers only REALPATH.
   filesRoot: string | null = null;
   // Each signed-in connection's start and end, in order: whether two ever overlapped.
@@ -273,6 +275,10 @@ export class FakeSshServer {
         this.connections.push("ready");
         client.on("session", (acceptSession) => {
           const session = acceptSession();
+          this.openSessions += 1;
+          session.once("close", () => {
+            this.openSessions -= 1;
+          });
           let terminal = { term: "", columns: 0, rows: 0, resizes: [] as string[] };
           session.on("pty", (acceptPty, _rejectPty, info) => {
             terminal = { term: info.term, columns: info.cols, rows: info.rows, resizes: [] };

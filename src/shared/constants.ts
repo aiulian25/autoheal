@@ -613,7 +613,7 @@ export const RUNNER_MESSAGES = {
   untouchedSettled: (operation: string, target: string) =>
     `${operation} on ${target} was interrupted before it changed anything: cleared, and it will not run again.`,
   rebootSettled: (operation: string) =>
-    `${operation}: the host has booted again since its reboot was started, so that reboot is done and its record is cleared.`,
+    `${operation} was a reboot or a shutdown, which leaves nothing half done: its record is cleared.`,
   watching: (dryRun: boolean, model: string, protectedContainers: readonly string[], controlPlane: string) =>
     `watching, dry_run=${dryRun}, model=${model}, protected=${JSON.stringify(protectedContainers)}, control plane=${controlPlane}`,
   standalone: "none (asking Ollama directly)",

@@ -174,6 +174,16 @@ export class SshHostFiles implements HostFiles {
     );
   }
 
+  /** Ends its file channel, which the session keeps open otherwise: a host allows each connection only a few. */
+  close() {
+    const opening = this.channel;
+    this.channel = null;
+    void opening?.then(
+      (sftp) => sftp.end(),
+      () => undefined,
+    );
+  }
+
   // One SFTP channel for every read; a new one once the session drops it.
   private sftp(): Promise<SFTPWrapper> {
     if (this.channel === null) {

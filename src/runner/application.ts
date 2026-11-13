@@ -16,7 +16,7 @@ import { APPLICATION_HELPER_ERRORS } from "../shared/application-backups.js";
 import { randomUUID } from "node:crypto";
 import { MaintenanceGate } from "./maintenance.js";
 import { ResultJournal } from "./result-journal.js";
-import { GuardState, kernelBootId } from "./guard-state.js";
+import { GuardState } from "./guard-state.js";
 import { RuntimeLifecycle } from "../shared/runtime-lifecycle.js";
 import { ShutdownJournal } from "./shutdown-journal.js";
 import { OperationJournal } from "./operation-journal.js";
@@ -117,9 +117,9 @@ export interface RunnerPorts {
   // The host's files, under the configuration's host root.
   hostFiles: HostFiles;
   hostCommand: HostCommand;
-  // The machine the runner runs on, when that is the host: its boot id, and the alive file the health check reads.
-  // Null for a host reached over SSH.
-  localHost: { currentBoot: () => string | null; aliveFile: string } | null;
+  // The machine the runner runs on, when that is the host: the alive file the health check reads. Null for a host
+  // reached over SSH.
+  localHost: { aliveFile: string } | null;
   // How a host reached over SSH starts its package jobs: as root, with the password a person saved for it; null
   // without one. A runner on its own host starts them through its helper container instead.
   packageUnits: PackageUnitStarter | null;
@@ -140,7 +140,7 @@ export const localRunnerPorts = (config: RunnerConfig): RunnerPorts => ({
   docker: new LocalDockerConnection(config.dockerSocketPath),
   hostFiles: LOCAL_HOST_FILES,
   hostCommand: runLocally,
-  localHost: { currentBoot: kernelBootId, aliveFile: ALIVE_FILE_PATH },
+  localHost: { aliveFile: ALIVE_FILE_PATH },
   packageUnits: null,
   helperImageReference: null,
   hostShell: null,
@@ -290,7 +290,7 @@ export async function createRuntime(
   // Which publishers this fleet trusts and where a signed image is required: the control plane's last word on it.
   const trust: { policy: ImageTrustPolicy } = { policy: EMPTY_TRUST_POLICY };
   const transport = new DockerClient(ports.docker, () => registries.allowed);
-  const shutdownJournal = new ShutdownJournal(transport, localHost?.currentBoot);
+  const shutdownJournal = new ShutdownJournal(transport);
   const docker = shutdownJournal.docker(transport);
   const journal = new OperationJournal(docker);
   const guardState = await GuardState.open(transport);

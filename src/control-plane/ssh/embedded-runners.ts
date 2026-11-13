@@ -181,6 +181,9 @@ export class EmbeddedRunners {
     const session = embedded.session;
     const connected = session?.state().state === SSH_STATE.connected;
     if (session === null || !connected || embedded.runner !== null || this.runners.get(hostId) !== embedded) return;
+    // Closed when the start fails: else each try would keep a channel open, until the host's sshd refuses another and
+    // nothing of the host can be read, nor its Docker asked for.
+    const hostFiles = new SshHostFiles(session);
     embedded.runner = Promise.resolve()
       .then(async () => {
         const details = this.dependencies.hosts.runnerOf(hostId);
@@ -188,7 +191,7 @@ export class EmbeddedRunners {
         const { root } = details;
         const ports: RunnerPorts = {
           docker: new SshDockerConnection(session),
-          hostFiles: new SshHostFiles(session),
+          hostFiles,
           hostCommand: sshHostCommand(session),
           localHost: null,
           // Package jobs run as root with the password a person saved; without one they are refused, saying so.
@@ -220,6 +223,7 @@ export class EmbeddedRunners {
           return stop;
         },
         (error: unknown) => {
+          hostFiles.close();
           const problem = describeError(error);
           if (problem !== embedded.problem) log(SSH_TEXT.runnerFailed(hostId, problem));
           embedded.problem = problem;

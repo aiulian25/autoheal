@@ -3,7 +3,6 @@ import { hostname } from "node:os";
 import { loadRunnerConfig, type ControlPlaneSettings, type RunnerConfig } from "../../config/runner-config.js";
 import { createRuntime, localRunnerPorts, startRunner, type RunnerPorts } from "../../runner/application.js";
 import { DockerClient } from "../../runner/docker-client.js";
-import { kernelBootId } from "../../runner/guard-state.js";
 import { containerNameOf } from "../../runner/incident-report.js";
 import { LocalDockerConnection } from "../../runner/local-docker-connection.js";
 import {
@@ -175,7 +174,7 @@ export class LocalHostRunner {
       const config = localRunnerConfig(environment, details, this.dependencies.controlPlane, containerNameOf(own));
       const ports = {
         ...(this.dependencies.portsOf ?? localRunnerPorts)(config),
-        localHost: { currentBoot: kernelBootId, aliveFile: LOCAL_HOST.aliveFile },
+        localHost: { aliveFile: LOCAL_HOST.aliveFile },
         reconnect: () => ({ ...this.dependencies.controlPlane, token: details.token }),
       };
       const stop = await startRunner(await createRuntime(config, ports));

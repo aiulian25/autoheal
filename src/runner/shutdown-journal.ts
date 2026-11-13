@@ -19,10 +19,13 @@ const schema = z.object({
   phase: z.string().min(1).max(64),
   reference: z.string().max(256).nullable(),
   at: z.number().int(),
-  // A reboot's record: the boot it was started in. Once the host has booted again, the reboot is done.
+  // A reboot's or a shutdown's record.
+  power: z.literal(true).optional(),
+  // How runners up to 1.5.3 marked one: the boot it was started in, null where that could not be read.
   bootId: z.string().max(64).nullable().optional(),
 });
 export type ShutdownRecord = z.infer<typeof schema>;
+const isPowerJob = (record: ShutdownRecord) => record.power === true || record.bootId !== undefined;
 // A reboot's leftover helper container is removed with its record, where the store can remove containers.
 type Store = Pick<DockerClient, "volumes" | "createVolume" | "removeVolume"> & Partial<Pick<DockerClient, "remove">>;
 const UNTOUCHED_OPERATION = /^job:[^:]+:(start|stop|restart|pause|unpause|update)$/;
@@ -54,11 +57,7 @@ const mutations = new Set([
 /** A write-ahead operation/phase record, on the existing engine. Never contains commands, settings or output. */
 export class ShutdownJournal {
   private readonly context = new AsyncLocalStorage<{ record: ShutdownRecord; writes: Promise<void> }>();
-  constructor(
-    private readonly store: Store,
-    // The host's boot now; null where it cannot be read, and then no reboot counts as done.
-    private readonly currentBoot: () => string | null = () => null,
-  ) {}
+  constructor(private readonly store: Store) {}
 
   async pending(): Promise<ShutdownRecord[]> {
     const latest = new Map<string, ShutdownRecord>();
@@ -91,16 +90,14 @@ export class ShutdownJournal {
   }
 
   /**
-   * A reboot ends the runner along with everything else, often before it can note the hand-over to systemd. Once the
-   * host has booted again since the reboot started, that reboot is done: its record is cleared and its helper
-   * container removed. Whatever else was interrupted still waits for a person.
+   * A reboot or a shutdown never stands between a runner and starting: it leaves nothing half done, the control plane
+   * follows how it ended by the host's boot, and one cut short is said so there, for a person to ask again. Often it
+   * ends the runner before the hand-over to systemd is noted, and systemd's runs of it are never followed after a
+   * restart, so its record is cleared here and its helper container removed, booted again or not. Whatever else was
+   * interrupted still waits for a person.
    */
   async settleReboots() {
-    const now = this.currentBoot();
-    const done = (await this.pending()).filter(
-      (record) => typeof record.bootId === "string" && now !== null && record.bootId !== now,
-    );
-    for (const record of done) {
+    for (const record of (await this.pending()).filter(isPowerJob)) {
       if (record.reference?.startsWith(HOST_HELPER.containerPrefix)) {
         await this.store.remove?.(record.reference).catch(() => undefined);
       }
@@ -157,7 +154,7 @@ export class ShutdownJournal {
       phase: "admitted",
       reference: null,
       at: Date.now(),
-      ...(reboot ? { bootId: this.currentBoot() } : {}),
+      ...(reboot ? { power: true } : {}),
     };
     await this.save(record);
     return this.context.run({ record, writes: Promise.resolve() }, async () => {
