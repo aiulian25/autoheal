@@ -28,7 +28,7 @@ import { imageTag } from "../../shared/image-reference.js";
 import { isNewMajor } from "../../shared/image-versions.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { DomainError } from "../domain-error.js";
+import { accepts, DomainError } from "../domain-error.js";
 import { isDatabaseImage } from "../host-control/host-control.js";
 import { osUpdatesKey, type HostPackagesService } from "../host-packages/host-packages-service.js";
 import type { IncidentsService } from "../incidents/incidents-service.js";
@@ -64,16 +64,6 @@ interface TagHandOver {
 }
 
 // Whether a check lets it through: a refusal is the answer, anything else is a fault.
-function accepts(check: () => unknown): boolean {
-  try {
-    check();
-    return true;
-  } catch (error) {
-    if (error instanceof DomainError) return false;
-    throw error;
-  }
-}
-
 const isOpen = (task: TaskRow) => (OPEN_TASK_STATUSES as readonly string[]).includes(task.status);
 const isContainerUpdate = (task: TaskRow) =>
   (JSON.parse(task.labelsJson) as string[]).includes(TASK_LABEL.update) &&
@@ -138,6 +128,14 @@ export class DispatchService {
   /** Whether a person's hand-over of this newer version would be taken now: the checks `dispatch` makes first. */
   takesTag(request: AgentDispatchRequest["tags"][number]): boolean {
     return accepts(() => this.tagOf(request));
+  }
+
+  /**
+   * Whether a person's hand-over of these packages of a host would be taken: the checks `dispatch` makes first, a
+   * package job already on its way aside, as that one ends by itself.
+   */
+  takesPackages(hostId: string, names: readonly string[]): boolean {
+    return accepts(() => this.requirePackages(hostId, names), [API_ERRORS.hostPackagesBusy]);
   }
 
   // --- what may be handed over ---------------------------------------------------------------------

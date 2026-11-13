@@ -11,7 +11,7 @@ import {
 } from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { FakeHomeAssistant } from "../../../test/fakes/fake-home-assistant.js";
-import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
+import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
 import {
   API_ROUTES,
   apiPath,
@@ -27,7 +27,13 @@ import {
   ROLE_VIEWER,
   SETTING_KEYS,
 } from "../../shared/constants.js";
-import { RUNNER_ROUTES, type Heartbeat, type WorkResponse } from "../../shared/protocol.js";
+import {
+  RUNNER_ROUTES,
+  type Heartbeat,
+  type PackageCheck,
+  type PackageFacts,
+  type WorkResponse,
+} from "../../shared/protocol.js";
 import { JARVIS_LIMITS, type JarvisConnected, type JarvisView } from "../../shared/jarvis.js";
 import { settleDispatchedWork } from "../backups/settle-dispatched-work.js";
 import { auditEvents, hosts, jarvisItems, tasks, users } from "../database/schema.js";
@@ -221,6 +227,7 @@ describe("Jarvis", () => {
               id: string;
               kind: string;
               tier: string;
+              host: string;
               from?: string;
               to?: string;
               say: string;
@@ -693,22 +700,23 @@ describe("Jarvis", () => {
         await controlPlane.services.jarvis.tick();
       };
 
-      it("asks about three at most, and about the rest once it is answered, with a code it shows nowhere", async () => {
-        const four = ["whoami", "gitea", "umami", "adminer"].map((name) => updated(name));
-        const secret = await asking("Alder", four);
-        await later(four, JARVIS_LIMITS.settleMilliseconds);
+      it("asks about one container at a time, the next once it is answered, with a code it shows nowhere", async () => {
+        const two = ["whoami", "adminer"].map((name) => updated(name));
+        const secret = await asking("Alder", two);
+        await later(two, JARVIS_LIMITS.settleMilliseconds);
         const [first] = told();
-        expect(first).toMatchObject({ tier: "ask", names: ["adminer", "gitea", "umami"] });
-        expect(first!.say).toBe("Three updates are waiting on Alder: adminer, gitea and umami. Shall I update them?");
+        expect(first).toMatchObject({ tier: "ask", names: ["adminer"] });
+        expect(first!.say).toBe("adminer on Alder has an update. Should I update the container?");
+        expect(first!.text).toBe("Alder: adminer has an update. Update the container?");
         expect(first!.code).toMatch(/^[\w-]{22}$/);
         expect(JSON.stringify(await view())).not.toContain(first!.code);
         await confirmsAs(secret, first!.id);
-        await later(four, 1);
+        await later(two, 1);
         expect(told()).toHaveLength(1);
-        // The answer itself comes back with TASK-004; a no, as it is kept.
+        // A no, as it is kept, lets the host's next update be asked about.
         const { database } = controlPlane.services.databaseHandle;
         database.update(jarvisItems).set({ status: "declined" }).where(eq(jarvisItems.id, first!.id)).run();
-        await later(four, 1);
+        await later(two, 1);
         expect(told()).toHaveLength(2);
         expect(told()[1]).toMatchObject({ tier: "ask", names: ["whoami"] });
       });
@@ -1181,6 +1189,176 @@ describe("Jarvis", () => {
         });
       });
 
+      describe("about a host, and by name", () => {
+        const PACKAGES: PackageFacts = {
+          setting: "apply",
+          unsupported: null,
+          unattendedUpgrades: false,
+          rebootPackages: [],
+          kernelWaiting: null,
+          timeZone: "UTC",
+          recentChanges: [],
+        };
+        const pending = (name: string) => ({
+          name,
+          installed: "1.0",
+          candidate: "1.1",
+          origins: ["Ubuntu:24.04/noble-updates"],
+        });
+        // Docker is held back by the package rules: a spoken question never names it.
+        const CHECK: PackageCheck = {
+          refreshed: true,
+          refreshProblem: null,
+          needsRepair: false,
+          upgradable: [pending("curl"), pending("openssl"), pending("docker-ce")],
+          keptBack: [],
+          removable: [],
+          rebootRequired: null,
+        };
+        const runner = (method: "GET" | "POST", url: string, payload?: object) =>
+          controlPlane.runnerApp.inject({ method, url, payload, headers: { authorization: `Bearer ${token}` } });
+        const takeWork = async () => (await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs;
+        const finish = async (jobId: string, result: object) =>
+          expect((await runner("POST", apiPath(RUNNER_ROUTES.jobResult, { jobId }), result)).statusCode).toBe(204);
+        const replies = () => told().filter(({ tier }) => tier === "reply");
+        // As a kernel writes them: one per boot.
+        const FIRST_BOOT = "0b6c1d2e-5f00-4c4b-9a6e-2d8e7f3a1b90";
+        const NEXT_BOOT = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a";
+        const hostIdOf = (label: string) =>
+          controlPlane.services.inventoryService.hosts().find((host) => host.label === label)!.id;
+        // Its replies sent: a tick still on its way sends nothing new, so it is tried again until one does.
+        const repliesSent = (count: number) =>
+          vi.waitFor(async () => {
+            await controlPlane.services.jarvis.tick();
+            expect(replies()).toHaveLength(count);
+          });
+        // Nothing left to send: what is said only after a check that waits for this proves nothing more was said.
+        const nothingWaiting = () =>
+          vi.waitFor(async () => {
+            await controlPlane.services.jarvis.tick();
+            expect(controlPlane.services.jarvis.view().waiting).toBe(0);
+          });
+        // The last question, heard: the next may go out.
+        const heardLast = async (secret: string) => {
+          const question = told().at(-1)!;
+          await confirmsAs(secret, question.id);
+          return question;
+        };
+
+        it("asks to install a host's updates, leaves Docker to the dashboard, and says what came of a yes", async () => {
+          capabilities = { host: hostHealth({ packages: PACKAGES }) };
+          const secret = await asking("Larch", []);
+          const check = controlPlane.services.hostPackages.request(
+            { kind: "agent", agent: "autoheal" },
+            hostIdOf("Larch"),
+            "check_packages",
+            [],
+          );
+          await takeWork();
+          await finish(check.id, { succeeded: true, outcome: "Checked.", output: null, packages: CHECK });
+          await controlPlane.services.detectorService.run();
+          await later([], JARVIS_LIMITS.settleMilliseconds);
+          const question = await heardLast(secret);
+          expect(question).toMatchObject({ tier: "ask", kind: "host_updates", names: ["curl", "openssl"] });
+          expect(question.say).toBe("Larch has 2 updates waiting. Should I install them?");
+
+          read(`autoheal yes ${question.code!} ${seconds()} phone`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("Installing 2 updates on Larch now.");
+          const [upgrade] = await takeWork();
+          expect(upgrade).toMatchObject({
+            action: "upgrade_packages",
+            packages: ["curl", "openssl"],
+            requestedBy: "Autoheal",
+          });
+          await finish(upgrade!.id, { succeeded: true, outcome: "Upgraded.", output: null });
+          await vi.waitFor(() => expect(replies()).toHaveLength(2));
+          expect(replies()[1]!.say).toBe("The updates on Larch are installed.");
+        });
+
+        it("asks to restart a host for the boot it is on, restarts it as the dashboard does, and says it is back", async () => {
+          capabilities = { host: hostHealth({ packages: PACKAGES, rebootRequired: true, bootId: FIRST_BOOT }) };
+          const secret = await asking("Linden", []);
+          await later([], JARVIS_LIMITS.settleMilliseconds);
+          const question = await heardLast(secret);
+          expect(question).toMatchObject({ tier: "ask", kind: "reboot", names: [] });
+          expect(question.say).toBe("Linden would like a restart. Should I restart it?");
+          // Never by name: a host restarts only on a yes to its own question, or its button.
+          read(`autoheal update ${seconds()} voice Linden`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          expect(replies()[0]!.say).toBe("I have no question open about linden.");
+          expect(await takeWork()).toEqual([]);
+
+          read(`autoheal yes ${question.code!} ${seconds()} voice Living Room`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(2));
+          expect(replies()[1]!.say).toBe("Restarting Linden now.");
+          const [restart] = await takeWork();
+          expect(restart).toMatchObject({ action: "reboot", requestedBy: "admin" });
+          // Back from a new boot: what came of it.
+          capabilities = { host: hostHealth({ packages: PACKAGES, rebootRequired: false, bootId: NEXT_BOOT }) };
+          await later([], 1);
+          await vi.waitFor(() => expect(replies()).toHaveLength(3));
+          expect(replies()[2]!.say).toBe("Linden is back.");
+        });
+
+        it("takes a yes by name for the one open question it fits, asks which when two do, and says when none", async () => {
+          // npm is protected in the heartbeats here: umami is an update a yes would take.
+          const umami = [updated("umami")];
+          const secret = await asking("Alpha", umami);
+          const store = controlPlane.services.settingsStore;
+          const stored = store.read(SETTING_KEYS.jarvis, z.record(z.string(), z.unknown()))!;
+          store.write(SETTING_KEYS.jarvis, { ...stored, name: "Jarvis" });
+          const alpha = token;
+          const bravo = runnerTokenOf(
+            (await admin.post(API_ROUTES.hosts, { label: "Bravo" })).json<EnrolledHostView>(),
+          );
+          // Both hosts report as time passes, so neither goes quiet.
+          const bothLater = async (milliseconds: number) => {
+            controlPlane.clock.now += milliseconds + 1;
+            for (const each of [alpha, bravo]) {
+              token = each;
+              await report(umami, false);
+            }
+            await controlPlane.services.detectorService.run();
+            await controlPlane.services.jarvis.tick();
+          };
+          // Each host's update opened now, so both have settled by the first look.
+          await bothLater(0);
+          await bothLater(JARVIS_LIMITS.settleMilliseconds);
+          await heardLast(secret);
+          await bothLater(1);
+          await heardLast(secret);
+          expect(told().map(({ host, names }) => `${names[0]} on ${host}`)).toEqual([
+            "umami on Alpha",
+            "umami on Bravo",
+          ]);
+
+          const heardAt = seconds();
+          // A line from long before, as a restarted Home Assistant restores it: nothing.
+          read(`autoheal update ${heardAt - 600} voice umami on Alpha`);
+          await nothingWaiting();
+          expect(replies()).toEqual([]);
+          read(`autoheal update ${heardAt} voice umami, Jarvis.`);
+          await repliesSent(1);
+          expect(replies()[0]!.say).toBe("Which one: umami on Alpha or umami on Bravo?");
+          read(`autoheal update ${heardAt + 1} voice umami on Bravo, Jarvis`);
+          await repliesSent(2);
+          expect(replies()[1]!.say).toBe("Updating umami on Bravo now.");
+          token = bravo;
+          expect(await takeWork()).toEqual([expect.objectContaining({ action: "update", containerName: "umami" })]);
+          read(`autoheal update ${heardAt + 2} voice the gitea container please`);
+          await repliesSent(3);
+          expect(replies()[2]!.say).toBe("I have no question open about gitea.");
+
+          // The same line read again, as a reconnect brings it: nothing more.
+          read(`autoheal update ${heardAt + 1} voice umami on Bravo, Jarvis`);
+          await nothingWaiting();
+          expect(replies()).toHaveLength(3);
+          token = alpha;
+          expect(await takeWork()).toEqual([]);
+        });
+      });
+
       it("tells, rather than asks, until a test question was answered", async () => {
         const whoami = [updated("whoami")];
         await asking("Hazel", whoami);
@@ -1201,6 +1379,7 @@ describe("Jarvis", () => {
         expect((await view()).open).toEqual([
           {
             id: question.id,
+            kind: "container_updates",
             host: "Ivy",
             names: ["whoami"],
             from: null,

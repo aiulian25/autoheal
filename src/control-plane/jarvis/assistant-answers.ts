@@ -47,6 +47,7 @@ export function sameCode(kept: string | null, given: string): boolean {
 /** What the hand-over's refusal means to a person who said yes. */
 export function refusalWords(code: ApiErrorCode, host: string, replies: JarvisReplies) {
   if (code === API_ERRORS.handsOff) return replies.handsOff(host);
+  if (code === API_ERRORS.hostPackagesBusy) return replies.busy(host);
   return GONE.includes(code) ? replies.gone : replies.notHandedOver;
 }
 

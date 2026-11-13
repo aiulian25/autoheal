@@ -47,7 +47,7 @@ export const JARVIS_LIMITS = {
   urgentSettleMilliseconds: 5 * 60 * 1000,
   repeatMilliseconds: 24 * 60 * 60 * 1000,
   urgentRepeatMilliseconds: 6 * 60 * 60 * 1000,
-  perDay: 3,
+  perDay: 10,
   dayMilliseconds: 24 * 60 * 60 * 1000,
   retentionMilliseconds: 30 * 24 * 60 * 60 * 1000,
   sendTimeoutMilliseconds: 10 * 1000,
@@ -55,9 +55,13 @@ export const JARVIS_LIMITS = {
   resendMilliseconds: 30 * 60 * 1000,
   sendsAtMost: 3,
   namesSpoken: 3,
-  // A question names this many updates at most, and a yes covers only those.
-  namesAsked: 3,
+  // A question is about one thing: a container's update, a host's updates, or its restart. A yes covers only that.
+  namesAsked: 1,
   asksAtMost: 3,
+  // An answer by name counts only while fresh: the line a restarted Home Assistant restores is long past.
+  namedAnswerMilliseconds: 2 * 60 * 1000,
+  // What heard words a line may hold: a container and its host, and the assistant's own name after them.
+  heardCharacters: 60,
   // While a question waits to be heard, no other goes out: for this long at most.
   hearMilliseconds: 2 * 60 * 1000,
   codeBytes: 16,
@@ -217,25 +221,50 @@ const WRITTEN: Record<Exclude<JarvisKind, "test">, (host: string, names: readonl
 
 type TaskKind = Exclude<JarvisKind, "test">;
 
-const capitalised = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
 const LAST_ASKING = " I will not ask again.";
+const endingOf = (lastAsking: boolean) => (lastAsking ? LAST_ASKING : "");
 
-/** A question about a host's updates, three names at most; the last time it is asked, it says so. */
+/**
+ * A question about a container's update, one per question now; one asked before that may name a few. The last time it
+ * is asked, it says so.
+ */
 export function jarvisQuestion(
   facts: Pick<JarvisFacts, "host" | "names">,
   lastAsking: boolean,
   address: string | null,
 ) {
-  const { names } = facts;
-  const host = spokenName(facts.host);
-  const toYou = spokenTo(address);
-  const ending = lastAsking ? LAST_ASKING : "";
-  const say =
-    names.length === 1
-      ? `An update is waiting for ${spokenList(names)} on ${host}${toYou}. Shall I update it?`
-      : `${capitalised(DIGIT_WORDS[names.length]!)} updates are waiting on ${host}${toYou}: ${spokenList(names)}. Shall I update them?`;
-  const text = `${facts.host}: ${plural(names.length, "an update is", `${names.length} updates are`)} waiting: ${names.join(", ")}. ${plural(names.length, "Update it?", "Update them?")}`;
-  return { say: `${say}${ending}`, text: `${text}${ending}` };
+  const { host, names } = facts;
+  const ending = endingOf(lastAsking);
+  const has = plural(names.length, "has an update", "have updates");
+  return {
+    say: `${spokenList(names)} on ${spokenName(host)} ${has}${spokenTo(address)}. Should I update ${plural(names.length, "the container", "them")}?${ending}`,
+    text: `${host}: ${names.join(", ")} ${has}. ${plural(names.length, "Update the container?", "Update them?")}${ending}`,
+  };
+}
+
+/** A question about the system updates waiting on a host, by their count; the last time, it says so. */
+export function jarvisHostUpdatesQuestion(
+  facts: { host: string; count: number },
+  lastAsking: boolean,
+  address: string | null,
+) {
+  const { host, count } = facts;
+  const ending = endingOf(lastAsking);
+  const updates = plural(count, "an update", `${count} updates`);
+  const them = plural(count, "it", "them");
+  return {
+    say: `${spokenName(host)} has ${updates} waiting${spokenTo(address)}. Should I install ${them}?${ending}`,
+    text: `${host}: ${updates} waiting. Install ${them}?${ending}`,
+  };
+}
+
+/** A question about a host's restart, for updates it has already taken; the last time, it says so. */
+export function jarvisRestartQuestion(host: string, lastAsking: boolean, address: string | null) {
+  const ending = endingOf(lastAsking);
+  return {
+    say: `${spokenName(host)} would like a restart${spokenTo(address)}. Should I restart it?${ending}`,
+    text: `${host} would like a restart. Restart it?${ending}`,
+  };
 }
 
 // A version read out as it is written: a few short numbers with dots. Anything else is only written down.
@@ -253,7 +282,7 @@ export interface JarvisVersionFacts {
 export function jarvisVersionQuestion(facts: JarvisVersionFacts, lastAsking: boolean, address: string | null) {
   const { host, name, from, to } = facts;
   const toYou = spokenTo(address);
-  const ending = lastAsking ? LAST_ASKING : "";
+  const ending = endingOf(lastAsking);
   const say = sayable(from, to)
     ? `Version ${to} of ${spokenName(name)} is out, and ${spokenName(host)} runs ${from}${toYou}. Shall I move it to ${to}?`
     : `A newer version of ${spokenName(name)} is out on ${spokenName(host)}${toYou}. Shall I move to it?`;
@@ -280,6 +309,20 @@ export function jarvisReplies(address: string | null) {
           : `Moving ${spokenName(name)} on ${spokenName(host)} to its newer version now${toYou}.`,
         `${host}: moving ${name} to ${to} now.`,
       ),
+    installing: (host: string, count: number) =>
+      words(
+        `Installing ${plural(count, "the update", `${count} updates`)} on ${spokenName(host)} now${toYou}.`,
+        `${host}: installing ${plural(count, "1 update", `${count} updates`)} now.`,
+      ),
+    restarting: (host: string) => words(`Restarting ${spokenName(host)} now${toYou}.`, `${host}: restarting now.`),
+    // Several open questions fit the name heard: nothing is done until one is named.
+    whichOne: (choices: readonly { host: string; name: string }[]) =>
+      words(
+        `Which one${toYou}: ${choices.map(({ host, name }) => `${spokenName(name)} on ${spokenName(host)}`).join(" or ")}?`,
+        `Which one: ${choices.map(({ host, name }) => `${name} on ${host}`).join(" or ")}?`,
+      ),
+    nothingOpen: (heard: string) =>
+      words(`I have no question open about ${heard}${toYou}.`, `No open question about ${heard}.`),
     noLongerOpen: words(`That question is no longer open${toYou}.`, "That question is no longer open."),
     gone: words(`That update is gone${toYou}, so there is nothing to do.`, "That update is gone: nothing to do."),
     newerOut: words(
@@ -300,6 +343,11 @@ export function jarvisReplies(address: string | null) {
       words(
         `${spokenName(host)} keeps my hands off that now${toYou}, so I left it.`,
         `${host} keeps Autoheal's hands off it now: nothing changed.`,
+      ),
+    busy: (host: string) =>
+      words(
+        `${spokenName(host)} is busy with its packages${toYou}, so I left it. I will ask again.`,
+        `${host} is busy with its packages: nothing changed, and it is asked again.`,
       ),
     notHandedOver: words(
       `I could not hand that over${toYou}. The dashboard says why.`,
@@ -335,6 +383,36 @@ export function jarvisOutcome(host: string, outcome: JarvisOutcome, address: str
   const written = parts.map(([kind, ending]) => `${outcome[kind].join(", ")} ${ending(outcome[kind].length)}`);
   const rest = spoken.slice(1).map((part) => ` ${part}.`);
   return words(`${spoken[0]}${spokenTo(address)}.${rest.join("")}`, `${host}: ${written.join(". ")}.`);
+}
+
+/** What came of a yes to a host's updates: true installed, false not, undefined not done yet. */
+export function jarvisPackagesOutcome(host: string, installed: boolean | undefined, address: string | null) {
+  const toYou = spokenTo(address);
+  const spoken = spokenName(host);
+  if (installed === true) {
+    return words(`The updates on ${spoken} are installed${toYou}.`, `${host}: the updates are installed.`);
+  }
+  if (installed === false) {
+    return words(
+      `The updates on ${spoken} were not installed${toYou}: the dashboard says why.`,
+      `${host}: the updates were not installed: the dashboard says why.`,
+    );
+  }
+  return words(`The updates on ${spoken} are not done yet${toYou}.`, `${host}: the updates are not done yet.`);
+}
+
+/** What came of a yes to a restart: true back from it, false refused, undefined not back yet. */
+export function jarvisRestartOutcome(host: string, back: boolean | undefined, address: string | null) {
+  const toYou = spokenTo(address);
+  const spoken = spokenName(host);
+  if (back === true) return words(`${spoken} is back${toYou}.`, `${host} is back.`);
+  if (back === false) {
+    return words(
+      `${spoken} did not restart${toYou}: the dashboard says why.`,
+      `${host} did not restart: the dashboard says why.`,
+    );
+  }
+  return words(`${spoken} is not back yet${toYou}.`, `${host} is not back yet.`);
 }
 
 export const jarvisSay = (facts: JarvisFacts & { kind: TaskKind }, address: string | null) =>
@@ -499,6 +577,7 @@ export interface JarvisRecentView {
 // A question that was heard, and waits for its answer.
 export interface JarvisOpenQuestionView {
   id: string;
+  kind: TaskKind;
   host: string;
   names: string[];
   // A newer version's: the tag it runs, and the tag a yes moves it to.

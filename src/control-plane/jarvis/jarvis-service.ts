@@ -29,9 +29,13 @@ import {
   JARVIS_TEST_OUTCOME,
   JARVIS_TIER,
   assistantSetupLinks,
+  jarvisHostUpdatesQuestion,
   jarvisOutcome,
+  jarvisPackagesOutcome,
   jarvisQuestion,
   jarvisReplies,
+  jarvisRestartOutcome,
+  jarvisRestartQuestion,
   jarvisSay,
   jarvisTestQuestionWords,
   jarvisTestWords,
@@ -53,6 +57,7 @@ import {
   type JarvisView,
 } from "../../shared/jarvis.js";
 import { describeError } from "../../shared/errors.js";
+import { sha256Hex } from "../../shared/hash.js";
 import { imageTag } from "../../shared/image-reference.js";
 import { log } from "../../shared/log.js";
 import type { DispatchService } from "../agent/dispatch-service.js";
@@ -60,9 +65,11 @@ import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { hosts, jarvisItems, tasks, users, widgetKeys } from "../database/schema.js";
 import type { SecretBox } from "../database/secret-box.js";
-import { DomainError } from "../domain-error.js";
+import { accepts, DomainError } from "../domain-error.js";
 import type { HomeAssistantConnection } from "../home-assistant/home-assistant-inventory.js";
 import type { HostControlService } from "../host-control/host-control-service.js";
+import type { HostPackagesService } from "../host-packages/host-packages-service.js";
+import type { AssessedPackage } from "../host-packages/package-rules.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import type { JobRow } from "../jobs/job-views.js";
 import type { IntegrationsService } from "../settings/integrations-service.js";
@@ -130,10 +137,36 @@ type Stored = z.infer<typeof storedSchema>;
 const isProven = (stored: Stored | null) => (stored?.testAnswered ?? null) !== null;
 type Item = InferSelectModel<typeof jarvisItems>;
 type Answer = Extract<AssistantLine, { code: string }>;
+type Named = Extract<AssistantLine, { verb: typeof LINE_VERB.update }>;
 
 const AUTOHEAL: TaskAuthor = { kind: "agent", agent: AGENT_AUTOHEAL };
-// The jobs a yes starts: an update's, or a newer version's tag change. Their end is what came of it.
-const STARTED_BY_A_YES: readonly string[] = [JOB_ACTION.update, JOB_ACTION.changeTag];
+// The jobs a yes starts: an update's, a newer version's tag change, a host's upgrade or its restart. Their end is what
+// came of it; a restart's is the host back from a new boot.
+const STARTED_BY_A_YES: readonly string[] = [
+  JOB_ACTION.update,
+  JOB_ACTION.changeTag,
+  JOB_ACTION.upgradePackages,
+  JOB_ACTION.reboot,
+];
+// What a person may answer by name: a container's update or newer version, by the container; a host's updates, by the
+// host. Never a restart: a host is restarted only by a yes to its own question, or its button.
+const ANSWERED_BY_NAME: readonly JarvisMessage["kind"][] = [
+  JARVIS_KIND.containerUpdates,
+  JARVIS_KIND.newerVersion,
+  JARVIS_KIND.hostUpdates,
+];
+// Said around a name, never part of one: "update the npm container now, Jarvis".
+const NOT_A_NAME = new Set(["the", "container", "please", "now"]);
+const HOST_SEPARATOR = "on";
+
+// What a yes to a host's updates installs, as one key: a package added, or a newer one out, makes it another question.
+const updatesKey = (offered: readonly Pick<AssessedPackage, "name" | "candidate">[]) =>
+  sha256Hex(
+    offered
+      .map(({ name, candidate }) => `${name}=${candidate}`)
+      .sort()
+      .join(" "),
+  );
 
 interface Switches {
   updates: boolean;
@@ -142,6 +175,19 @@ interface Switches {
 
 // A newer version's tags, as its question names them.
 const tagsOf = ({ from, to }: JarvisMessage) => (from === undefined || to === undefined ? null : { from, to });
+
+// What a question is answered by, by name: its container, or its host for the host's updates.
+const namedIn = (message: JarvisMessage) =>
+  message.kind === JARVIS_KIND.hostUpdates ? message.host : (message.names[0] ?? "");
+
+// What is said back to a yes that was taken: what is being done now.
+function yesWords(message: JarvisMessage, replies: JarvisReplies) {
+  if (message.kind === JARVIS_KIND.reboot) return replies.restarting(message.host);
+  if (message.kind === JARVIS_KIND.hostUpdates) return replies.installing(message.host, message.names.length);
+  const tags = tagsOf(message);
+  if (tags !== null) return replies.moving({ host: message.host, name: message.names[0]!, to: tags.to });
+  return replies.updating(message.host, message.names);
+}
 
 // A line counts once: one no later than the last counted about its message, as a restart restores, is ignored.
 const isNewer = (at: number | null, last: number | null) => at === null || last === null || at > last;
@@ -173,6 +219,8 @@ export class JarvisService {
   private sending = false;
   private lineWindow = { startedAt: 0, lines: 0 };
   private linesDropped = 0;
+  // The time on the last answer by name read: one no later, as a reconnect brings the same line again, is ignored.
+  private lastNamedAt: number | null = null;
 
   constructor(
     private readonly databaseHandle: DatabaseHandle,
@@ -182,7 +230,8 @@ export class JarvisService {
     private readonly secretBox: SecretBox,
     private readonly auditLog: AuditLog,
     private readonly inventory: Pick<InventoryService, "hosts" | "containers">,
-    private readonly handOver: Pick<DispatchService, "takesUpdate" | "takesTag" | "dispatch">,
+    private readonly handOver: Pick<DispatchService, "takesUpdate" | "takesTag" | "takesPackages" | "dispatch">,
+    private readonly hostPackages: Pick<HostPackagesService, "plan" | "request" | "requireRestart">,
     private readonly homeAssistant: Pick<HomeAssistantConnection, "connected">,
     private readonly tasks: Pick<TasksService, "addActivity">,
     private readonly hostControl: Pick<HostControlService, "ignoreVersions">,
@@ -370,6 +419,11 @@ export class JarvisService {
     }
     const line = parseAssistantLine(text);
     if (line === null) return;
+    if (line.verb === LINE_VERB.update) {
+      this.answerByName(line);
+      this.soon();
+      return;
+    }
     if ("code" in line) {
       this.answer(line);
       this.soon();
@@ -519,7 +573,7 @@ export class JarvisService {
   }
 
   private add(planned: JarvisPlanned, now: number) {
-    const facts = { kind: planned.kind, host: safeName(planned.hostLabel), names: planned.names.map(safeName) };
+    const facts = { kind: planned.kind, host: safeName(planned.hostLabel), names: this.namesOf(planned) };
     const asking = planned.tier === JARVIS_TIER.ask;
     const tags = planned.kind === JARVIS_KIND.newerVersion ? this.versionTags(planned) : null;
     const id = randomUUID();
@@ -546,6 +600,13 @@ export class JarvisService {
         codeSealed: asking ? this.newCode() : null,
       })
       .run();
+  }
+
+  // A question about a host's updates names its packages, so it can say how many; anything else names what it planned.
+  private namesOf(planned: JarvisPlanned): string[] {
+    const asksHostUpdates = planned.tier === JARVIS_TIER.ask && planned.kind === JARVIS_KIND.hostUpdates;
+    const names = asksHostUpdates ? this.offeredUpdates(planned.hostId).map(({ name }) => name) : planned.names;
+    return names.map(safeName);
   }
 
   // The same question with the same code; the last time, it says it will not ask again.
@@ -692,6 +753,74 @@ export class JarvisService {
     this.takeYes(question, line, connector, replies);
   }
 
+  /**
+   * A yes by name ("update npm on Rowan, Jarvis"): to the one open question it fits, answered as that question's own
+   * code would be, with every check a code's answer meets. Several, and it asks which; none, and it says so. Only while
+   * fresh, and each line once.
+   */
+  private answerByName(line: Named) {
+    const stale = this.clock() - line.at > JARVIS_LIMITS.namedAnswerMilliseconds;
+    const seen = this.lastNamedAt !== null && line.at <= this.lastNamedAt;
+    if (stale || seen) return;
+    this.lastNamedAt = line.at;
+    const meant = this.nameMeant(line.heard);
+    if (meant === null) return;
+    const replies = jarvisReplies(this.address());
+    const fits = this.openQuestionsNamed(meant);
+    if (fits.length === 0) {
+      this.replyAlone(replies.nothingOpen(safeName(meant.spoken)));
+      return;
+    }
+    if (fits.length > 1) {
+      this.reply(fits[0]!.item, replies.whichOne(fits.map(({ named }) => named)));
+      return;
+    }
+    const code = this.secretBox.open(fits[0]!.item.codeSealed!);
+    if (code === null) return;
+    this.answer({ verb: LINE_VERB.yes, code, at: line.at, how: line.how, room: null });
+  }
+
+  // The name heard, without the words said around one or the assistant's own name; and its host, after the last "on".
+  private nameMeant(heard: string) {
+    const own = this.name();
+    const assistant = own === null ? null : spokenKey(own);
+    const words = heard
+      .toLowerCase()
+      .split(/[\s,]+/)
+      .filter((word) => word !== "" && !NOT_A_NAME.has(word) && spokenKey(word) !== assistant);
+    const at = words.lastIndexOf(HOST_SEPARATOR);
+    const name = (at < 0 ? words : words.slice(0, at)).join(" ");
+    if (name === "") return null;
+    const hostWords = at < 0 ? "" : words.slice(at + 1).join(" ");
+    return { name, host: hostWords === "" ? null : hostWords, spoken: words.join(" ") };
+  }
+
+  // The open questions a name fits, of those put to someone already: a container's by the container, a host's updates
+  // by the host; with a host heard too, only those on it.
+  private openQuestionsNamed(meant: { name: string; host: string | null }) {
+    const open = this.databaseHandle.database
+      .select()
+      .from(jarvisItems)
+      .where(
+        and(
+          inArray(jarvisItems.status, [...OPEN_TO_ANSWERS]),
+          isNotNull(jarvisItems.codeSealed),
+          isNotNull(jarvisItems.sentAt),
+        ),
+      )
+      .all()
+      .map((item) => ({ item, message: this.messageOf(item) }))
+      .filter(({ message }) => ANSWERED_BY_NAME.includes(message.kind))
+      .map(({ item, message }) => ({ item, named: { host: message.host, name: namedIn(message) } }));
+    const byName = matchSpoken(
+      meant.name,
+      open.map((entry) => ({ target: entry, names: [entry.named.name] })),
+    );
+    const { host } = meant;
+    if (host === null) return byName;
+    return byName.filter(({ named }) => matchSpoken(host, [{ target: named, names: [named.host] }]).length > 0);
+  }
+
   // A yes: exactly the updates it was asked about, if they still are as asked and their host could do them now.
   private takeYes(question: Item, line: Answer, connector: Actor, replies: JarvisReplies) {
     const message = this.messageOf(question);
@@ -716,19 +845,14 @@ export class JarvisService {
     }
     // Its moment is before the hand-over, which may make its jobs at once: each job a yes made comes after it.
     const at = this.clock();
-    const refusal = this.handOverAll(question, connector, first);
+    const refusal = this.carryOut(question, connector, first);
     if (refusal !== null) {
       this.reply(question, refusalWords(refusal, message.host, replies));
       this.refuse(question, line);
       return;
     }
     this.settle(question, line, connector, JARVIS_STATUS.accepted, at);
-    const tags = tagsOf(message);
-    const said =
-      tags === null
-        ? replies.updating(message.host, message.names)
-        : replies.moving({ host: message.host, name: message.names[0]!, to: tags.to });
-    this.reply(question, said);
+    this.reply(question, yesWords(message, replies));
   }
 
   // Each update as it was asked about: its task open, still one a yes is taken for (its kind still asked about, still
@@ -742,22 +866,42 @@ export class JarvisService {
     return now.some(({ brings, ask }) => ask?.brings !== brings) ? replies.newerOut : null;
   }
 
-  // The dashboard's own hand-over, as whoever connected the assistant: all of the question's updates or none, or its
-  // newer version, its tag changed where the container's files write it.
-  private handOverAll(question: Item, connector: Actor, first: JarvisCandidate): ApiErrorCode | null {
-    const version = first.ask !== undefined && kindOf(first.detectorKey) === JARVIS_KIND.newerVersion;
-    const tags = version ? [{ hostId: first.hostId, container: first.resource ?? "", tag: first.ask!.brings }] : [];
-    const updates = version ? [] : this.taskIdsOf(question);
-    // Each update goes to the image it was asked about, or back to its person: not to one its tag moved to since.
-    const members = version ? [] : (this.membersOf(question) ?? []).map(memberOf);
-    const approved = new Map(members.map(({ taskId, brings }) => [taskId, brings]));
+  // What a yes was to, as whoever connected the assistant; the refusal it met, or null once it is under way.
+  private carryOut(question: Item, connector: Actor, first: JarvisCandidate): ApiErrorCode | null {
     try {
-      this.handOver.dispatch(connector, { updates, packages: [], incidents: [], tags }, approved);
+      this.act(question, connector, first);
       return null;
     } catch (error) {
       if (error instanceof DomainError) return error.code;
       throw error;
     }
+  }
+
+  // The dashboard's own Restart for a host's restart; for the rest its own hand-over: a host's updates, a newer version
+  // with its tag changed where the container's files write it, or each update of the question, to the very image it
+  // was asked about, or back to its person, never to one its tag moved to since.
+  private act(question: Item, connector: Actor, first: JarvisCandidate) {
+    const kind = kindOf(first.detectorKey);
+    if (kind === JARVIS_KIND.reboot) {
+      const author: TaskAuthor = { kind: "user", actor: connector };
+      this.hostPackages.request(author, first.hostId, JOB_ACTION.reboot, [], first.taskId);
+      return;
+    }
+    const nothing = { updates: [], packages: [], incidents: [], tags: [] };
+    if (kind === JARVIS_KIND.hostUpdates) {
+      const names = this.offeredUpdates(first.hostId).map(({ name }) => name);
+      this.handOver.dispatch(connector, { ...nothing, packages: [{ hostId: first.hostId, names }] });
+      return;
+    }
+    if (kind === JARVIS_KIND.newerVersion) {
+      const tag = { hostId: first.hostId, container: first.resource ?? "", tag: first.ask!.brings };
+      this.handOver.dispatch(connector, { ...nothing, tags: [tag] });
+      return;
+    }
+    const approved = new Map(
+      (this.membersOf(question) ?? []).map(memberOf).map(({ taskId, brings }) => [taskId, brings]),
+    );
+    this.handOver.dispatch(connector, { ...nothing, updates: this.taskIdsOf(question) }, approved);
   }
 
   // A no to a newer version ignores that version, as Ignore this version on the dashboard does: a later one is asked.
@@ -780,7 +924,8 @@ export class JarvisService {
     }
   }
 
-  // Statements in their fixed words; a question about updates, or about one newer version with its tags.
+  // Statements in their fixed words; a question about a host's restart or its updates, one newer version with its
+  // tags, or one container's update.
   private wordsOf(
     facts: Pick<JarvisMessage, "kind" | "host" | "names">,
     tier: JarvisMessage["tier"],
@@ -788,9 +933,14 @@ export class JarvisService {
     lastAsking: boolean,
     address: string | null,
   ) {
+    const { kind, host, names } = facts;
     if (tier !== JARVIS_TIER.ask) return { say: jarvisSay(facts, address), text: jarvisText(facts) };
-    if (tags === null) return jarvisQuestion(facts, lastAsking, address);
-    return jarvisVersionQuestion({ host: facts.host, name: facts.names[0]!, ...tags }, lastAsking, address);
+    if (kind === JARVIS_KIND.reboot) return jarvisRestartQuestion(host, lastAsking, address);
+    if (kind === JARVIS_KIND.hostUpdates) {
+      return jarvisHostUpdatesQuestion({ host, count: names.length }, lastAsking, address);
+    }
+    if (tags !== null) return jarvisVersionQuestion({ host, name: names[0]!, ...tags }, lastAsking, address);
+    return jarvisQuestion({ host, names }, lastAsking, address);
   }
 
   // The tag a container runs, and the newer one its question is about, as its runner reported them.
@@ -851,15 +1001,24 @@ export class JarvisService {
   // Autoheal's word on an answer: sent at once, never counted against the day, never sent twice.
   private reply(about: Item, said: { say: string; text: string }) {
     const { kind, host, names } = this.messageOf(about);
+    this.sendReply({ kind, host, names, ...said }, `${JARVIS_TIER.reply}:${about.id}`, about.taskIdsJson);
+  }
+
+  // Autoheal's word when the words heard fit no question, said as any reply is: about nothing of its own.
+  private replyAlone(said: { say: string; text: string }) {
+    this.sendReply({ kind: JARVIS_KIND.containerUpdates, host: "", names: [], ...said }, null, JSON.stringify([]));
+  }
+
+  private sendReply(facts: Omit<JarvisMessage, "id" | "tier">, groupKey: string | null, taskIdsJson: string) {
     const id = randomUUID();
-    const message: JarvisMessage = { id, kind, tier: JARVIS_TIER.reply, host, names, ...said };
+    const message: JarvisMessage = { id, tier: JARVIS_TIER.reply, ...facts };
     this.databaseHandle.database
       .insert(jarvisItems)
       .values({
         id,
-        groupKey: `${JARVIS_TIER.reply}:${about.id}`,
+        groupKey: groupKey ?? `${JARVIS_TIER.reply}:${id}`,
         fingerprint: id,
-        taskIdsJson: about.taskIdsJson,
+        taskIdsJson,
         messageJson: JSON.stringify(message),
         status: JARVIS_STATUS.waiting,
         createdAt: this.clock(),
@@ -875,13 +1034,26 @@ export class JarvisService {
   }
 
   private tellOutcome(question: Item, outcomes: Readonly<Record<string, boolean>>) {
-    const { host, names } = this.messageOf(question);
-    this.reply(question, jarvisOutcome(host, outcomeOf(names, this.taskIdsOf(question), outcomes), this.address()));
+    this.reply(question, this.outcomeWords(this.messageOf(question), this.taskIdsOf(question), outcomes));
     this.databaseHandle.database
       .update(jarvisItems)
       .set({ status: JARVIS_STATUS.done })
       .where(eq(jarvisItems.id, question.id))
       .run();
+  }
+
+  // What came of a yes: a host's restart, its updates, or each container's update in the question's order.
+  private outcomeWords(
+    message: JarvisMessage,
+    taskIds: readonly string[],
+    outcomes: Readonly<Record<string, boolean>>,
+  ) {
+    const { kind, host, names } = message;
+    const address = this.address();
+    const ended: boolean | undefined = outcomes[taskIds[0]!];
+    if (kind === JARVIS_KIND.reboot) return jarvisRestartOutcome(host, ended, address);
+    if (kind === JARVIS_KIND.hostUpdates) return jarvisPackagesOutcome(host, ended, address);
+    return jarvisOutcome(host, outcomeOf(names, taskIds, outcomes), address);
   }
 
   // A while after a yes, what came of it is told, done or not.
@@ -1039,8 +1211,9 @@ export class JarvisService {
       .orderBy(desc(jarvisItems.sentAt))
       .all()
       .map((item) => {
-        const { host, names, from, to } = this.messageOf(item);
-        return { id: item.id, host, names, from: from ?? null, to: to ?? null, askedAt: item.sentAt!, asks: item.asks };
+        const { kind, host, names, from, to } = this.messageOf(item);
+        const asked = { askedAt: item.sentAt!, asks: item.asks };
+        return { id: item.id, kind, host, names, from: from ?? null, to: to ?? null, ...asked };
       });
   }
 
@@ -1176,8 +1349,9 @@ export class JarvisService {
   }
 
   /**
-   * What a yes would bring, for an update or a newer version: asked about when questions of its kind are on, it waits
-   * on a person, and the dashboard's own hand-over would take it. Null for anything only told.
+   * What a yes would bring: an update's newer image, a newer version's tag, a host's updates, or the boot a restart
+   * ends. Asked about when questions of its kind are on, it waits on a person, and the dashboard would take it now.
+   * Null for anything only told.
    */
   private askedAbout(
     candidate: Omit<JarvisCandidate, "ask">,
@@ -1186,17 +1360,49 @@ export class JarvisService {
     switches: Switches,
   ) {
     const kind = kindOf(candidate.detectorKey);
+    const { hostId } = candidate;
     if (kind === JARVIS_KIND.newerVersion) {
       const tag = tagOfNewerVersionKey(candidate.detectorKey);
-      const request = { hostId: candidate.hostId, container: candidate.resource ?? "", tag };
+      const request = { hostId, container: candidate.resource ?? "", tag };
       return { brings: tag, askable: switches.versions && waitsOnPerson && this.handOver.takesTag(request) };
     }
+    const wanted = switches.updates && waitsOnPerson;
+    if (kind === JARVIS_KIND.hostUpdates) return this.hostUpdatesAsked(hostId, wanted);
+    if (kind === JARVIS_KIND.reboot) return this.restartAsked(hostId, wanted);
     const digest = container?.update.remoteDigest ?? null;
     if (kind !== JARVIS_KIND.containerUpdates || digest === null) return null;
-    return {
-      brings: digest,
-      askable: switches.updates && waitsOnPerson && this.handOver.takesUpdate(candidate.taskId),
-    };
+    return { brings: digest, askable: wanted && this.handOver.takesUpdate(candidate.taskId) };
+  }
+
+  // The updates waiting on a host that a yes would install, as the dashboard's hand-over takes them.
+  private hostUpdatesAsked(hostId: string, wanted: boolean) {
+    const offered = this.offeredUpdates(hostId);
+    if (offered.length === 0) return null;
+    const names = offered.map(({ name }) => name);
+    return { brings: updatesKey(offered), askable: wanted && this.handOver.takesPackages(hostId, names) };
+  }
+
+  // A restart, for the boot it is asked on: once the host has booted again, it is another question. Not on a host that
+  // only reports; a package job on its way ends by itself.
+  private restartAsked(hostId: string, wanted: boolean) {
+    const host = this.activeHosts().find(({ id }) => id === hostId);
+    const bootId = host?.health?.bootId ?? null;
+    if (host === undefined || bootId === null) return null;
+    const restartable = () =>
+      host.dryRun !== true && accepts(() => this.hostPackages.requireRestart(hostId), [API_ERRORS.hostPackagesBusy]);
+    return { brings: bootId, askable: wanted && restartable() };
+  }
+
+  /**
+   * What waits on a person among a host's updates, and is not held back: Docker, the kernel and data packages stay on
+   * the dashboard, and what the host's window or unattended-upgrades installs is never asked about.
+   */
+  private offeredUpdates(hostId: string): AssessedPackage[] {
+    const host = this.activeHosts().find(({ id }) => id === hostId);
+    const plan = host === undefined ? null : this.hostPackages.plan(host);
+    if (plan === null) return [];
+    const forPerson = new Set(plan.forPerson);
+    return plan.packages.filter(({ name, held }) => forPerson.has(name) && !held);
   }
 
   private forgetOld() {

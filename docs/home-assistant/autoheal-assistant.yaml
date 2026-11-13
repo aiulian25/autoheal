@@ -1,9 +1,10 @@
 blueprint:
   name: Autoheal asks before updating
   description: >-
-    Says or shows what Autoheal sends, and asks its questions on a voice satellite or a phone: an update, or a newer
-    version, goes ahead only when someone says yes. Each answer goes into a Text helper that Autoheal reads, so Home
-    Assistant never has to reach Autoheal. What it sends and what it reads back:
+    Says or shows what Autoheal sends, and asks its questions on a voice satellite or a phone: a container's update or
+    newer version, a host's updates or its restart, goes ahead only when someone says yes, or names it ("update npm").
+    Each answer goes into a Text helper that Autoheal reads, so Home Assistant never has to reach Autoheal. What it sends
+    and what it reads back:
     https://github.com/aiulian25/autoheal/blob/main/docs/home-assistant/README.md
   domain: automation
   source_url: https://github.com/aiulian25/autoheal/blob/main/docs/home-assistant/autoheal-assistant.yaml
@@ -56,7 +57,17 @@ blueprint:
         boolean: {}
     yes_words:
       name: Words for yes
-      default: ["yes", "yes please", "go ahead", "do it"]
+      default:
+        ["yes", "yes please", "go ahead", "do it", "update", "update it", "update {name}", "install them", "restart it"]
+      selector:
+        text:
+          multiple: true
+    by_name:
+      name: Sentences for a yes by name
+      description: >-
+        Said any time a question is open, "update npm" or "update npm on nas1" says yes to the one it names: a
+        container's update or newer version, or a host's updates by the host. Never a restart. {name} is what was heard.
+      default: ["update {name}"]
       selector:
         text:
           multiple: true
@@ -95,6 +106,9 @@ triggers:
   - trigger: event
     event_type: mobile_app_notification_action
     id: button
+  - trigger: conversation
+    command: !input by_name
+    id: by_name
 
 variables:
   satellite: !input satellite
@@ -120,6 +134,22 @@ actions:
             autoheal {{ trigger.event.data.action.split('_')[1] | lower }} {{ trigger.event.data.action.split('_', 2)[2] }}
             {{ now().timestamp() | int }} phone
       - stop: Answered on the phone
+
+  # A yes by name, said whenever: the words heard, as Autoheal reads them. Autoheal finds the question they name.
+  - if:
+      - condition: trigger
+        id: by_name
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: !input answer_box
+        data:
+          # The words as Autoheal reads them: letters, digits, spaces and . , ' - only, 60 at most.
+          value: >-
+            {%- set heard = ((trigger.slots.name | default('')) | regex_replace("[^\w .,'-]|_", ""))[:60] | trim -%}
+            autoheal update {{ now().timestamp() | int }} voice {{ heard }}
+      - set_conversation_response: "{{ thanks }}"
+      - stop: Answered by name
 
   # Anything else is a message from Autoheal: what to say, what to write, and for a question its code.
   - condition: template

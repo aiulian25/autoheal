@@ -10,3 +10,17 @@ export class DomainError extends Error {
     super(code);
   }
 }
+
+/**
+ * Whether a check a business rule may refuse passes: its refusal is a no, unless it is one of `passing`, refusals that
+ * will lift by themselves; anything else still throws.
+ */
+export function accepts(check: () => unknown, passing: readonly ApiErrorCode[] = []): boolean {
+  try {
+    check();
+    return true;
+  } catch (error) {
+    if (error instanceof DomainError) return passing.includes(error.code);
+    throw error;
+  }
+}

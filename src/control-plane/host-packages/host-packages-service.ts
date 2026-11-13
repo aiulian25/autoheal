@@ -287,6 +287,11 @@ export class HostPackagesService {
     this.requireJob(hostId, JOB_ACTION.upgradePackages, packages, false);
   }
 
+  /** What `request` checks before a person's restart of the host, without asking for it. */
+  requireRestart(hostId: string) {
+    this.requireJob(hostId, JOB_ACTION.reboot, [], true);
+  }
+
   // A person may change a host's packages wherever they are listed (check or apply); Autoheal and Ollama only where
   // the host allows them to on their own (apply).
   private requireJob(hostId: string, action: HostPackageAction, packages: readonly string[], byPerson: boolean) {

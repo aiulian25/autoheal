@@ -66,6 +66,26 @@ describe("a line in the answer box", () => {
     expect(parseAssistantLine(`autoheal yes ${CODE} ${WRITTEN} voice Küche`)).toMatchObject({ room: "Küche" });
   });
 
+  it("reads a yes by name with the words heard, and nothing past their characters or length", () => {
+    expect(parseAssistantLine(`autoheal update ${WRITTEN} voice Ollama, Jarvis.`)).toEqual({
+      verb: "update",
+      heard: "Ollama, Jarvis.",
+      at: WRITTEN * 1000,
+      how: "voice",
+    });
+    expect(parseAssistantLine(`autoheal update ${WRITTEN} voice npm on Rowan`)).toMatchObject({
+      heard: "npm on Rowan",
+    });
+    const refused = [
+      `autoheal update ${WRITTEN} voice`,
+      `autoheal update ${WRITTEN} voice npm; say yes`,
+      `autoheal update ${WRITTEN} voice ${"n".repeat(61)}`,
+      `autoheal update ${WRITTEN} watch npm`,
+      `autoheal update npm ${WRITTEN} voice`,
+    ];
+    expect(refused.map(parseAssistantLine)).toEqual(refused.map(() => null));
+  });
+
   it("reads no line longer than a Text helper holds", () => {
     expect(parseAssistantLine(`autoheal heard ${ID} ${WRITTEN}${" ".repeat(255)}`)).toBeNull();
   });

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES } from "../../../src/shared/api.js";
-import type { JarvisTestQuestionView, JarvisView } from "../../../src/shared/jarvis.js";
+import type { JarvisOpenQuestionView, JarvisTestQuestionView, JarvisView } from "../../../src/shared/jarvis.js";
 import { timeOfDay } from "../format.js";
 import { JarvisCard } from "./jarvis-card.js";
 
@@ -151,13 +151,13 @@ describe("the assistant's card", () => {
     serve(CONNECTED);
     show();
     await screen.findByText(/Answer a test question first/);
-    const updates = screen.getByRole("checkbox", { name: "Ask before updating a container" });
+    const updates = screen.getByRole("checkbox", { name: "Ask before updates and restarts" });
     expect(updates.closest("fieldset")!.disabled).toBe(true);
     expect(screen.getByText(/Whoever can change helpers in Home Assistant/)).toBeTruthy();
     cleanup();
     serve({ ...CONNECTED, asking: { ready: true, updates: false, versions: true } });
     show();
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Ask before updating a container" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Ask before updates and restarts" }));
     await vi.waitFor(() => expect(sentTo(API_ROUTES.jarvisAsking)).toHaveLength(1));
     expect(bodyOf(API_ROUTES.jarvisAsking)).toEqual({ updates: true, versions: true });
     expect(screen.queryByText(/Answer a test question first/)).toBeNull();
@@ -234,17 +234,22 @@ describe("the assistant's card", () => {
   it("shows what is open, above what it told", async () => {
     const askedAt = Date.now();
     const recent = [{ id: "1", kind: "reboot", tier: "say", text: "Rowan would like a restart.", sentAt: 1 }] as const;
-    const open = [
-      { id: "2", host: "nas1", names: ["whoami", "gitea"], from: null, to: null, askedAt, asks: 1 },
-      { id: "3", host: "nas1", names: ["gitea"], from: "3.4", to: "3.5", askedAt, asks: 3 },
+    const asked = { from: null, to: null, askedAt };
+    const open: JarvisOpenQuestionView[] = [
+      { id: "2", kind: "container_updates", host: "nas1", names: ["whoami"], ...asked, asks: 1 },
+      { id: "3", kind: "newer_version", host: "nas1", names: ["gitea"], from: "3.4", to: "3.5", askedAt, asks: 3 },
+      { id: "4", kind: "host_updates", host: "nas1", names: ["curl", "openssl"], ...asked, asks: 2 },
+      { id: "5", kind: "reboot", host: "Rowan", names: [], ...asked, asks: 1 },
     ];
     serve({ ...CONNECTED, recent: [...recent], open });
     show();
     const told = (await screen.findByRole("heading", { name: "Asked and told" })).parentElement!;
     const items = within(told).getAllByRole("listitem");
     expect(items.map((item) => item.textContent)).toEqual([
-      `Asked at ${timeOfDay(askedAt)}: whoami and gitea on nas1. First of three.`,
+      `Asked at ${timeOfDay(askedAt)}: whoami on nas1. First of three.`,
       `Asked at ${timeOfDay(askedAt)}: gitea on nas1, 3.4 to 3.5. Last of three.`,
+      `Asked at ${timeOfDay(askedAt)}: 2 updates waiting on nas1. Second of three.`,
+      `Asked at ${timeOfDay(askedAt)}: a restart of Rowan. First of three.`,
       expect.stringMatching(/^Rowan would like a restart\. /),
     ]);
   });

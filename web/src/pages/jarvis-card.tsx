@@ -5,6 +5,7 @@ import { APP_VERSION } from "../../../src/shared/constants.js";
 import {
   ASSISTANT_FILES,
   JARVIS_ADDRESS,
+  JARVIS_KIND,
   JARVIS_NAME,
   JARVIS_TEST_OUTCOME,
   assistantFileLink,
@@ -151,12 +152,17 @@ function testLine(view: JarvisView, sent: { delivered: boolean } | null): string
   return sent.delivered ? text.blockNotAnswered(view.name) : text.notDelivered;
 }
 
+// What an open question is about, in the card's words: a restart, a host's updates, a newer version or an update.
+function aboutLine(question: JarvisOpenQuestionView): string {
+  const { kind, host, names, from, to } = question;
+  if (kind === JARVIS_KIND.reboot) return text.askedAboutRestart(host);
+  if (kind === JARVIS_KIND.hostUpdates) return text.askedAboutHostUpdates(names.length, host);
+  if (from !== null && to !== null) return text.askedAboutVersion(names[0]!, host, from, to);
+  return text.askedAbout(names, host);
+}
+
 function openLine(question: JarvisOpenQuestionView): string {
-  const aboutVersion = question.from !== null && question.to !== null;
-  const about = aboutVersion
-    ? text.askedAboutVersion(question.names[0]!, question.host, question.from!, question.to!)
-    : text.askedAbout(question.names, question.host);
-  return text.asked(timeOfDay(question.askedAt), about, question.asks);
+  return text.asked(timeOfDay(question.askedAt), aboutLine(question), question.asks);
 }
 
 const isWaiting = (view: JarvisView | undefined) =>

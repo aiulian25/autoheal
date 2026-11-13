@@ -924,6 +924,7 @@ export function createControlPlaneServices(
         auditLog,
         inventoryService,
         dispatchService,
+        hostPackages,
         homeAssistant,
         tasksService,
         hostControl,

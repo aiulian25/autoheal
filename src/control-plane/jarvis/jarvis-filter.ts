@@ -107,7 +107,7 @@ export function memberOf(key: string) {
 }
 const keyOf = ({ taskId, ask }: JarvisCandidate) => (ask === undefined ? null : memberKey(taskId, ask.brings));
 
-// A host's updates are asked about together; each newer version on its own.
+// A host has one question of each kind open at a time; each newer version has its own.
 function questionGroup(candidate: Pick<JarvisCandidate, "detectorKey" | "hostId" | "resource">) {
   const kind = kindOf(candidate.detectorKey);
   const about = kind === JARVIS_KIND.newerVersion ? `${candidate.hostId}:${candidate.resource}` : candidate.hostId;
@@ -193,7 +193,8 @@ function questionOf(members: readonly JarvisCandidate[], again?: string): Jarvis
     tier: JARVIS_TIER.ask,
     hostId: first.hostId,
     hostLabel: first.hostLabel,
-    names: members.map(({ resource }) => resource ?? ""),
+    // A host's updates or its restart name no container.
+    names: members.flatMap(({ resource }) => (resource === null ? [] : [resource])),
     taskIds: members.map(({ taskId }) => taskId),
     members: keys,
     ...(again === undefined ? {} : { again }),
@@ -202,7 +203,7 @@ function questionOf(members: readonly JarvisCandidate[], again?: string): Jarvis
 
 /**
  * The one question to put now, if any: none while another waits to be heard; one due again before a new one, once
- * each of its updates could be carried out; then the host whose update waited longest, three names at most.
+ * what it asks about could be carried out; then what waited longest, on a host with no question of that kind open.
  */
 function nextQuestion(
   candidates: readonly JarvisCandidate[],
@@ -232,8 +233,9 @@ function nextQuestion(
 /**
  * What is worth saying now, from what is open and what was said. Waiting means whatever fixes itself is never told;
  * grouping makes three updates one sentence; the same thing is not told twice; and only so much is said in a day,
- * the most important first. The urgent always go, and do not count. An update a person could say yes to is asked
- * instead of told, one question at a time, and is neither asked nor told again for the same newer image.
+ * the most important first. The urgent always go, and do not count. What a person could say yes to is asked instead
+ * of told, one question at a time, ahead of what only weighs as much as it; it is neither asked nor told again for
+ * the same newer image, the same updates, or the same boot.
  */
 export function planJarvis(
   candidates: readonly JarvisCandidate[],
@@ -267,9 +269,10 @@ export function planJarvis(
   ).length;
   const room = Math.max(0, JARVIS_LIMITS.perDay - usedToday);
   const urgent = statements.filter(({ tier }) => tier === JARVIS_TIER.urgent);
+  // The sort keeps equals in order, so a question goes before what is only told and weighs the same.
   const spoken = [
-    ...statements.filter(({ tier }) => tier === JARVIS_TIER.say),
     ...(question === null ? [] : [question]),
+    ...statements.filter(({ tier }) => tier === JARVIS_TIER.say),
   ]
     .sort(byRank(priorityOf))
     .slice(0, room);

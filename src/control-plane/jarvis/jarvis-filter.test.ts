@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   JARVIS_LIMITS,
+  jarvisHostUpdatesQuestion,
   jarvisQuestion,
+  jarvisRestartQuestion,
   jarvisSay,
   jarvisVersionQuestion,
   jarvisSetup,
@@ -82,7 +84,7 @@ describe("what Jarvis is told", () => {
   });
 
   it("says at most a few a day, the most important first, and the urgent always", () => {
-    const keys = ["reboot:a", "reboot:b", "reboot:c", "reboot:d"];
+    const keys = Array.from({ length: JARVIS_LIMITS.perDay + 1 }, (_, index) => `reboot:host${index}`);
     const many = keys.map((key) => candidate(key, { priority: "low" }));
     const high = candidate("disk:h1:/data", { priority: "high", resource: "/data" });
     const silent = candidate("host-silent:h1");
@@ -231,17 +233,54 @@ describe("what Jarvis asks", () => {
   it("asks about an update a yes would take, and tells the rest as it always has", () => {
     const planned = planJarvis([update("whoami"), update("gitea", { askable: false })], [], NOW);
     expect(planned.map(({ tier, names }) => [tier, names])).toEqual([
-      ["say", ["gitea"]],
       ["ask", ["whoami"]],
+      ["say", ["gitea"]],
     ]);
   });
 
-  it("names three at most, holds the rest while it is open, and asks about them once it is answered", () => {
+  it("names one container, holds the host's next while it is open, and asks about it once it is answered", () => {
     const [first] = planJarvis(four, [], NOW);
-    expect(first).toMatchObject({ tier: "ask", names: ["adminer", "gitea", "umami"] });
+    expect(first).toMatchObject({ tier: "ask", names: ["adminer"] });
     expect(planJarvis(four, [], NOW, [onRow(first!, "asked")])).toEqual([]);
     const [next] = planJarvis(four, [], NOW, [onRow(first!, "declined")]);
-    expect(next).toMatchObject({ tier: "ask", names: ["whoami"] });
+    expect(next).toMatchObject({ tier: "ask", names: ["gitea"] });
+  });
+
+  it("puts a question before what is only told and weighs as much, so a busy day still asks", () => {
+    const daySoFar = Array.from({ length: JARVIS_LIMITS.perDay - 1 }, (_, index) => ({
+      groupKey: `g${index}`,
+      fingerprint: `f${index}`,
+      tier: "say" as const,
+      at: NOW - HOUR,
+      counted: true,
+    }));
+    const restart = candidate("reboot:h2", { hostId: "h2", priority: "low" });
+    const planned = planJarvis([restart, update("whoami")], daySoFar, NOW);
+    expect(planned.map(({ tier, kind }) => [tier, kind])).toEqual([["ask", "container_updates"]]);
+    // What weighs more still goes first.
+    const disk = candidate("disk:h2:/data", { hostId: "h2", priority: "high", resource: "/data" });
+    expect(planJarvis([disk, update("whoami")], daySoFar, NOW).map(({ kind }) => kind)).toEqual(["disk"]);
+  });
+
+  it("asks about a host's updates and its restart, one of each kind open on a host, and names no container", () => {
+    const hostUpdates = candidate("os-updates:h1", {
+      taskId: "h1-os",
+      priority: "low",
+      ask: { brings: "updates-key", askable: true, ready: true },
+    });
+    const restart = candidate("reboot:h1", {
+      taskId: "h1-reboot",
+      priority: "low",
+      createdAt: NOW - HOUR + 1,
+      ask: { brings: "boot-1", askable: true, ready: true },
+    });
+    const [first] = planJarvis([hostUpdates, restart], [], NOW);
+    expect(first).toMatchObject({ tier: "ask", kind: "host_updates", names: [], groupKey: "ask:host_updates:h1" });
+    const [next] = planJarvis([hostUpdates, restart], [], NOW, [onRow(first!, "asked")]);
+    expect(next).toMatchObject({ tier: "ask", kind: "reboot", names: [], members: ["h1-reboot@boot-1"] });
+    // One a yes would not carry out is told, as before.
+    const told = planJarvis([{ ...restart, ask: { brings: "boot-1", askable: false, ready: true } }], [], NOW);
+    expect(told.map(({ tier, kind }) => [tier, kind])).toEqual([["say", "reboot"]]);
   });
 
   it("asks again about an update only once its newer image changed", () => {
@@ -310,17 +349,29 @@ describe("what Jarvis asks", () => {
 
   it("asks in words that let the owner answer, and says when it asks for the last time", () => {
     expect(jarvisQuestion({ host: "Rowan", names: ["sonarr"] }, false, "sir")).toEqual({
-      say: "An update is waiting for sonarr on Rowan, sir. Shall I update it?",
-      text: "Rowan: an update is waiting: sonarr. Update it?",
+      say: "sonarr on Rowan has an update, sir. Should I update the container?",
+      text: "Rowan: sonarr has an update. Update the container?",
     });
-    const last = jarvisQuestion({ host: "OrionBx3", names: ["gitea", "whoami"] }, true, "sir");
-    expect(last.say).toBe(
-      "Two updates are waiting on Orion B x three, sir: gitea and whoami. Shall I update them? I will not ask again.",
+    expect(jarvisQuestion({ host: "OrionBx3", names: ["gitea"] }, true, null).say).toBe(
+      "gitea on Orion B x three has an update. Should I update the container? I will not ask again.",
     );
-    expect(last.text).toBe("OrionBx3: 2 updates are waiting: gitea, whoami. Update them? I will not ask again.");
-    expect(jarvisQuestion({ host: "OrionBx3", names: ["gitea", "whoami"] }, false, null).say).toBe(
-      "Two updates are waiting on Orion B x three: gitea and whoami. Shall I update them?",
+    // One asked before a question named a single container, asked again in its own words.
+    const before = jarvisQuestion({ host: "OrionBx3", names: ["gitea", "whoami"] }, true, "sir");
+    expect(before.say).toBe(
+      "gitea and whoami on Orion B x three have updates, sir. Should I update them? I will not ask again.",
     );
+    expect(before.text).toBe("OrionBx3: gitea, whoami have updates. Update them? I will not ask again.");
+    expect(jarvisHostUpdatesQuestion({ host: "Rowan", count: 2 }, false, "sir")).toEqual({
+      say: "Rowan has 2 updates waiting, sir. Should I install them?",
+      text: "Rowan: 2 updates waiting. Install them?",
+    });
+    expect(jarvisHostUpdatesQuestion({ host: "Rowan", count: 1 }, true, null).say).toBe(
+      "Rowan has an update waiting. Should I install it? I will not ask again.",
+    );
+    expect(jarvisRestartQuestion("Cedar1", false, "sir")).toEqual({
+      say: "Cedar one would like a restart, sir. Should I restart it?",
+      text: "Cedar1 would like a restart. Restart it?",
+    });
     expect(jarvisVersionQuestion({ host: "Rowan", name: "gitea", from: "3.4", to: "3.5" }, false, "sir").say).toBe(
       "Version 3.5 of gitea is out, and Rowan runs 3.4, sir. Shall I move it to 3.5?",
     );

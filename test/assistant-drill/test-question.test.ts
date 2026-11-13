@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { expect, it, vi } from "vitest";
 import { API_ROUTES, apiPath } from "../../src/shared/api.js";
+import { parseAssistantLine } from "../../src/control-plane/jarvis/assistant-line.js";
 import { APP_VERSION, MILLISECONDS_PER_MINUTE } from "../../src/shared/constants.js";
 import {
   ASSISTANT_FILES,
@@ -386,6 +387,18 @@ it.runIf(HOME_ASSISTANT !== "" && SERVE_ON !== "")(
     );
     controlPlane.clock.now += JARVIS_LIMITS.testQuestionMilliseconds;
     await expect.poll(async () => (await outcome())?.outcome, WAIT).toBe("not_answered");
+
+    // A yes by name, said to Home Assistant's own sentence matching: the words heard go into the answer box as the
+    // line Autoheal reads, and Home Assistant says what follows an answer.
+    const namedFrom = lines.length;
+    const spoken = await admin.call<{ response: { speech: { plain: { speech: string } } } }>("conversation/process", {
+      text: "update umami on nas1",
+      language: "en",
+    });
+    expect(spoken.response.speech.plain.speech).toBe("One moment.");
+    await vi.waitFor(() => expect(lines.length).toBeGreaterThan(namedFrom), WAIT);
+    expect(lines.at(-1)).toMatch(/^autoheal update \d+ voice umami on nas1$/);
+    expect(parseAssistantLine(lines.at(-1)!)).toMatchObject({ verb: "update", heard: "umami on nas1", how: "voice" });
 
     channel.close();
     admin.close();

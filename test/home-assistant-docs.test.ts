@@ -35,7 +35,7 @@ describe("the assistant's blueprint and its contract page", () => {
         .replace("<code>", "c".repeat(JARVIS_CODE_CHARACTERS))
         .replace("<time>", "1794316452"),
     );
-    expect(lines.map((line) => parseAssistantLine(line)?.verb)).toEqual(["heard", "later", "yes", "no"]);
+    expect(lines.map((line) => parseAssistantLine(line)?.verb)).toEqual(["heard", "later", "yes", "no", "update"]);
     const example = JSON.parse(/```json\n([\s\S]+?)\n```/.exec(page)![1]!) as {
       host: string;
       names: string[];

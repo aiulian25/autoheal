@@ -1,5 +1,5 @@
 import { MILLISECONDS_PER_MINUTE, MILLISECONDS_PER_SECOND } from "../../../src/shared/constants.js";
-import { JARVIS_ANSWER_HOW, type JarvisAnswerHow } from "../../../src/shared/jarvis.js";
+import { JARVIS_ANSWER_HOW, JARVIS_LIMITS, type JarvisAnswerHow } from "../../../src/shared/jarvis.js";
 
 // The assistant as its card speaks of it: by the name the person gave it, or plainly.
 const called = (name: string | null) => name ?? "the assistant";
@@ -19,7 +19,7 @@ export const HOME_ASSISTANT_TEXT = {
   jarvis: {
     title: "Assistant",
     explanation: (name: string | null) =>
-      `${calledFirst(name)} tells you what matters from what Autoheal finds, through Home Assistant, and can ask before Autoheal updates a container. Only what stays a problem is told, at most 3 a day unless it is urgent.`,
+      `${calledFirst(name)} tells you what matters from what Autoheal finds, through Home Assistant, and can ask before Autoheal updates a container or a host, or restarts a host. Only what stays a problem is told or asked, at most ${JARVIS_LIMITS.perDay} a day unless it is urgent.`,
     needsHomeAssistant: "Connect Home Assistant first: the assistant lives there.",
     connected: "Connected",
     paused: "Paused",
@@ -51,12 +51,15 @@ export const HOME_ASSISTANT_TEXT = {
       "Home Assistant put it off: quiet hours, nobody home or the satellite busy, and no phone. See the automation's form.",
     notAnswered: "Heard, but nobody answered. Is a voice satellite or a phone picked in the automation?",
     whoAnswers: "Whoever can change helpers in Home Assistant, or speak where it asks, can answer.",
-    askUpdates: "Ask before updating a container",
+    askUpdates: "Ask before updates and restarts",
     askVersions: "Ask about newer versions",
     notReady: "Answer a test question first: until then nothing is asked.",
     asked: (time: string, about: string, asks: number) =>
       `Asked at ${time}: ${about}. ${ASKINGS[Math.min(asks, ASKINGS.length) - 1]} of three.`,
     askedAbout: (names: readonly string[], host: string) => `${LIST.format(names)} on ${host}`,
+    askedAboutHostUpdates: (count: number, host: string) =>
+      `${count === 1 ? "an update" : `${count} updates`} waiting on ${host}`,
+    askedAboutRestart: (host: string) => `a restart of ${host}`,
     askedAboutVersion: (name: string, host: string, from: string, to: string) => `${name} on ${host}, ${from} to ${to}`,
     ownAutomations: "I write my own automations",
     contract: "What Autoheal sends, and the lines it reads back:",
