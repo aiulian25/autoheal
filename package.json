@@ -1,6 +1,6 @@
 {
   "name": "autoheal",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "license": "MIT",
   "description": "Heals failed Docker containers across a home lab: per-host runners, one control plane, a local model that only picks from a fixed menu.",
   "type": "module",
