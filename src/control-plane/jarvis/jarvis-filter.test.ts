@@ -262,6 +262,26 @@ describe("what Jarvis asks", () => {
     expect(planJarvis([disk, update("whoami")], daySoFar, NOW).map(({ kind }) => kind)).toEqual(["disk"]);
   });
 
+  it("asks about a container's update or a host before a newer version, however long that waited", () => {
+    const version = candidate("newer-version:h1:gitea:3.5", {
+      taskId: "h1-gitea-3.5",
+      resource: "gitea",
+      priority: "low",
+      createdAt: NOW - 10 * HOUR,
+      ask: { brings: "3.5", askable: true, ready: true },
+    });
+    const hostUpdates = candidate("os-updates:h2", {
+      taskId: "h2-os",
+      hostId: "h2",
+      priority: "low",
+      ask: { brings: "updates-key", askable: true, ready: true },
+    });
+    expect(planJarvis([version, update("whoami")], [], NOW)[0]).toMatchObject({ kind: "container_updates" });
+    expect(planJarvis([version, hostUpdates], [], NOW)[0]).toMatchObject({ kind: "host_updates" });
+    // Nothing else to ask: the newer version is.
+    expect(planJarvis([version], [], NOW)[0]).toMatchObject({ kind: "newer_version" });
+  });
+
   it("asks about a host's updates and its restart, one of each kind open on a host, and names no container", () => {
     const hostUpdates = candidate("os-updates:h1", {
       taskId: "h1-os",

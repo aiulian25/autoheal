@@ -62,7 +62,7 @@ Autoheal posts JSON to the webhook `/api/webhook/<webhook ID>`:
 | `from`, `to`    | Only with `newer_version`: the tag the container runs, and the tag a yes moves it to.                                                                                                        |
 | `nonce`         | Only with `test`, and the same as its `id`. The card's test question is a `test` with `tier` `ask` and a `code`: it is answered as any question is.                                          |
 
-A question is about one thing, and a yes covers exactly that: a container's update (`container_updates`), a newer version (`newer_version`), a host's updates (`host_updates`, `names` its packages; Docker, the kernel and data packages are never in one), or a host's restart (`reboot`, with no names).
+A question is about one thing, and a yes covers exactly that: a container's update (`container_updates`), a newer version (`newer_version`), a host's updates (`host_updates`, `names` its packages; Docker, the kernel and data packages are never in one), or a host's restart (`reboot`, with no names). Nothing is asked about or told of a container its person never updates, does not watch, or whose every new version they ignore, and newer versions are asked after the rest. An update its host has not checked again since its runner started waits until it has: neither asked nor told, and a question already open about it stands.
 
 ### What Autoheal reads back
 

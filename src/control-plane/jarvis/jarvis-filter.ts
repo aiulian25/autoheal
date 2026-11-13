@@ -107,6 +107,19 @@ export function memberOf(key: string) {
 }
 const keyOf = ({ taskId, ask }: JarvisCandidate) => (ask === undefined ? null : memberKey(taskId, ask.brings));
 
+/**
+ * What a yes would bring while its host has not checked again since its runner started: it is neither asked nor told
+ * until known, and a question open about it stands. No image digest, tag, boot or updates key is ever empty.
+ */
+export const NOT_KNOWN_YET = "";
+
+// Asked first: a container's update, and a host's updates or its restart; a newer version last. Each kind longest
+// waiting first.
+const ASKED_LAST = new Set<JarvisMessage["kind"]>([JARVIS_KIND.newerVersion]);
+const lastOrNot = (candidate: JarvisCandidate) => Number(ASKED_LAST.has(kindOf(candidate.detectorKey)!));
+const askedFirst = (left: JarvisCandidate, right: JarvisCandidate) =>
+  lastOrNot(left) - lastOrNot(right) || left.createdAt - right.createdAt;
+
 // A host has one question of each kind open at a time; each newer version has its own.
 function questionGroup(candidate: Pick<JarvisCandidate, "detectorKey" | "hostId" | "resource">) {
   const kind = kindOf(candidate.detectorKey);
@@ -203,7 +216,8 @@ function questionOf(members: readonly JarvisCandidate[], again?: string): Jarvis
 
 /**
  * The one question to put now, if any: none while another waits to be heard; one due again before a new one, once
- * what it asks about could be carried out; then what waited longest, on a host with no question of that kind open.
+ * what it asks about could be carried out; then, newer versions last, what waited longest, on a host with no question
+ * of that kind open.
  */
 function nextQuestion(
   candidates: readonly JarvisCandidate[],
@@ -224,9 +238,9 @@ function nextQuestion(
   }
   const held = new Set(questions.filter((question) => holdsItsHost(question, now)).map(({ groupKey }) => groupKey));
   const free = askable.filter((candidate) => !held.has(questionGroup(candidate)));
-  const oldest = [...free].sort((left, right) => left.createdAt - right.createdAt)[0];
-  if (oldest === undefined) return null;
-  const members = free.filter((candidate) => questionGroup(candidate) === questionGroup(oldest)).sort(byResource);
+  const first = [...free].sort(askedFirst)[0];
+  if (first === undefined) return null;
+  const members = free.filter((candidate) => questionGroup(candidate) === questionGroup(first)).sort(byResource);
   return questionOf(members.slice(0, JARVIS_LIMITS.namesAsked));
 }
 

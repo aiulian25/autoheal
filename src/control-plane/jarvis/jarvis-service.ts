@@ -8,14 +8,17 @@ import {
   AUDIT_ACTIONS,
   HOST_STATE,
   HOST_STATUS_ACTIVE,
+  IGNORE_EVERY_VERSION,
   JARVIS_KEY_SCOPE,
   JOB_ACTION,
   MILLISECONDS_PER_MINUTE,
+  RESTART_CHOICE,
   ROLE_ADMIN,
   SETTING_KEYS,
   TARGET_INTEGRATION,
   TASK_ACTIVITY,
   TASK_RESOURCE,
+  UPDATE_CHOICE,
   USER_STATUS_ACTIVE,
 } from "../../shared/constants.js";
 import {
@@ -82,6 +85,7 @@ import {
   kindOf,
   memberKey,
   memberOf,
+  NOT_KNOWN_YET,
   planJarvis,
   type JarvisCandidate,
   type JarvisPlanned,
@@ -175,6 +179,26 @@ interface Switches {
 
 // A newer version's tags, as its question names them.
 const tagsOf = ({ from, to }: JarvisMessage) => (from === undefined || to === undefined ? null : { from, to });
+
+/**
+ * What a person keeps the assistant away from, as the host's page and the Ignore buttons say: a container never updated,
+ * not watched, or every new version of it ignored. None of its updates or newer versions is asked about or told (one
+ * version ignored on its own, the hand-over itself refuses); the dashboard still shows them.
+ */
+function ignoredByPerson(detectorKey: string, container: ContainerView | undefined) {
+  const kind = kindOf(detectorKey);
+  const aboutUpdates = kind === JARVIS_KIND.containerUpdates || kind === JARVIS_KIND.newerVersion;
+  if (!aboutUpdates || container === undefined) return false;
+  const { byItself, update } = container;
+  const leftAlone = byItself.update === UPDATE_CHOICE.never || byItself.restart === RESTART_CHOICE.ignore;
+  return leftAlone || update.ignored === IGNORE_EVERY_VERSION;
+}
+
+// The tasks a yes is wanted for whose update their host has not checked again since its runner started.
+const notKnownYetOf = (candidates: readonly JarvisCandidate[]) =>
+  new Set(
+    candidates.flatMap(({ taskId, ask }) => (ask?.askable === true && ask.brings === NOT_KNOWN_YET ? [taskId] : [])),
+  );
 
 // What a question is answered by, by name: its container, or its host for the host's updates.
 const namedIn = (message: JarvisMessage) =>
@@ -686,19 +710,27 @@ export class JarvisService {
     const askable = new Set(
       candidates.flatMap(({ taskId, ask }) => (ask?.askable === true ? [memberKey(taskId, ask.brings)] : [])),
     );
+    const notKnownYet = notKnownYetOf(candidates);
     const database = this.databaseHandle.database;
     for (const item of database.select().from(jarvisItems).where(inArray(jarvisItems.status, OPEN_STATUSES)).all()) {
-      if (!this.hasEnded(item, open, askable)) continue;
+      if (!this.hasEnded(item, open, askable, notKnownYet)) continue;
       database.update(jarvisItems).set({ status: JARVIS_STATUS.dropped }).where(eq(jarvisItems.id, item.id)).run();
     }
   }
 
   // A statement ends with the last of its tasks. A question ends as soon as one of its updates is no longer one a yes
-  // would take as it was asked: done another way, a newer image out, or not the hand-over's any more.
-  private hasEnded(item: Item, open: ReadonlySet<string>, askable: ReadonlySet<string>) {
+  // would take as it was asked: done another way, a newer image out, or not the hand-over's any more. One its host has
+  // not checked again since its runner started stands as it was asked.
+  private hasEnded(
+    item: Item,
+    open: ReadonlySet<string>,
+    askable: ReadonlySet<string>,
+    notKnownYet: ReadonlySet<string>,
+  ) {
     if (this.messageOf(item).tier === JARVIS_TIER.reply) return false;
     const members = this.membersOf(item);
-    if (members !== null) return members.some((member) => !askable.has(member));
+    const ended = (member: string) => !askable.has(member) && !notKnownYet.has(memberOf(member).taskId);
+    if (members !== null) return members.some(ended);
     return this.taskIdsOf(item).every((taskId) => !open.has(taskId));
   }
 
@@ -825,6 +857,12 @@ export class JarvisService {
   private takeYes(question: Item, line: Answer, connector: Actor, replies: JarvisReplies) {
     const message = this.messageOf(question);
     const candidates = this.candidates();
+    const notKnownYet = notKnownYetOf(candidates);
+    if (this.taskIdsOf(question).some((taskId) => notKnownYet.has(taskId))) {
+      this.reply(question, replies.stillChecking(message.host));
+      this.refuse(question, line);
+      return;
+    }
     const changed = this.changeSince(question, candidates, replies);
     if (changed !== null) {
       this.settleWithout(question, line, JARVIS_STATUS.dropped);
@@ -1337,14 +1375,18 @@ export class JarvisService {
       .filter((row) => row.detectorKey !== null && (row.snoozedUntil === null || row.snoozedUntil <= now))
       .filter((row) => {
         if (row.resourceKind !== TASK_RESOURCE.container || row.resource === null) return true;
-        return !isBuildContainer(row.resource, containers.get(`${row.hostId}/${row.resource}`)?.image ?? null);
+        const container = containers.get(`${row.hostId}/${row.resource}`);
+        return (
+          !isBuildContainer(row.resource, container?.image ?? null) && !ignoredByPerson(row.detectorKey!, container)
+        );
       })
       .map(({ assigneeAgent, ...row }) => {
         const candidate = { ...row, hostId: row.hostId!, detectorKey: row.detectorKey! };
         const container = containers.get(`${row.hostId}/${row.resource}`);
         const asked = this.askedAbout(candidate, container, assigneeAgent === null, switches);
         if (asked === null) return candidate;
-        return { ...candidate, ask: { ...asked, ready: reachable && online.has(candidate.hostId) } };
+        const ready = asked.brings !== NOT_KNOWN_YET && reachable && online.has(candidate.hostId);
+        return { ...candidate, ask: { ...asked, ready } };
       });
   }
 
@@ -1369,8 +1411,11 @@ export class JarvisService {
     const wanted = switches.updates && waitsOnPerson;
     if (kind === JARVIS_KIND.hostUpdates) return this.hostUpdatesAsked(hostId, wanted);
     if (kind === JARVIS_KIND.reboot) return this.restartAsked(hostId, wanted);
-    const digest = container?.update.remoteDigest ?? null;
-    if (kind !== JARVIS_KIND.containerUpdates || digest === null) return null;
+    if (kind !== JARVIS_KIND.containerUpdates) return null;
+    // Not checked since its runner started: it waits, as the update detector waits, rather than be told as unknown.
+    if (container === undefined || container.update.status === null) return { brings: NOT_KNOWN_YET, askable: wanted };
+    const digest = container.update.remoteDigest ?? null;
+    if (digest === null) return null;
     return { brings: digest, askable: wanted && this.handOver.takesUpdate(candidate.taskId) };
   }
 

@@ -349,6 +349,11 @@ export function jarvisReplies(address: string | null) {
         `${spokenName(host)} is busy with its packages${toYou}, so I left it. I will ask again.`,
         `${host} is busy with its packages: nothing changed, and it is asked again.`,
       ),
+    stillChecking: (host: string) =>
+      words(
+        `${spokenName(host)} is still checking its updates${toYou}, so I left it. I will ask again.`,
+        `${host} is still checking its updates: nothing changed, and it is asked again.`,
+      ),
     notHandedOver: words(
       `I could not hand that over${toYou}. The dashboard says why.`,
       "Not handed over: the dashboard says why.",

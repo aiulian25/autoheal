@@ -36,7 +36,15 @@ import {
 } from "../../shared/protocol.js";
 import { JARVIS_LIMITS, type JarvisConnected, type JarvisView } from "../../shared/jarvis.js";
 import { settleDispatchedWork } from "../backups/settle-dispatched-work.js";
-import { auditEvents, hosts, jarvisItems, tasks, users } from "../database/schema.js";
+import {
+  auditEvents,
+  containerControls,
+  hosts,
+  ignoredVersions,
+  jarvisItems,
+  tasks,
+  users,
+} from "../database/schema.js";
 
 describe("Jarvis", () => {
   let controlPlane: TestControlPlane;
@@ -1056,6 +1064,20 @@ describe("Jarvis", () => {
             expect(told()).toEqual([]);
           });
 
+          it("never asks about a version its person ignored, though its task is still open", async () => {
+            const gitea = [pinned("gitea", "3.4", "3.5")];
+            await asking("Aspen", gitea);
+            // Ignored on the dashboard before the detector looked again: its task is still open.
+            const hostId = controlPlane.services.inventoryService.hosts().find(({ label }) => label === "Aspen")!.id;
+            controlPlane.services.databaseHandle.database
+              .insert(ignoredVersions)
+              .values({ hostId, containerName: "gitea", version: "3.5", ignoredBy: "admin", ignoredAt: 1 })
+              .run();
+            expect(versionTask("gitea", "3.5")?.closedAt).toBeNull();
+            await later(gitea, JARVIS_LIMITS.settleMilliseconds);
+            expect(told()).toEqual([]);
+          });
+
           it("takes a no as Ignore this version, and asks about a later one", async () => {
             const gitea = [pinned("gitea", "3.4", "3.5")];
             const secret = await asking("Cedar", gitea);
@@ -1357,6 +1379,64 @@ describe("Jarvis", () => {
           token = alpha;
           expect(await takeWork()).toEqual([]);
         });
+      });
+
+      it("neither asks about nor tells the updates of a container its person never updates, does not watch, or ignores", async () => {
+        const four = ["whoami", "adminer", "umami", "gitea"].map((name) => updated(name));
+        const secret = await asking("Olive", four);
+        const hostId = controlPlane.services.inventoryService.hosts().find(({ label }) => label === "Olive")!.id;
+        const { database } = controlPlane.services.databaseHandle;
+        database
+          .insert(containerControls)
+          .values([
+            { hostId, containerName: "whoami", restartChoice: "ask", updateChoice: "never", changedAt: 1 },
+            { hostId, containerName: "adminer", restartChoice: "ignore", updateChoice: "ask", changedAt: 1 },
+          ])
+          .run();
+        database
+          .insert(ignoredVersions)
+          .values({ hostId, containerName: "umami", version: "*", ignoredBy: "admin", ignoredAt: 1 })
+          .run();
+        await later(four, JARVIS_LIMITS.settleMilliseconds);
+        expect(told()).toEqual([expect.objectContaining({ tier: "ask", names: ["gitea"] })]);
+        // Answered: nothing else on the host is put to anyone, nor told.
+        await confirmsAs(secret, told()[0]!.id);
+        database.update(jarvisItems).set({ status: "declined" }).where(eq(jarvisItems.id, told()[0]!.id)).run();
+        await later(four, JARVIS_LIMITS.repeatMilliseconds);
+        expect(told()).toHaveLength(1);
+      });
+
+      it("waits on an update its runner has not checked since it started, and keeps a question about it open", async () => {
+        const whoami = [updated("whoami")];
+        // As a runner reports in its first minutes: its containers, and no word yet on their images.
+        const restarted = [containerSnapshot({ name: "whoami", image: "example/whoami:1" })];
+        const secret = await asking("Hemlock", whoami);
+        await later(restarted, JARVIS_LIMITS.settleMilliseconds);
+        expect(told()).toEqual([]);
+        await later(whoami, 1);
+        const [question] = told();
+        expect(question).toMatchObject({ tier: "ask", names: ["whoami"] });
+        await confirmsAs(secret, question!.id);
+
+        // Its runner restarts while the question is open: the question stands, and a yes waits until it is known.
+        await later(restarted, 1);
+        const { database } = controlPlane.services.databaseHandle;
+        const row = () => database.select().from(jarvisItems).where(eq(jarvisItems.id, question!.id)).get()!;
+        expect(row().status).toBe("asked");
+        read(`autoheal yes ${question!.code!} ${seconds()} phone`);
+        const replies = () => told().filter(({ tier }) => tier === "reply");
+        await vi.waitFor(async () => {
+          await controlPlane.services.jarvis.tick();
+          expect(replies()).toHaveLength(1);
+        });
+        expect(replies()[0]!.say).toBe("Hemlock is still checking its updates, so I left it. I will ask again.");
+        expect(row().status).toBe("asked");
+        // Known again: asked again, with a new code, as any yes that could not be carried out.
+        await later(whoami, 1);
+        const again = told().filter(({ tier }) => tier === "ask");
+        expect(again).toHaveLength(2);
+        expect(again[1]).toMatchObject({ id: question!.id, names: ["whoami"] });
+        expect(again[1]!.code).not.toBe(question!.code);
       });
 
       it("tells, rather than asks, until a test question was answered", async () => {
