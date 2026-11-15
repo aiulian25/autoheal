@@ -1,6 +1,7 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { PATHS, SETTINGS_SECTIONS, TEXT } from "../constants.js";
+import { bringToMiddle } from "../scroll-row.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { Tabs } from "./common.js";
 
@@ -65,24 +66,32 @@ export function SettingsNav({ current }: { current: SettingsSection | null }) {
   // On Settings, the URL names the current section; subpages supply their own.
   const active = current ?? jumped;
   const onPage = current === null;
+  const row = useRef<HTMLElement>(null);
+  const activeLink = useRef<HTMLAnchorElement>(null);
+  useLayoutEffect(() => {
+    if (row.current === null || activeLink.current === null) return;
+    bringToMiddle(row.current, activeLink.current);
+  }, [active]);
   return (
-    <nav className="settings-nav" aria-label={TEXT.settingsPage.nav.label}>
+    <nav className="settings-nav" aria-label={TEXT.settingsPage.nav.label} ref={row}>
       {SETTINGS_ITEMS.filter((item) => admin || !item.adminOnly).map(({ section }) => {
         const label = TEXT.settingsPage.nav[section];
-        const marked = section === active ? "true" : undefined;
+        const isActive = section === active;
+        const marked = isActive ? "true" : undefined;
+        const ref = isActive ? activeLink : undefined;
         if (section === SETTINGS_SECTIONS.account) {
           return (
-            <Link key={section} to={PATHS.account} aria-current={marked}>
+            <Link key={section} to={PATHS.account} aria-current={marked} ref={ref}>
               {label}
             </Link>
           );
         }
         return onPage ? (
-          <a key={section} href={`#${section}`} aria-current={marked}>
+          <a key={section} href={`#${section}`} aria-current={marked} ref={ref}>
             {label}
           </a>
         ) : (
-          <Link key={section} to={`${PATHS.settings}#${section}`} aria-current={marked}>
+          <Link key={section} to={`${PATHS.settings}#${section}`} aria-current={marked} ref={ref}>
             {label}
           </Link>
         );

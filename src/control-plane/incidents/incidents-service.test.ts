@@ -126,6 +126,106 @@ describe("an incident's own transitions", () => {
     expect(traceOf(decided.id)).toEqual([TRACE.reported]);
   });
 
+  describe("one container asking a person one thing at a time", () => {
+    const REPEAT = "tika failed again while it already waits for you: nothing new to decide.";
+    const openFor = (hostId: string, containerName: string, status: IncidentStatus) =>
+      service.create(hostRow(hostId), { ...submission, report: { ...submission.report, containerName } }, status);
+    const openLater = (status: IncidentStatus) => {
+      controlPlane.clock.now += 1_000;
+      return open(status);
+    };
+
+    it("cancels one that comes to wait while an earlier one for its container still does, whatever is said after", () => {
+      const first = open(INCIDENT_STATUS.awaitingApproval);
+      const again = openLater(INCIDENT_STATUS.decided);
+      expect(service.recordOutcome(hostRow(alder), again.id, ESCALATED)).toMatchObject({
+        status: INCIDENT_STATUS.cancelled,
+        verdict: VERDICT_SKIPPED,
+        outcome: REPEAT,
+      });
+      expect(service.isRepeat(again.id)).toBe(true);
+      expect(service.latestEvent(again.id, TRACE.noLongerNeeded)).toEqual({ sameAs: first.id });
+      expect(service.find(first.id).status).toBe(INCIDENT_STATUS.awaitingApproval);
+      expect(service.isRepeat(first.id)).toBe(false);
+
+      expect(service.recordOutcome(hostRow(alder), again.id, FIXED)).toMatchObject({
+        status: INCIDENT_STATUS.cancelled,
+        outcome: REPEAT,
+      });
+      expect(traceOf(again.id)).toEqual([
+        TRACE.reported,
+        TRACE.outcomeReported,
+        TRACE.noLongerNeeded,
+        TRACE.outcomeReported,
+      ]);
+    });
+
+    it("keeps the one that waited first, and one whose repair worked", () => {
+      const first = open(INCIDENT_STATUS.awaitingApproval);
+      const second = openLater(INCIDENT_STATUS.awaitingApproval);
+      expect(service.foldRepeat(first.id)).toBeNull();
+      expect(service.find(second.id).status).toBe(INCIDENT_STATUS.awaitingApproval);
+      expect(service.foldRepeat(second.id)?.status).toBe(INCIDENT_STATUS.cancelled);
+
+      const healed = openLater(INCIDENT_STATUS.decided);
+      expect(service.recordOutcome(hostRow(alder), healed.id, FIXED)).toMatchObject({
+        status: INCIDENT_STATUS.resolved,
+        outcome: FIXED.outcome,
+      });
+      expect(service.isRepeat(healed.id)).toBe(false);
+      expect(service.find(first.id).status).toBe(INCIDENT_STATUS.awaitingApproval);
+    });
+
+    it("keeps the one already waiting when an older incident comes to wait after it", () => {
+      const older = open(INCIDENT_STATUS.decided);
+      const waiting = openLater(INCIDENT_STATUS.awaitingApproval);
+      controlPlane.clock.now += 1_000;
+      expect(service.recordOutcome(hostRow(alder), older.id, ESCALATED)).toMatchObject({
+        status: INCIDENT_STATUS.cancelled,
+        outcome: REPEAT,
+      });
+      expect(service.find(waiting.id).status).toBe(INCIDENT_STATUS.awaitingApproval);
+    });
+
+    it("leaves exactly one of two that came to wait in the same moment", () => {
+      const pair = [open(INCIDENT_STATUS.awaitingApproval), open(INCIDENT_STATUS.awaitingApproval)];
+      const folded = pair.map(({ id }) => service.foldRepeat(id)).filter((repeat) => repeat !== null);
+      expect(folded).toHaveLength(1);
+      expect(service.list({ status: INCIDENT_STATUS.awaitingApproval })).toHaveLength(1);
+    });
+
+    it("keeps apart another container's, another host's, and one whose earlier incident waits no more", () => {
+      const first = open(INCIDENT_STATUS.awaitingApproval);
+      controlPlane.clock.now += 1_000;
+      const other = openFor(alder, "paperless", INCIDENT_STATUS.awaitingApproval);
+      const elsewhere = openFor(birch, "tika", INCIDENT_STATUS.awaitingApproval);
+      expect(service.foldRepeat(other.id)).toBeNull();
+      expect(service.foldRepeat(elsewhere.id)).toBeNull();
+
+      service.update(first.id, { status: INCIDENT_STATUS.dismissed });
+      const later = openLater(INCIDENT_STATUS.awaitingApproval);
+      expect(service.foldRepeat(later.id)).toBeNull();
+      expect(service.find(later.id).status).toBe(INCIDENT_STATUS.awaitingApproval);
+    });
+
+    it("settles what waited about a container a person stopped, and nothing else", () => {
+      const waiting = open(INCIDENT_STATUS.awaitingApproval);
+      const working = open(INCIDENT_STATUS.decided);
+      const other = openFor(alder, "paperless", INCIDENT_STATUS.awaitingApproval);
+      const elsewhere = openFor(birch, "tika", INCIDENT_STATUS.awaitingApproval);
+      service.settleStopped(alder, "tika");
+      expect(service.find(waiting.id)).toMatchObject({
+        status: INCIDENT_STATUS.resolved,
+        verdict: VERDICT_SKIPPED,
+        outcome: "tika was stopped from the dashboard: nothing is left to decide.",
+      });
+      expect(service.isRepeat(waiting.id)).toBe(false);
+      for (const untouched of [working, other, elsewhere]) {
+        expect(service.find(untouched.id).status).toBe(untouched.status);
+      }
+    });
+  });
+
   it("cancels only what a control plane restart left mid-decision", () => {
     const deciding = open(INCIDENT_STATUS.deciding);
     const waiting = open(INCIDENT_STATUS.awaitingApproval);

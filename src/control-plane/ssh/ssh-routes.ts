@@ -131,6 +131,15 @@ export function registerSshRoutes(
     return reply.code(HTTP_STATUS.noContent).send();
   });
 
+  // What holds the host's runner back, and clearing it once a person has looked: nothing is undone or run again.
+  app.get(API_ROUTES.sshHostInterrupted, adminOnly, async (request) =>
+    embeddedRunners.interruptedOf(parseBody(hostParameters, request.params).hostId),
+  );
+
+  app.delete(API_ROUTES.sshHostInterrupted, adminOnly, async (request) =>
+    embeddedRunners.clearInterrupted(actorOf(request), parseBody(hostParameters, request.params).hostId),
+  );
+
   app.put(API_ROUTES.sshHostSettings, adminOnly, async (request) =>
     sshHosts.updateSettings(
       actorOf(request),

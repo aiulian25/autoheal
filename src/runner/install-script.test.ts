@@ -180,6 +180,26 @@ describe("the scripts an install runs on a host", () => {
     expect(existsSync(evil)).toBe(false);
   });
 
+  it("names the networks it cannot find as text, whatever a name holds", async () => {
+    const shims = join(root, "shims");
+    mkdirSync(shims);
+    // A host with none of the networks asked for.
+    writeFileSync(join(shims, "docker"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const evil = join(root, "pwned");
+    const odd = `a  b;touch ${evil}`;
+    const check = checkScript({ ...spec, networks: ["proxy", odd] }).replace(
+      /^if docker compose[\s\S]*?fi$/m,
+      "compose=test",
+    );
+    const onThisHost = { env: { ...process.env, PATH: `${shims}:${process.env.PATH}` } };
+
+    const said = (await execute("sh", ["-c", check], onThisHost)).stdout.split("\n");
+
+    expect(said).toContain("missing=proxy");
+    expect(said).toContain(`missing=${odd}`);
+    expect(existsSync(evil)).toBe(false);
+  });
+
   it("says where a new folder would be made, and whether it can", async () => {
     const script = checkScript(spec).replace(/^if docker compose[\s\S]*?fi$/m, "compose=test");
     const said = (await run(script)).stdout;

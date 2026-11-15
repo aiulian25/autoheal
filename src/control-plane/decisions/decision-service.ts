@@ -126,6 +126,9 @@ export class DecisionService {
       modelName: answered.server.client.model,
       modelDigest,
     });
+    // Its container may already wait for a person: then this is no second question, and its runner still hears the
+    // decision, which asks nothing of it.
+    this.incidents.foldRepeat(incident.id);
     return { incidentId: incident.id, decision };
   }
 

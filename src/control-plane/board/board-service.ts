@@ -32,6 +32,7 @@ const autohealHas = (task: TaskSummaryView) => task.assignee?.kind === "agent";
 const idsOf = (incidents: readonly IncidentSummaryView[]) => new Set(incidents.map((incident) => incident.id));
 const linkedTo = (task: TaskSummaryView, incidentIds: ReadonlySet<string>) =>
   task.incidentId !== null && incidentIds.has(task.incidentId);
+const containerOf = (hostId: string | null, containerName: string) => `${hostId}/${containerName}`;
 
 /**
  * The board: every open problem in the column of who has it now. Autoheal has what it is still
@@ -50,11 +51,18 @@ export class BoardService {
     const waiting = this.incidentsIn([INCIDENT_STATUS.awaitingApproval]);
     const working = this.incidentsIn(INCIDENT_WORKING_STATUSES);
     const settled = this.incidentsIn(INCIDENT_SETTLED_STATUSES).filter((incident) => incident.updatedAt >= since);
-    // An incident's own task would only say it twice while the incident is on the board. Once it
-    // is settled, a task still open is somebody's work and shows on its own.
-    const active = idsOf([...waiting, ...working]);
-    const shown = idsOf([...waiting, ...working, ...settled]);
-    const open = this.tasks.list({ status: TASK_FILTERS.open }, viewerId).filter((task) => !linkedTo(task, active));
+    // An incident's own task would only say it twice while an incident about its container is on the board: the
+    // task links the newest one, which may be a repeat of the one that waits. Once none is, a task still open is
+    // somebody's work and shows on its own.
+    const onBoard = [...waiting, ...working];
+    const failing = new Set(onBoard.map((incident) => containerOf(incident.hostId, incident.containerName)));
+    const saidTwice = (task: TaskSummaryView) =>
+      task.incidentId !== null && task.resource !== null && failing.has(containerOf(task.hostId, task.resource.id));
+    const active = idsOf(onBoard);
+    const shown = idsOf([...onBoard, ...settled]);
+    const open = this.tasks
+      .list({ status: TASK_FILTERS.open }, viewerId)
+      .filter((task) => !linkedTo(task, active) && !saidTwice(task));
     const closed = this.tasks
       .list({ status: TASK_STATUS.done }, viewerId)
       .filter((task) => !linkedTo(task, shown) && (task.closedAt ?? 0) >= since);

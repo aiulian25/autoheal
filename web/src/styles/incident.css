@@ -149,6 +149,12 @@
   margin-left: auto;
 }
 
+/* What stopping it came to, and the question before it: under the buttons, not among them. */
+.decision-panel-actions > .stack,
+.decision-panel-actions > .ask-in-place {
+  flex-basis: 100%;
+}
+
 .decision-panel-actions button.primary {
   padding-inline: 23px;
 }

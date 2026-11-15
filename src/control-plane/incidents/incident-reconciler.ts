@@ -14,7 +14,7 @@ import { logAlertNotQueued, type Notifier } from "../notifications/notifier.js";
 import type { IncidentsService } from "./incidents-service.js";
 
 export interface IncidentReconcilerDependencies {
-  incidents: Pick<IncidentsService, "list" | "settleUnneeded" | "askAfterLostOutcome">;
+  incidents: Pick<IncidentsService, "list" | "settleUnneeded" | "askAfterLostOutcome" | "foldRepeat">;
   inventory: Pick<InventoryService, "hosts" | "containers">;
   notifier: Pick<Notifier, "incidentCleared">;
   clock?: () => number;
@@ -57,7 +57,10 @@ export class IncidentReconciler {
           reportedSince(hosts.get(incident.hostId), incident),
       );
     for (const incident of lost) incidents.askAfterLostOutcome(incident.id);
-    const waiting = incidents.list({ status: INCIDENT_STATUS.awaitingApproval });
+    // Whatever way two came to wait for one container, the one that waited first stays the question.
+    const waiting = incidents
+      .list({ status: INCIDENT_STATUS.awaitingApproval })
+      .filter((incident) => incidents.foldRepeat(incident.id) === null);
     for (const incident of waiting) {
       await this.reconcile(incident, hosts.get(incident.hostId), now);
     }

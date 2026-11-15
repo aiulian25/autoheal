@@ -166,9 +166,10 @@
   padding-inline: 12px;
 }
 
+/* Columns only for the cards there are: a lone one takes the whole row. */
 .fix-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: var(--space-3);
 }
 
@@ -210,8 +211,9 @@
   gap: 10px;
 }
 
-.fix .card-actions button.quiet {
-  padding-inline: 10px;
+/* How long to put it off, on its own row under the way there and Done. */
+.fix .card-actions .snooze-choices {
+  flex-basis: 100%;
 }
 
 /* The way to the host is a touch taller and tighter than a plain button, as drawn. */

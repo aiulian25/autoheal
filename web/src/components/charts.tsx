@@ -85,11 +85,13 @@ export interface Gauge {
   // A mount path reads better in the code font.
   mono: boolean;
   dial: Omit<DialProps, "label">;
+  // Read before the host's last report: as it was then, which its detail says.
+  stale?: boolean;
 }
 
 export function GaugeFigure({ gauge }: { gauge: Gauge }) {
   return (
-    <figure className="gauge">
+    <figure className={gauge.stale === true ? "gauge stale" : "gauge"}>
       <Dial label={gauge.label} {...gauge.dial} />
       <figcaption>
         <span className="gauge-label">{gauge.label}</span>

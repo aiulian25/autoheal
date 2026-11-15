@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AssessedPackageView, HostHealthView, HostPackagesView, HostView } from "../../../src/shared/api.js";
 import type { DriveHealth } from "../../../src/shared/protocol.js";
@@ -11,6 +11,7 @@ import { HostDials } from "./host-stats.js";
 import { HostSystem } from "./host-system.js";
 
 const GIBIBYTE = 1024 ** 3;
+const HOUR = 60 * 60 * 1000;
 const TEBIBYTE = 1024 ** 4;
 
 // The Alder as its runner reports it: / and one of its NAS drives, an NVMe sensor, seven package updates.
@@ -255,6 +256,20 @@ describe("a host's system information", () => {
     }
   });
 
+  it("says when its details were read, and once they are older than its last report, that they are as they were", () => {
+    servePackages(Date.now(), []);
+    show(alder({ healthAt: Date.now() - 2 * HOUR }), health);
+    expect(factOf(TEXT.hostSystem.detailsRead)).toBe("2 hours ago");
+    const notice = screen.getByText(TEXT.hostSystem.detailsStale, { exact: false, selector: "p.notice" });
+    expect(notice.textContent).toBe(`${TEXT.hostSystem.detailsStale} 2 hours ago.`);
+    cleanup();
+
+    // Read with its last report: nothing to warn about.
+    show(alder({ healthAt: Date.now() }), health);
+    expect(screen.getByText(TEXT.hostSystem.detailsRead)).toBeTruthy();
+    expect(screen.queryByText(TEXT.hostSystem.detailsStale, { exact: false })).toBeNull();
+  });
+
   it("says when every installed package is up to date", async () => {
     servePackages(Date.now(), []);
     show(alder(), health);
@@ -286,6 +301,21 @@ describe("a host's dials", () => {
     render(<HostDials host={alder({ metrics: { ...hostMetrics(), gpus: [busy], at: Date.now() } })} />);
     expect(screen.queryByText("of top clock")).toBeNull();
     expect(screen.getByText(TEXT.metrics.videoMemory)).toBeTruthy();
+  });
+
+  it("say how old the disks and the load are while the system details are older than the last report", () => {
+    render(<HostDials host={alder({ healthAt: Date.now() - 2 * HOUR })} />);
+    const disks = screen.getByRole("heading", { name: TEXT.metrics.disks }).closest("section")!;
+    expect(disks.className).toContain("stale");
+    expect(within(disks).getByText(TEXT.metrics.asOf("2 h ago"))).toBeTruthy();
+    expect(screen.getByText(TEXT.metrics.readingAsOf("0.45", "2 h ago"))).toBeTruthy();
+    cleanup();
+
+    render(<HostDials host={alder({ healthAt: Date.now() })} />);
+    const current = screen.getByRole("heading", { name: TEXT.metrics.disks }).closest("section")!;
+    expect(current.className).not.toContain("stale");
+    expect(screen.getByText("0.45")).toBeTruthy();
+    expect(screen.queryByText(/ago/)).toBeNull();
   });
 
   it("say, where an NVIDIA card was not given to the runner, how to give it, and say nothing otherwise", () => {

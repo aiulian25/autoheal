@@ -46,6 +46,8 @@ import { runnerUpdateMigration } from "./0072-runner-update.js";
 import { jarvisQuestionsMigration } from "./0073-jarvis-questions.js";
 import { jobExpectedDigestMigration } from "./0074-job-expected-digest.js";
 import { jarvisAnswerLineMigration } from "./0075-jarvis-answer-line.js";
+import { dockerLostMigration } from "./0076-host-docker-lost-at.js";
+import { healthReadMigration } from "./0077-host-health-at.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -158,6 +160,8 @@ export const MIGRATIONS: readonly Migration[] = [
   jarvisQuestionsMigration,
   jobExpectedDigestMigration,
   jarvisAnswerLineMigration,
+  dockerLostMigration,
+  healthReadMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

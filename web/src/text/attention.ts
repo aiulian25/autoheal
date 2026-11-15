@@ -122,6 +122,7 @@ export const ATTENTION_TEXT = {
     approve: "Approve restart",
     restartIt: "Restart it",
     leave: "Leave it stopped",
+    stopIt: "Stop it",
     stopWatching: "Stop watching this container",
     seeWhy: "See why",
     open: (where: string) => `Open ${where}`,

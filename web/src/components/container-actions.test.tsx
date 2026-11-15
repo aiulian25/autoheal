@@ -115,6 +115,32 @@ it("preserves administrator controls without requesting delegated grants", async
   expect(screen.getByRole("button", { name: TEXT.actions.names.restart })).toBeTruthy();
   expect(state.fetch.mock.calls.some(([path]) => path === API_ROUTES.accountPermissions)).toBe(false);
 });
+it("stops a container Docker keeps starting again where it would start a stopped one, in its row and in its panel", async () => {
+  const names = TEXT.actions.names;
+  const offered = (name: string) => screen.queryByRole("button", { name }) !== null;
+  const looping: ContainerView = {
+    ...container,
+    state: "restarting",
+    update: { ...container.update, status: "current" },
+  };
+
+  show({ revision: 0, grants: [] }, true, looping);
+  expect([names.stop, names.remove, names.logs].map(offered)).toEqual([true, true, true]);
+  expect([names.start, names.restart].map(offered)).toEqual([false, false]);
+  cleanup();
+
+  show({ revision: 0, grants: [] }, true, { ...looping, state: "exited" });
+  expect([names.start, names.stop].map(offered)).toEqual([true, false]);
+  cleanup();
+
+  render(
+    <QueryClientProvider client={client}>
+      <ContainerActions container={looping} parked={false} canAct tools={<span />} />
+    </QueryClientProvider>,
+  );
+  expect([names.stop, names.restart, names.remove].map(offered)).toEqual([true, true, true]);
+  expect([names.start, names.pause, names.unpause].map(offered)).toEqual([false, false, false]);
+});
 it("asks once before a stop where this browser is set to, and sends it only on yes", async () => {
   const actionPath = apiPath(API_ROUTES.containerActions, { hostId: HOST, containerName: container.name });
   const answer = (said: string) =>

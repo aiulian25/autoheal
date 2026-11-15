@@ -10,6 +10,7 @@ import {
   HOST_HELPER_MESSAGES,
   HOST_HELPER_OUTCOME,
   HOST_PACKAGE_FOLLOW,
+  HOST_RUN_FOLLOW_WINDOW_MILLISECONDS,
   HOST_PACKAGE_JOB_VERBS,
   HOST_PACKAGE_LOG_DIRECTORY,
   HOST_PACKAGE_LOG_FILE,
@@ -88,9 +89,6 @@ const APPLICATION_RECOVERY_PENDING =
   "Refused: application backup recovery is incomplete. Resume or resolve that recovery before changing host packages or rebooting.";
 const limitOf = (verb: HostPackageVerb) =>
   Number(HOST_PACKAGE_TIMEOUT_MICROSECONDS[verb] / MICROSECONDS_PER_MILLISECOND);
-const LONGEST_RUN_MILLISECONDS = Math.max(
-  ...Object.keys(HOST_PACKAGE_TIMEOUT_MICROSECONDS).map((verb) => limitOf(verb as HostPackageVerb)),
-);
 const FINISHED = {
   repair: HOST_PACKAGE_OUTCOMES.repaired,
   autoremove: HOST_PACKAGE_OUTCOMES.autoremoved,
@@ -188,7 +186,7 @@ export class HostPackageJobs {
       if (match === null) continue;
       const [file = "", jobId = "", verb = ""] = match;
       const modifiedAt = (await this.files.modifiedAt(join(directory, file))) ?? 0;
-      const recent = this.now() - modifiedAt < LONGEST_RUN_MILLISECONDS + HOST_PACKAGE_FOLLOW.marginMilliseconds;
+      const recent = this.now() - modifiedAt < HOST_RUN_FOLLOW_WINDOW_MILLISECONDS;
       if (manager !== null && recent) {
         runs.push({ jobId, result: this.follow(jobId, verb as HostPackageVerb, manager, [], true) });
       }

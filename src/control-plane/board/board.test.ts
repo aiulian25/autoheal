@@ -139,6 +139,15 @@ describe("the board", () => {
     expect(view.noticed).toEqual(["tika stopped on Alder"]);
   });
 
+  it("shows a container that kept failing once: no card for its repeats, nor for the task they joined", async () => {
+    const first = incident("tika", "awaiting_approval");
+    controlPlane.clock.now += 1_000;
+    const again = incident("tika", "awaiting_approval");
+    expect(controlPlane.services.incidentsService.foldRepeat(again.id)?.status).toBe("cancelled");
+    expect(await columns()).toEqual({ needsYou: ["tika"], autoheal: [], noticed: [], done: [] });
+    expect((await board()).needsYou).toMatchObject([{ incident: { id: first.id } }]);
+  });
+
   it("keeps what was settled for a day, newest first", async () => {
     const old = incident("vaultwarden", "resolved");
     const dayAndAMomentAgo = controlPlane.clock.now - BOARD_DONE_WINDOW_MILLISECONDS - 1;

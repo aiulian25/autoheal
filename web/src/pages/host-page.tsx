@@ -7,6 +7,7 @@ import {
   API_ROUTES,
   INCIDENT_QUERY,
   apiPath,
+  type HostHealthView,
   type HostView,
   type IncidentSummaryView,
 } from "../../../src/shared/api.js";
@@ -59,8 +60,9 @@ import { JoinCodeCard } from "./host-join-code.js";
 import { RunnerBehind, isRunnerHost } from "./runner-behind.js";
 import { PowerButtons, PowerStrip } from "./host-power.js";
 import { CheckUpdates, TerminalButton } from "./host-page-actions.js";
-import { DiskWarning, InPlaceWaiting, ContainersStale, ReportTrimmed } from "./host-notices.js";
+import { DiskWarning, DockerLost, InPlaceWaiting, ContainersStale, ReportTrimmed } from "./host-notices.js";
 import { HostTabs } from "./host-tabs.js";
+import { staleHealthAt } from "./host-dial-values.js";
 
 const taskLink = (taskId: string) => apiPath(PATHS.task, { taskId });
 
@@ -69,6 +71,13 @@ const HostTerminal = lazy(() =>
   import("../components/shell-terminal.js").then((module) => ({ default: module.HostTerminal })),
 );
 
+// Its uptime comes with the system details, not with each report: read before the last report, it says when.
+function uptimeOf(host: HostView, health: HostHealthView): string {
+  const uptime = TEXT.hosts.up(duration(health.uptimeSeconds));
+  const staleAt = staleHealthAt(host);
+  return staleAt === null ? uptime : TEXT.metrics.readingAsOf(uptime, timeAgo(staleAt));
+}
+
 // "orion2480 · 192.168.10.178 · Ubuntu 24.04.5 LTS · up 1 day · reported 12 seconds ago"
 function aboutHost(host: HostView): string {
   const health = host.health;
@@ -76,7 +85,7 @@ function aboutHost(host: HostView): string {
     health?.hostname ?? null,
     health?.address ?? null,
     health?.operatingSystem ?? null,
-    health === null ? null : TEXT.hosts.up(duration(health.uptimeSeconds)),
+    health === null ? null : uptimeOf(host, health),
     host.lastHeartbeatAt === null ? null : TEXT.hosts.reported(timeAgo(host.lastHeartbeatAt)),
   ]
     .filter((part) => part !== null)
@@ -390,6 +399,7 @@ export function HostPage() {
         </Suspense>
       )}
       <PowerStrip host={host} />
+      <DockerLost host={host} />
       <DiskWarning host={host} admin={admin} />
       <RebootWarning hostId={host.id} hostLabel={host.label} admin={admin} />
       <InPlaceWaiting host={host} />

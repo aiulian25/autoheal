@@ -8,6 +8,7 @@ import {
   JOB_QUERY,
   apiPath,
   hasUpdate,
+  isStoppable,
   updateVersions,
   type ContainerView,
   type JobView,
@@ -56,17 +57,27 @@ function panelActionsFor(container: ContainerView, parked: boolean): ContainerAc
   if (container.handsOff !== null) return [];
   if (container.recovery !== undefined)
     return actionsFor(container, parked).filter((action) => action !== JOB_ACTION.logs);
-  const stopped = container.state !== CONTAINER_STATE_RUNNING && container.state !== CONTAINER_STATE_PAUSED;
+  const running = container.state === CONTAINER_STATE_RUNNING;
   const paused = container.state === CONTAINER_STATE_PAUSED;
+  // One Docker keeps starting again is not stopped: stopping it is the way out of its loop.
+  const stopped = !isStoppable(container) && !paused;
   return [
     JOB_ACTION.restart,
     stopped ? JOB_ACTION.start : JOB_ACTION.stop,
-    ...(stopped ? [] : [paused ? JOB_ACTION.unpause : JOB_ACTION.pause]),
+    ...(running ? [JOB_ACTION.pause] : []),
+    ...(paused ? [JOB_ACTION.unpause] : []),
     JOB_ACTION.update,
     JOB_ACTION.recreate,
     ...(parked ? [JOB_ACTION.rollBack] : []),
     JOB_ACTION.remove,
   ];
+}
+
+// One Docker keeps starting again can be stopped or removed, never started: it is neither running nor stopped.
+function lifecycleActionsOf(container: ContainerView): ContainerAction[] {
+  if (container.state === CONTAINER_STATE_RUNNING) return [JOB_ACTION.restart, JOB_ACTION.stop, JOB_ACTION.logs];
+  if (isStoppable(container)) return [JOB_ACTION.stop, JOB_ACTION.remove, JOB_ACTION.logs];
+  return [JOB_ACTION.start, JOB_ACTION.remove, JOB_ACTION.logs];
 }
 
 function actionsFor(container: ContainerView, parked: boolean): ContainerAction[] {
@@ -77,10 +88,7 @@ function actionsFor(container: ContainerView, parked: boolean): ContainerAction[
   if (container.recovery !== undefined) {
     return container.recovery.owner === container.name ? [JOB_ACTION.rollBack, JOB_ACTION.logs] : [JOB_ACTION.logs];
   }
-  const running = container.state === CONTAINER_STATE_RUNNING;
-  const actions: ContainerAction[] = running
-    ? [JOB_ACTION.restart, JOB_ACTION.stop, JOB_ACTION.logs]
-    : [JOB_ACTION.start, JOB_ACTION.remove, JOB_ACTION.logs];
+  const actions = lifecycleActionsOf(container);
   if (hasUpdate(container)) {
     actions.push(JOB_ACTION.update);
   }

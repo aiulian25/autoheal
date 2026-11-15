@@ -148,7 +148,8 @@ describe("handing work to the Ollama agent", () => {
     serve("admin");
     renderAttention("admin");
     const agent = (await screen.findByText(TEXT.attention.agent.dropTarget)).closest("a")!;
-    expect(within(agent).getByText("qwen3:30b-a3b")).toBeTruthy();
+    // Cut short on a card too narrow for it, the model's name keeps all of it to read.
+    expect(within(agent).getByText("qwen3:30b-a3b").title).toBe("qwen3:30b-a3b");
     expect(within(agent).getByText(TEXT.attention.ollama.answering)).toBeTruthy();
     expect(within(agent).queryByText(TEXT.attention.ollama.defaultName)).toBeNull();
   });

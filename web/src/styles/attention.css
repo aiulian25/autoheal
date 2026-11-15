@@ -188,18 +188,31 @@
   box-shadow: 0 0 8px var(--agent-glow);
 }
 
+/* The drop chip goes under a model's name it would otherwise squeeze. */
 .agent-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   padding-top: 6px;
 }
 
+/* On one line, on the card's own colour so no line of the network runs through its letters. Only a name too long for
+   the card is cut short, and its title holds all of it. */
+.agent-line > .mono {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--agent-wash);
+}
+
 .drop-chip {
   display: inline-flex;
   flex: none;
   align-items: center;
+  margin-left: auto;
   gap: 5px;
   padding: 3px 8px;
   border: var(--border-width) solid var(--agent-chip-border);
@@ -273,8 +286,10 @@ button.agent-button .icon {
   white-space: nowrap;
 }
 
+/* Dragging needs a pointer: a touch screen is told neither how to drag nor where to drop. */
 @media (hover: none) and (pointer: coarse) {
-  .drag-tip {
+  .drag-tip,
+  .drop-chip {
     display: none;
   }
 }

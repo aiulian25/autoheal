@@ -11,7 +11,6 @@ export function SnoozeChoices({ disabled, onChoose }: { disabled: boolean; onCho
         <button
           key={length}
           type="button"
-          className="quiet"
           disabled={disabled}
           aria-label={text.choice(text.lengths[length])}
           onClick={() => onChoose(length)}

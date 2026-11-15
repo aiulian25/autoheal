@@ -13,7 +13,6 @@ import {
   ACTION_ESCALATE,
   ACTION_RESTART,
   ACTION_RESTART_DEPENDENCY,
-  APPROVAL_DISMISS,
   INCIDENT_STATUS,
   OUTCOMES,
   RESTART_CHOICE,
@@ -22,8 +21,9 @@ import {
 import { api } from "../../api-client.js";
 import { containerLink } from "../../host-links.js";
 import { ErrorNotice, PlainText } from "../../components/common.js";
+import { LatestJob } from "../../components/container-actions.js";
 import { Icon } from "../../components/icons.js";
-import { approvalOf, useApproval } from "../../components/incident-parts.js";
+import { approvalOf, useApproval, useLeaveIt } from "../../components/incident-parts.js";
 import { TEXT } from "../../constants.js";
 
 const text = TEXT.incidentPage;
@@ -131,6 +131,8 @@ function DecisionActions({
 }) {
   const queryClient = useQueryClient();
   const decide = useApproval(incident.id);
+  const leave = useLeaveIt(decide, incident, container);
+  const busy = decide.isPending || leave.stopping;
   const [choosing, setChoosing] = useState(false);
   const restartAlone = useMutation({
     mutationFn: (change: ContainerControlChange) =>
@@ -147,19 +149,14 @@ function DecisionActions({
     container.byItself.restartLock === null;
   return (
     <>
-      <button type="button" className="primary" disabled={decide.isPending} onClick={approve}>
+      <button type="button" className="primary" disabled={busy} onClick={approve}>
         {text.approve}
       </button>
-      <button type="button" className="warm" disabled={decide.isPending} onClick={() => setChoosing(true)}>
+      <button type="button" className="warm" disabled={busy} onClick={() => setChoosing(true)}>
         {text.dependencyInstead}
       </button>
-      <button
-        type="button"
-        className="quiet"
-        disabled={decide.isPending}
-        onClick={() => decide.mutate({ choice: APPROVAL_DISMISS })}
-      >
-        {text.leave}
+      <button type="button" className="quiet" disabled={busy} onClick={leave.run}>
+        {leave.looping ? text.stopIt : text.leave}
       </button>
       {canRestartAlone && (
         <button
@@ -174,7 +171,9 @@ function DecisionActions({
       {container?.byItself.restart === RESTART_CHOICE.restart && asksFirst(incident) && (
         <span className="small text-good push">{text.restartsAlone}</span>
       )}
-      <ErrorNotice error={decide.error ?? restartAlone.error} />
+      {leave.job !== undefined && <LatestJob job={leave.job} />}
+      {leave.question}
+      <ErrorNotice error={decide.error ?? leave.error ?? restartAlone.error} />
     </>
   );
 }

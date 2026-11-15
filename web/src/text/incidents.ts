@@ -240,6 +240,7 @@ export const INCIDENTS_TEXT = {
     restartThat: "Restart it",
     cancel: "Cancel",
     leave: "Leave it stopped",
+    stopIt: "Stop it",
     restartAlone: "Next time, let Autoheal restart it alone",
     restartsAlone: "It restarts on its own from now on.",
     whatHappened: "What happened, step by step",

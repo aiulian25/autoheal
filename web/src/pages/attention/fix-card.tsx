@@ -91,15 +91,15 @@ export function FixCard({
         )}
         {admin && (
           <>
-            <SnoozeChoices disabled={change.isPending} onChoose={(snoozed) => change.mutate({ snoozed })} />
             <button
               type="button"
-              className="quiet"
+              className="push"
               disabled={change.isPending}
               onClick={() => change.mutate({ status: TASK_STATUS.done })}
             >
               {TEXT.attention.done}
             </button>
+            <SnoozeChoices disabled={change.isPending} onChoose={(snoozed) => change.mutate({ snoozed })} />
           </>
         )}
       </div>

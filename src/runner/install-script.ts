@@ -58,7 +58,8 @@ export function checkScript(spec: Pick<InstallSpec, "folder" | "networks">): str
     '[ -w "$place" ] && echo writable=1',
     'echo "place=$place"',
     ...spec.networks.map(
-      (network) => `docker network inspect ${shellQuoted(network)} >/dev/null 2>&1 || echo missing=${network}`,
+      (network) =>
+        `docker network inspect ${shellQuoted(network)} >/dev/null 2>&1 || echo missing=${shellQuoted(network)}`,
     ),
     "exit 0",
   ].join("\n");

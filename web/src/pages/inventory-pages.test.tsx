@@ -234,11 +234,19 @@ describe("hosts, containers and Home", () => {
       [API_ROUTES.containers]: [
         container({ name: "tika", state: "exited", exitCode: 1, health: "none", problem: "crashed" }),
         container({ name: "npm", protected: true }),
+        // Where the problem is the state, or the health, it is said once.
+        container({ name: "tunnel", state: "restarting", health: "none", problem: "restarting" }),
+        container({ name: "attic", state: "running", health: "unhealthy", problem: "unhealthy" }),
+        container({ name: "relay", state: "dead", health: "none", problem: "dead" }),
       ],
     });
     renderAt(`${PATHS.containers}?search=tik&problems=true`, <ContainersPage />);
     const row = (await screen.findByText("tika")).closest("tr")!;
     expect(within(row).getByText("exited · crashed").className).toBe("text-danger");
+    const stateIn = async (name: string) => within((await screen.findByText(name)).closest("tr")!);
+    expect((await stateIn("tunnel")).getByText("restarting").className).toBe("text-danger");
+    expect((await stateIn("attic")).getByText("running · unhealthy").className).toBe("text-danger");
+    expect((await stateIn("relay")).getByText("dead").className).toBe("text-danger");
     expect(within(row).getByText("exit 1")).toBeTruthy();
     expect(within((await screen.findByText("npm")).closest("tr")!).getByText("protected")).toBeTruthy();
     const containerCall = fetch.mock.calls.map(([url]) => url).find((url) => url.startsWith(API_ROUTES.containers))!;

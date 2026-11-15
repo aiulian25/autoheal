@@ -14,6 +14,7 @@ import { TimeAgo } from "../components/common.js";
 import { CLOCK_IN_SYNC_SECONDS, CLOCK_WARNING_SECONDS, TEXT } from "../constants.js";
 import { bytes, celsius, dateTimeIn, duration, loadAverage, timeAgo } from "../format.js";
 import { hostPackagesQuery } from "../queries.js";
+import { staleHealthAt } from "./host-dial-values.js";
 
 export interface Fact {
   label: string;
@@ -215,6 +216,7 @@ function connectionFact(host: HostView): Fact {
 // Two lists side by side, as drawn: what the machine is and holds on the left, how it runs on the right.
 function factsOf(host: HostView, health: HostHealthView): [Fact[], Fact[]] {
   const memory = host.metrics?.memory ?? null;
+  const readAt = host.healthAt ?? null;
   const drives = (health.driveTemperatures ?? []).map((drive) => ({ label: drive.device, celsius: drive.celsius }));
   const left = [
     {
@@ -233,6 +235,7 @@ function factsOf(host: HostView, health: HostHealthView): [Fact[], Fact[]] {
     { label: TEXT.hostSystem.memory, value: memoryOf(memory, health) },
     { label: TEXT.hostSystem.disks, value: diskSpaceOf(health.disks) },
     { label: TEXT.hosts.lastReport, value: <TimeAgo timestamp={host.lastHeartbeatAt} /> },
+    ...(readAt === null ? [] : [{ label: TEXT.hostSystem.detailsRead, value: <TimeAgo timestamp={readAt} /> }]),
   ];
   const right = [
     { label: TEXT.hostSystem.operatingSystem, value: health.operatingSystem ?? TEXT.none },
@@ -269,9 +272,15 @@ export function FactList({ facts }: { facts: readonly Fact[] }) {
 /** The host at a glance: what it is, how it runs, what waits. */
 export function HostSystem({ host, health }: { host: HostView; health: HostHealthView }) {
   const [left, right] = factsOf(host, health);
+  const staleAt = staleHealthAt(host);
   return (
     <section className="card host-system" aria-labelledby="host-system-title">
       <h2 id="host-system-title">{TEXT.hostSystem.title}</h2>
+      {staleAt !== null && (
+        <p className="notice warning small" role="status">
+          {TEXT.hostSystem.detailsStale} <TimeAgo timestamp={staleAt} />.
+        </p>
+      )}
       <div className="system-columns">
         <FactList facts={left} />
         <FactList facts={right} />

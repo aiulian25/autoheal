@@ -23,10 +23,10 @@ import { IncidentReconciler } from "./incident-reconciler.js";
 const HALF_MINUTE = 30_000;
 const MINUTE = 2 * HALF_MINUTE;
 
-const submission = (detectedAt: number): IncidentSubmission => ({
+const submission = (detectedAt: number, containerName: string): IncidentSubmission => ({
   detectedAt,
   report: {
-    containerName: "tika",
+    containerName,
     image: "apache/tika:3.2",
     trigger: "die",
     stateSummary: "status=exited exit=1",
@@ -68,11 +68,11 @@ describe("escalations that nothing is left to decide about", () => {
   const later = (milliseconds: number) => {
     controlPlane.clock.now += milliseconds;
   };
-  const escalate = () => {
+  const escalate = (containerName = "tika") => {
     const host = controlPlane.services.databaseHandle.database.select().from(hosts).get()!;
     return controlPlane.services.incidentsService.create(
       host,
-      submission(controlPlane.clock.now),
+      submission(controlPlane.clock.now, containerName),
       INCIDENT_STATUS.awaitingApproval,
     );
   };
@@ -113,7 +113,7 @@ describe("escalations that nothing is left to decide about", () => {
       notifier: controlPlane.services.notifier,
       clock: () => controlPlane.clock.now,
     });
-    const waiting = [escalate(), escalate()];
+    const waiting = [escalate(), escalate("gotenberg")];
     fillNotificationQueue(controlPlane.services.databaseHandle, controlPlane.clock.now);
     await reportFor(INCIDENT_CLEAR_MILLISECONDS + HALF_MINUTE, [paperless]);
     expect(await Promise.all(waiting.map(async ({ id }) => (await detail(id)).status))).toEqual([
@@ -121,6 +121,27 @@ describe("escalations that nothing is left to decide about", () => {
       "resolved",
     ]);
     expect(controlPlane.services.notificationDeliveries.rules().overflowCount).toBe(2);
+  });
+
+  it("leaves one question for a container that came to wait more than once: the first, and tells nobody", async () => {
+    const first = escalate();
+    later(MINUTE);
+    const repeats = [escalate(), escalate()];
+    const other = escalate("gotenberg");
+    const down = containerSnapshot({ name: "tika", state: "exited", exitCode: 1, health: "none" });
+    await reportFor(HALF_MINUTE, [down, containerSnapshot({ name: "gotenberg", state: "exited", exitCode: 1 })]);
+    expect((await detail(first.id)).status).toBe("awaiting_approval");
+    expect((await detail(other.id)).status).toBe("awaiting_approval");
+    for (const repeat of repeats) {
+      const folded = await detail(repeat.id);
+      expect(folded).toMatchObject({
+        status: "cancelled",
+        verdict: "no longer needed",
+        outcome: "tika failed again while it already waits for you: nothing new to decide.",
+      });
+      expect(folded.trace.at(-1)).toMatchObject({ kind: "no_longer_needed", payload: { sameAs: first.id } });
+    }
+    expect(cleared).toEqual([]);
   });
 
   it("waits while it is down or failing its health check, and starts over when Docker restarts it", async () => {
@@ -163,7 +184,7 @@ describe("escalations that nothing is left to decide about", () => {
       const host = controlPlane.services.databaseHandle.database.select().from(hosts).get()!;
       return controlPlane.services.incidentsService.create(
         host,
-        submission(controlPlane.clock.now),
+        submission(controlPlane.clock.now, "tika"),
         INCIDENT_STATUS.decided,
       );
     };
@@ -182,6 +203,18 @@ describe("escalations that nothing is left to decide about", () => {
       });
       expect((await detail(incident.id)).trace.at(-1)?.kind).toBe("outcome_lost");
       expect(cleared).toEqual([]);
+    });
+
+    it("gives way to the one already waiting about its container when it comes to wait", async () => {
+      const lost = decide();
+      later(MINUTE);
+      const waiting = escalate();
+      await reportFor(INCIDENT_OUTCOME_LOST_MILLISECONDS, [down]);
+      expect((await detail(waiting.id)).status).toBe("awaiting_approval");
+      expect(await detail(lost.id)).toMatchObject({
+        status: "cancelled",
+        outcome: "tika failed again while it already waits for you: nothing new to decide.",
+      });
     });
 
     it("settles by itself when its container is fine", async () => {

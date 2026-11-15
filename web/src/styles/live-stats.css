@@ -24,6 +24,19 @@
   border-color: var(--danger-border);
 }
 
+/* Its dial was read before the host's last report: shown as it was then, faded, its header saying when. */
+.stat-card.stale .dial {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+.stat-card-as-of {
+  margin-right: auto;
+  font-size: var(--text-badge);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 .stat-card-header,
 .chart-header {
   display: flex;

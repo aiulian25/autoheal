@@ -1,6 +1,18 @@
 import type { ControlPlaneSettings } from "../../config/runner-config.js";
 import { createRuntime, startRunner, type RunnerPorts } from "../../runner/application.js";
-import { SSH_HOST_FILES, SSH_READINESS, SSH_STATE, SSH_TEXT, type RootMethod } from "../../shared/constants.js";
+import { DockerClient } from "../../runner/docker-client.js";
+import { ShutdownJournal } from "../../runner/shutdown-journal.js";
+import {
+  AUDIT_ACTIONS,
+  RUNNER_MESSAGES,
+  SSH_HOST_FILES,
+  SSH_READINESS,
+  SSH_STATE,
+  SSH_TEXT,
+  TARGET_HOST,
+  type RootMethod,
+} from "../../shared/constants.js";
+import type { Actor, AuditLog } from "../audit/audit-log.js";
 import { API_ERRORS } from "../../shared/api.js";
 import { DomainError } from "../domain-error.js";
 import { findRootMethod } from "./ssh-root.js";
@@ -18,10 +30,21 @@ import { runnerContainerRunning } from "../hosts/runner-container.js";
 
 type StopRunner = () => Promise<void>;
 
-/** Whether the host's user may use its Docker now: the check a host is added with. */
+/**
+ * Whether the host's user may use its Docker now: the check a host is added with. A check that got no answer (turned
+ * away, too slow, or cut short) says nothing about Docker either way, so it throws: taken for a no, the host would be
+ * watched for its system alone and its containers dropped.
+ */
 async function dockerUsable(session: SshSession): Promise<boolean> {
-  const result = await session.exec(SSH_READINESS.command, SSH_HOST_FILES.commandTimeoutMilliseconds).catch(() => null);
-  return result !== null && readinessOf(result.stdout).usable;
+  const result = await session
+    .exec(SSH_READINESS.command, SSH_HOST_FILES.commandTimeoutMilliseconds)
+    .catch((error: unknown) => {
+      throw new Error(SSH_TEXT.dockerCheckFailed(describeError(error)));
+    });
+  if (readinessOf(result.stdout).usable) return true;
+  // No exit code: its channel closed under it, as when the connection drops.
+  if (result.exitCode === null) throw new Error(SSH_TEXT.dockerCheckFailed(SSH_TEXT.dockerCheckCutShort));
+  return false;
 }
 
 interface EmbeddedRunner {
@@ -43,6 +66,8 @@ export interface EmbeddedRunnersDependencies {
   controlPlane: Omit<ControlPlaneSettings, "token">;
   // The image the control plane runs: an SSH host's helpers run in it once it is on the host.
   autohealImage: string;
+  // Who cleared what held a host's runner back.
+  audit: Pick<AuditLog, "recordUserAction">;
 }
 
 /**
@@ -166,15 +191,47 @@ export class EmbeddedRunners {
     this.runners.get(hostId)?.session?.redialSoon(until);
   }
 
+  /** What holds the host's runner back, in the words its log uses; nothing while it may start by itself. */
+  async interruptedOf(hostId: string): Promise<string[]> {
+    const records = await this.journalOf(hostId).blocking();
+    return records.map((record) => RUNNER_MESSAGES.recoverySaid(record));
+  }
+
+  /**
+   * A person looked at what was interrupted on the host: its records go, nothing is undone or run again, and the
+   * runner starts. Never under a runner that runs or is starting, whose own journal this is.
+   */
+  async clearInterrupted(actor: Actor, hostId: string): Promise<string[]> {
+    const journal = this.journalOf(hostId);
+    if (this.runners.get(hostId)?.runner !== null) throw new DomainError(API_ERRORS.sshHostRunnerRunning);
+    const cleared = (await journal.clearBlocking()).map((record) => RUNNER_MESSAGES.recoverySaid(record));
+    this.dependencies.audit.recordUserAction(
+      actor,
+      AUDIT_ACTIONS.hostSshInterruptedCleared,
+      { kind: TARGET_HOST, id: hostId },
+      { operations: cleared },
+    );
+    this.tick();
+    return cleared;
+  }
+
   /** The host key the host offers when it is not the trusted one, for a person to compare. */
   offeredHostKeyOf(hostId: string): string | null {
     return this.runners.get(hostId)?.session?.state().offeredHostKey?.fingerprint ?? null;
   }
 
+  // The host's journal, read over its live session as its runner reads it.
+  private journalOf(hostId: string) {
+    const session = this.runners.get(hostId)?.session;
+    if (session?.state().state !== SSH_STATE.connected) throw new DomainError(API_ERRORS.sshHostNotConnected);
+    return new ShutdownJournal(new DockerClient(new SshDockerConnection(session)));
+  }
+
   private async openOnceDockerIsThere(hostId: string, embedded: EmbeddedRunner) {
-    if (embedded.session !== null && (await dockerUsable(embedded.session)) && this.runners.get(hostId) === embedded) {
-      await this.open(hostId);
-    }
+    if (embedded.session === null) return;
+    // Only on a clear yes: a look that got no answer leaves the host as it is until the next one.
+    const usable = await dockerUsable(embedded.session).catch(() => false);
+    if (usable && this.runners.get(hostId) === embedded) await this.open(hostId);
   }
 
   private ensureRunning(hostId: string, embedded: EmbeddedRunner) {

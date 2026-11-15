@@ -1,7 +1,7 @@
 import { GlobalSearch } from "./global-search.js";
 import { notificationHealth } from "./notification-health.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useLayoutEffect } from "react";
+import { Suspense, useLayoutEffect, useRef } from "react";
 import { Link, Outlet, matchPath, useLocation, useNavigate } from "react-router";
 import { API_ERRORS, API_ROUTES, type OverviewView, type SessionView } from "../../../src/shared/api.js";
 import { BRAND_ASSETS, HTTP_STATUS, INTEGRATION_KIND, NOTIFICATION_KINDS } from "../../../src/shared/constants.js";
@@ -20,7 +20,9 @@ import {
 import { NewVersionNotice } from "./new-version-notice.js";
 import { ScrollToTop } from "./scroll-to-top.js";
 import { Icon, type IconName } from "./icons.js";
+import { timeOfDay } from "../format.js";
 import { useLiveUpdates } from "../live.js";
+import { bringToMiddle } from "../scroll-row.js";
 import { forgetPrivateData, isAdmin } from "../session.js";
 import { ErrorNotice, Loading } from "./common.js";
 
@@ -123,15 +125,36 @@ function Connections({ admin }: { admin: boolean }) {
       tone: connected ? "good" : "danger",
     });
   }
+  const countOf = (tone: Connection["tone"]) => connections.filter((connection) => connection.tone === tone).length;
   return (
-    <ul className="connections" aria-label={TEXT.nav.connections}>
-      {connections.map((connection) => (
-        <li key={connection.key}>
-          <span className={connection.tone === "off" ? "status-dot off" : `status-dot tone-${connection.tone}`} />
-          <span title={connection.detail}>{connection.text}</span>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ConnectionsSummary connected={countOf("good")} problems={countOf("danger")} />
+      <ul className="connections" aria-label={TEXT.nav.connections}>
+        {connections.map((connection) => (
+          <li key={connection.key}>
+            <span className={connection.tone === "off" ? "status-dot off" : `status-dot tone-${connection.tone}`} />
+            <span title={connection.detail}>{connection.text}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+/** The connections where a phone has no room for their list: how many work and how many do not, leading to Settings. */
+function ConnectionsSummary({ connected, problems }: { connected: number; problems: number }) {
+  const counts = [
+    ...(connected > 0 ? [TEXT.nav.connectedCount(connected)] : []),
+    ...(problems > 0 ? [TEXT.nav.problemCount(problems)] : []),
+  ];
+  if (counts.length === 0) return null;
+  const words = counts.join(TEXT.separator);
+  const tone: Connection["tone"] = problems > 0 ? "danger" : "good";
+  return (
+    <Link className="connections-summary" to={PATHS.settings} aria-label={TEXT.nav.connectionsSummary(words)}>
+      <span className={`status-dot tone-${tone}`} />
+      {words}
+    </Link>
   );
 }
 
@@ -149,10 +172,19 @@ export function Layout({ session }: { session: SessionView }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  useLiveUpdates();
+  const lostSince = useLiveUpdates();
   const board = useQuery(boardQuery);
   const router = useQuery({ ...routerSettingsQuery, enabled: isAdmin(session) });
   const routerSet = router.data?.configured === true;
+  const sections = [...SECTIONS, ...(routerSet ? [NETWORK_SECTION] : [])].toSorted(inMenuOrder);
+  const currentSection = sections.find((section) => isIn(section, pathname))?.path;
+  const menu = useRef<HTMLElement>(null);
+  const currentLink = useRef<HTMLAnchorElement>(null);
+  // Again once the router's section joins the menu, as it moves the links after it.
+  useLayoutEffect(() => {
+    if (menu.current === null || currentLink.current === null) return;
+    bringToMiddle(menu.current, currentLink.current);
+  }, [currentSection, routerSet]);
   // The menu counts what should not wait: what needs you on the board.
   const waiting = board.data?.needsYou.length ?? 0;
   // Once the session has ended, by a confirmed sign-out, a timeout or a restore, private data goes with this page, in
@@ -193,13 +225,14 @@ export function Layout({ session }: { session: SessionView }) {
           {TEXT.appName}
         </Link>
         <GlobalSearch currentHostId={matchPath(PATHS.host, pathname)?.params.hostId} />
-        <nav className="nav" aria-label={TEXT.nav.label}>
-          {[...SECTIONS, ...(routerSet ? [NETWORK_SECTION] : [])].toSorted(inMenuOrder).map((section) => {
-            const current = isIn(section, pathname);
+        <nav className="nav" aria-label={TEXT.nav.label} ref={menu}>
+          {sections.map((section) => {
+            const current = section.path === currentSection;
             return (
               <Link
                 key={section.path}
                 to={section.path}
+                ref={current ? currentLink : undefined}
                 className={current ? "active" : undefined}
                 aria-current={current ? "page" : undefined}
               >
@@ -221,6 +254,11 @@ export function Layout({ session }: { session: SessionView }) {
       </aside>
       <main className="main">
         <NewVersionNotice />
+        {lostSince !== null && (
+          <p className="notice warning small" role="status">
+            {TEXT.connectionLost(timeOfDay(lostSince))}
+          </p>
+        )}
         {/* A page not opened before loads here, while the menu stays. */}
         <Suspense fallback={<Loading />}>
           <Outlet />

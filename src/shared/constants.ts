@@ -405,6 +405,10 @@ export const INCIDENT_CLEARED = {
   gone: (container: string, host: string) =>
     `${container} is no longer on ${host} (removed or replaced): nothing is left to decide.`,
   running: (container: string) => `${container} is running again: nothing is left to decide.`,
+  // One container asks a person one thing at a time: a later failure joins the one already waiting.
+  sameAsWaiting: (container: string) =>
+    `${container} failed again while it already waits for you: nothing new to decide.`,
+  stopped: (container: string) => `${container} was stopped from the dashboard: nothing is left to decide.`,
 } as const;
 export const APPROVAL_NOTE_LIMIT = 500;
 // How often a runner asks for work: a click in the dashboard starts on its host within a second.
@@ -601,10 +605,16 @@ export const RUNNER_MESSAGES = {
     const on = record.target === "" ? "" : ` on ${record.target}`;
     return `${what}${on} (step ${record.step}, ${new Date(record.at).toISOString().slice(0, 16).replace("T", " ")})`;
   },
-  recoveryNeeded: (records: readonly { operation: string; target: string; step: number; at: number }[]) =>
+  recoveryNeeded: (
+    records: readonly { operation: string; target: string; step: number; at: number }[],
+    wayOut: string,
+  ) =>
     `${records.length} unfinished ${records.length === 1 ? "operation needs" : "operations need"} clearing before this runner can start: ` +
     `${records.map((record) => RUNNER_MESSAGES.recoverySaid(record)).join("; ")}. ` +
-    "Each was interrupted part-way; none is undone or retried by clearing it. Run `recover --clear` here once you have looked.",
+    `Each was interrupted part-way; none is undone or retried by clearing it. ${wayOut}`,
+  // Where a person clears it: in a runner's container, or, for a host over SSH, which has none, on its page.
+  clearWithRecover: "Run `recover --clear` here once you have looked.",
+  clearOnHostPage: "Clear it on this host's page in Autoheal once you have looked.",
   recoveryCleared: (count: number) =>
     `${count} unfinished ${count === 1 ? "operation" : "operations"} cleared; the runner may start.`,
   recoveryNothing: "Nothing is unfinished here: the runner is not held back by its journal.",
@@ -921,6 +931,10 @@ export const RUNNER_RATE_LIMIT_PER_MINUTE = 240;
 export const RUNNER_RATE_LIMIT_HOST_KEY = "host:";
 // Six missed heartbeats: long enough to ride out a restart, short enough to notice a dead runner.
 export const HOST_SILENT_AFTER_MILLISECONDS = 3 * 60 * 1000;
+// A host's system details come with its reports. Older than this beside a newer report, its runner could not read them
+// since: they are shown as they were, and say so. Unread this long while it still reports, a task says so.
+export const HOST_HEALTH_STALE_AFTER_MILLISECONDS = 4 * HEARTBEAT_INTERVAL_MILLISECONDS;
+export const HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS = 10 * HEARTBEAT_INTERVAL_MILLISECONDS;
 export const HOST_STATE = { online: "online", silent: "silent", neverSeen: "never_seen", revoked: "revoked" } as const;
 export type HostState = (typeof HOST_STATE)[keyof typeof HOST_STATE];
 // Constants computed from these when the module loads must come after them.
@@ -1698,6 +1712,8 @@ export const DETECTOR_GRACE_MILLISECONDS = {
   temperature: 5 * 60 * 1000,
   // Docker restarting drops the runner's event stream for seconds; only one that stays down is news.
   healingPaused: 2 * 60 * 1000,
+  // A reboot can leave a host's Docker a little behind its SSH: only Docker that stays away is news.
+  dockerLost: 5 * 60 * 1000,
   // A clock that time sync sets right moments after a boot is no news.
   clockOff: 2 * 60 * 1000,
   driveHeat: 10 * 60 * 1000,
@@ -1726,6 +1742,8 @@ export const DETECTOR_KEYS = {
   rebootPlan: "reboot-plan-",
   hostSilent: "host-silent",
   healingPaused: "healing-paused",
+  dockerLost: "docker-lost",
+  systemUnread: "system-unread",
   clockOff: "clock-off",
   notificationsLost: "notifications-lost",
   recoveryHeld: "recovery-held",
@@ -1829,6 +1847,8 @@ export const TASK_TEXT = {
   hostSilentDetails: (minutes: number) =>
     `No heartbeat for ${minutes} minutes. Healing on that host may be down; check its autoheal container.`,
   healingPaused: (host: string) => `Healing is paused on ${host}`,
+  dockerLost: (host: string) => `Docker can no longer be reached on ${host}: its containers are not watched`,
+  systemUnread: (host: string) => `Autoheal cannot read ${host}'s system`,
   notificationsLost: "Alerts are not being sent: the notification outbox is full",
   notificationsLostDetails:
     "Alerts that did not fit in the outbox were dropped, so no notification channel heard of them, usually because a channel keeps failing and its alerts pile up. Settings → Notifications shows which, under Deliveries: fix that channel or turn it off. This closes by itself once alerts fit again.",
@@ -1844,6 +1864,10 @@ export const TASK_TEXT = {
   gpuHeat: (gpu: string, host: string) =>
     `GPU ${gpu} on ${host} above ${DETECTOR_THRESHOLDS.gpuCelsius} °C for ${minutesOf(DETECTOR_GRACE_MILLISECONDS.temperature)} minutes`,
   heatDetails: "Check its cooling: airflow, fans, dust, and what keeps it busy.",
+  systemUnreadDetails:
+    "Its runner still reports, but has not been able to read the host's system since the time its page shows: its uptime, load, disks, temperatures and packages there are as they were then. The log says why: its runner container's on a runner host, Autoheal's own for a host over SSH. This closes by itself once they are read again.",
+  dockerLostDetails:
+    "Its runner still reports, but no longer reaches the Docker it had, so it watches the host's system alone: its containers are neither listed nor healed. Check that Docker runs there and, on a host over SSH, that its user may still use /var/run/docker.sock (the docker group gives that). This closes by itself once Docker is back.",
   healingPausedDetails:
     "Its runner still reports, but has lost Docker's event stream: containers that fail there are not healed. Check Docker on that host and the autoheal container's log.",
   recoveryHeld: (host: string) => `Automatic recovery is held on ${host}`,
@@ -3402,6 +3426,7 @@ export const AUDIT_ACTIONS = {
   hostSshSettingsSaved: "host.ssh_settings_saved",
   hostSshRootPasswordSaved: "host.ssh_root_password_saved",
   hostSshRootPasswordRemoved: "host.ssh_root_password_removed",
+  hostSshInterruptedCleared: "host.ssh_interrupted_cleared",
   sshKeyAdded: "ssh_key.added",
   sshKeyMade: "ssh_key.made",
   sshKeyRemoved: "ssh_key.removed",
@@ -4731,6 +4756,13 @@ export const HOST_PACKAGE_FOLLOW = {
   marginMilliseconds: 5 * 60 * 1000,
   progressBytes: 16 * 1024,
 } as const;
+// How long after its log last changed a host package run is still followed after a restart: the longest a run may take
+// (its unit is stopped then), and the margin. One handed over longer ago than this, and not found, is over, and nothing
+// on the host can say how it ended.
+export const HOST_RUN_FOLLOW_WINDOW_MILLISECONDS =
+  Math.max(
+    ...Object.values(HOST_PACKAGE_TIMEOUT_MICROSECONDS).map((limit) => Number(limit / MICROSECONDS_PER_MILLISECOND)),
+  ) + HOST_PACKAGE_FOLLOW.marginMilliseconds;
 // Containers a package run stopped get this long to come back before they are named in the result.
 export const CONTAINER_RETURN_GRACE_MILLISECONDS = 30 * 1000;
 // What a host package job did, in words for the task and the person who asked.
@@ -5358,6 +5390,9 @@ export const SSH_TEXT = {
   // A host switched from its runner still runs that runner: two would heal the same containers.
   runnerStillThere:
     "its Autoheal runner container still runs there: remove it (docker compose down in its folder), and Autoheal takes over over SSH within a minute",
+  // A check that got no answer says nothing about Docker either way: the host's containers are not given up for it.
+  dockerCheckFailed: (problem: string) => `its Docker could not be asked about: ${problem}`,
+  dockerCheckCutShort: "the check ended before it answered",
   runnerFailed: (hostId: string, problem: string) =>
     `SSH host ${hostId}: its runner could not start or stop: ${problem}`,
 } as const;

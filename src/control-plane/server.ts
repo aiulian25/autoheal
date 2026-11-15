@@ -171,12 +171,9 @@ export async function buildUserInterfaceServer(options: UserInterfaceServerOptio
   registerAvailabilityGroupRoutes(app, options.services);
   registerTrustedProxiesRoutes(app, options.services.trustedProxies);
   app.get(API_ROUTES.settings, async (request): Promise<SettingsView> => {
-    const view: SettingsView = {
-      ...options.settings,
-      runnerAddress: options.services.hostsService.runnerAddress(),
-      trustedProxies: options.services.trustedProxies.view(arrivalOf(request)),
-    };
+    const view: SettingsView = { ...options.settings, runnerAddress: options.services.hostsService.runnerAddress() };
     if (request.authSession!.user.role === ROLE_ADMIN) {
+      view.trustedProxies = options.services.trustedProxies.view(arrivalOf(request));
       const invalid = options.services.settingsStore.invalidKeys();
       if (invalid.length > 0) view.invalidSettings = invalid;
     }

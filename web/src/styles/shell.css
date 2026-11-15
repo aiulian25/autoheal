@@ -102,6 +102,11 @@
   gap: var(--space-2);
 }
 
+/* On a phone the list gives way to one line that sums it up. */
+.connections-summary {
+  display: none;
+}
+
 .account {
   display: flex;
   align-items: center;
@@ -131,6 +136,11 @@
 .main {
   padding: 14px var(--page-padding) var(--page-padding);
   min-width: 0;
+}
+
+/* A notice for every page stands as far from the page as the page's own parts stand apart. */
+.main > .notice {
+  margin-bottom: var(--space-4);
 }
 
 .page {
@@ -238,6 +248,12 @@
     padding: var(--space-2) 0;
   }
 
+  /* Beside the name, without the room it keeps around itself in the menu. */
+  .sidebar .global-search {
+    margin-block: 0;
+  }
+
+  /* What reaches the row's right edge fades out, so it shows there is more past it. */
   .nav {
     order: 1;
     flex-basis: 100%;
@@ -245,14 +261,38 @@
     overflow-x: auto;
     min-width: 0;
     margin: 0;
+    scroll-snap-type: x proximity;
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--menu-fade-width)), transparent);
+    mask-image: linear-gradient(to right, black calc(100% - var(--menu-fade-width)), transparent);
   }
 
   .nav a {
     white-space: nowrap;
+    scroll-snap-align: center;
+  }
+
+  /* Room after the last link, under the fade, so the row can scroll it clear. */
+  .nav::after {
+    content: "";
+    flex: none;
+    width: var(--menu-fade-width);
   }
 
   .connections {
     display: none;
+  }
+
+  .connections-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-small);
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+
+  .connections-summary:hover {
+    color: var(--text);
   }
 
   .account {

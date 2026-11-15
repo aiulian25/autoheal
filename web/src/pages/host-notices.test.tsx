@@ -33,6 +33,18 @@ it("says its containers are shown as they were while its Docker cannot list them
   expect(screen.queryByText(TEXT.hosts.containersStale, { exact: false })).toBeNull();
 });
 
+it("says since when a host that had Docker has been without it, and that nothing there is healed meanwhile", async () => {
+  show(packageView, undefined, { ...host, docker: false, dockerLostAt: Date.now() - 5 * 60 * 1000 });
+  const banner = await screen.findByText(TEXT.hosts.dockerLost, { exact: false, selector: ".banner.danger p" });
+  expect(banner.textContent).toBe(`${TEXT.hosts.dockerLost} 5 minutes ago. ${TEXT.hosts.dockerLostMeans}`);
+  cleanup();
+
+  // A host added without Docker is watched for its system alone, as it should be: nothing to say.
+  show(packageView, undefined, { ...host, docker: false, dockerLostAt: null });
+  await screen.findByRole("heading", { level: 1, name: host.label });
+  expect(screen.queryByText(TEXT.hosts.dockerLostMeans, { exact: false })).toBeNull();
+});
+
 it("names what a report too large to send whole left out, shown as last reported", async () => {
   show(packageView, undefined, { ...host, reportTrimmed: ["networks", "host"] });
   expect(

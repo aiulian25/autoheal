@@ -34,6 +34,7 @@ import {
 import { AutohealWorker } from "../tasks/autoheal-worker.js";
 import type { LiveEvent } from "../live/live-events.js";
 import type { Assessment } from "../tasks/update-assessor.js";
+import { hosts } from "../database/schema.js";
 
 const update = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"c".repeat(64)}` };
 
@@ -131,6 +132,60 @@ describe("container actions", () => {
     );
     expect((await answer(job.id, { succeeded: true, outcome: "again", output: null })).statusCode).toBe(409);
     expect(controlPlane.stdout.join("")).toContain('"action":"container.action_requested"');
+  });
+
+  describe("what waited for a person about a container", () => {
+    const waitingAbout = (containerName: string) =>
+      controlPlane.services.incidentsService.create(
+        controlPlane.services.databaseHandle.database.select().from(hosts).get()!,
+        {
+          detectedAt: controlPlane.clock.now,
+          report: {
+            containerName,
+            image: `${containerName}:1`,
+            trigger: "die",
+            stateSummary: "status=restarting",
+            healthOutputs: [],
+            knownContainers: [containerName],
+            protectedContainers: [],
+            logs: "error",
+          },
+        },
+        "awaiting_approval",
+      );
+    const statusOf = (incidentId: string) => controlPlane.services.incidentsService.find(incidentId).status;
+    const stopped = async (jobId: string, succeeded: boolean) => {
+      await takeWork();
+      const answered = await answer(jobId, { succeeded, outcome: succeeded ? "Stopped." : "Refused.", output: null });
+      expect(answered.statusCode).toBe(204);
+    };
+
+    it("is settled once they stop it themselves", async () => {
+      const waiting = waitingAbout("paperless");
+      const other = waitingAbout("whoami");
+      await stopped((await ask("paperless", { action: "stop" })).json<JobView>().id, true);
+      expect(controlPlane.services.incidentsService.find(waiting.id)).toMatchObject({
+        status: "resolved",
+        verdict: "no longer needed",
+        outcome: "paperless was stopped from the dashboard: nothing is left to decide.",
+      });
+      expect(statusOf(other.id)).toBe("awaiting_approval");
+    });
+
+    it("stays while their stop fails, they ask something else, or Autoheal stops it", async () => {
+      const waiting = waitingAbout("paperless");
+      await stopped((await ask("paperless", { action: "stop" })).json<JobView>().id, false);
+      await stopped((await ask("paperless", { action: "restart" })).json<JobView>().id, true);
+      const byAutoheal = controlPlane.services.jobsService.request(
+        { kind: "agent", agent: "autoheal" },
+        hostId,
+        "paperless",
+        "stop",
+        null,
+      );
+      await stopped(byAutoheal.id, true);
+      expect(statusOf(waiting.id)).toBe("awaiting_approval");
+    });
   });
 
   describe("the copy a restore can go back to", () => {

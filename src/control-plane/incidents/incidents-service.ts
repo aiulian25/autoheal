@@ -12,6 +12,7 @@ import {
   ACTOR_HOST,
   AUDIT_ACTIONS,
   DECIDED_BY,
+  INCIDENT_CLEARED,
   INCIDENT_LIST_LIMIT,
   INCIDENT_MEMORY,
   INCIDENT_OUTCOME_LOST,
@@ -49,6 +50,13 @@ const SETTLED_STATUSES: ReadonlySet<string> = new Set([
   INCIDENT_STATUS.cancelled,
   INCIDENT_STATUS.resolved,
 ]);
+
+// Which of two has waited longer: by when each last changed, then by age, then by id, so that one always has.
+function waitedLonger(first: IncidentRow, second: IncidentRow): boolean {
+  if (first.updatedAt !== second.updatedAt) return first.updatedAt < second.updatedAt;
+  if (first.createdAt !== second.createdAt) return first.createdAt < second.createdAt;
+  return first.id < second.id;
+}
 
 // The model's thinking is shown as reasoning of its own; its step in the trace keeps only the answer.
 function withoutThinking(event: TraceEventView): TraceEventView {
@@ -184,14 +192,17 @@ export class IncidentsService {
       throw new DomainError(API_ERRORS.incidentNotFound);
     }
     this.addEvent(incidentId, TRACE.outcomeReported, { ...result });
+    // Cancelled as a repeat of the one already waiting: what it ended with stays.
+    if (this.isRepeat(incidentId)) return incident;
     const settled = SETTLED_STATUSES.has(incident.status);
     const fromOutcome =
       result.verdict === VERDICT_ESCALATED ? INCIDENT_STATUS.awaitingApproval : INCIDENT_STATUS.resolved;
-    return this.update(incidentId, {
+    const recorded = this.update(incidentId, {
       status: settled ? incident.status : fromOutcome,
       verdict: result.verdict,
       outcome: result.outcome,
     });
+    return this.foldRepeat(incidentId) ?? recorded;
   }
 
   /**
@@ -199,16 +210,73 @@ export class IncidentsService {
    * decision made meanwhile stands; null when it no longer waited.
    */
   settleUnneeded(incidentId: string, outcome: string): IncidentRow | null {
-    const settled = this.updateIf(incidentId, INCIDENT_STATUS.awaitingApproval, {
-      status: INCIDENT_STATUS.resolved,
+    return this.endWaiting(incidentId, INCIDENT_STATUS.resolved, outcome);
+  }
+
+  private endWaiting(
+    incidentId: string,
+    status: IncidentStatus,
+    outcome: string,
+    about: Record<string, unknown> = {},
+  ): IncidentRow | null {
+    const ended = this.updateIf(incidentId, INCIDENT_STATUS.awaitingApproval, {
+      status,
       verdict: VERDICT_SKIPPED,
       outcome,
     });
-    if (settled === null) {
+    if (ended === null) {
       return null;
     }
-    this.addEvent(incidentId, TRACE.noLongerNeeded);
-    return settled;
+    this.addEvent(incidentId, TRACE.noLongerNeeded, about);
+    return ended;
+  }
+
+  /**
+   * One container asks a person one thing at a time. An incident that comes to wait while another for its container
+   * already does is cancelled as that one's repeat: no second card, nothing among what was settled, and nobody told
+   * again. Whatever healing it led to has run already. Null when it is not one: it does not wait, or it is the one
+   * that has waited longest.
+   */
+  foldRepeat(incidentId: string): IncidentRow | null {
+    const incident = this.find(incidentId);
+    if (incident.status !== INCIDENT_STATUS.awaitingApproval) return null;
+    const waiting = this.waitingBefore(incident);
+    if (waiting === null) return null;
+    return this.endWaiting(
+      incidentId,
+      INCIDENT_STATUS.cancelled,
+      INCIDENT_CLEARED.sameAsWaiting(incident.containerName),
+      { sameAs: waiting.id },
+    );
+  }
+
+  /** Whether it was cancelled as a repeat of the one already waiting. */
+  isRepeat(incidentId: string): boolean {
+    return typeof this.latestEvent(incidentId, TRACE.noLongerNeeded)?.sameAs === "string";
+  }
+
+  /** A person stopped the container themselves: what waited for them about it is answered. */
+  settleStopped(hostId: string, containerName: string) {
+    const waiting = this.list({ hostId, containerName, status: INCIDENT_STATUS.awaitingApproval });
+    for (const incident of waiting) this.settleUnneeded(incident.id, INCIDENT_CLEARED.stopped(containerName));
+  }
+
+  // The incident that has waited longest for the same container on the same host, if longer than this one.
+  private waitingBefore(incident: IncidentRow): IncidentRow | null {
+    const longest = this.databaseHandle.database
+      .select()
+      .from(incidents)
+      .where(
+        and(
+          eq(incidents.hostId, incident.hostId),
+          eq(incidents.containerName, incident.containerName),
+          eq(incidents.status, INCIDENT_STATUS.awaitingApproval),
+          ne(incidents.id, incident.id),
+        ),
+      )
+      .orderBy(asc(incidents.updatedAt), asc(incidents.createdAt), asc(incidents.id))
+      .get();
+    return longest !== undefined && waitedLonger(longest, incident) ? longest : null;
   }
 
   /**

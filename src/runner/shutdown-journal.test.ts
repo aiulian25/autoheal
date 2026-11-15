@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ShutdownJournal } from "./shutdown-journal.js";
 import type { DockerVolume } from "./docker-client.js";
+import { HOST_RUN_FOLLOW_WINDOW_MILLISECONDS, RUNNER_MESSAGES } from "../shared/constants.js";
 const barrier = () => {
   let release!: () => void;
   return {
@@ -200,6 +201,60 @@ describe("shutdown write-ahead records", () => {
     const next = new ShutdownJournal(storage);
     await next.settleReboots();
     await expect(next.assertClean()).rejects.toThrow("needs clearing before this runner can start");
+  });
+
+  describe("a package run handed to systemd that never said how it ended", () => {
+    const HANDED_AT = Date.UTC(2026, 10, 15, 8, 0);
+    // Handed over, then the runner went: its record is left delegated, dated when it was handed over.
+    const handOver = async (storage: ReturnType<typeof store>) => {
+      const journal = new ShutdownJournal(storage, { clock: () => HANDED_AT });
+      const delegated = barrier();
+      void journal.run("host:job-3", "", async () => {
+        await journal.delegate("job-3");
+        delegated.release();
+        await new Promise(() => undefined);
+      });
+      await delegated.promise;
+    };
+    const after = (storage: ReturnType<typeof store>, milliseconds: number) =>
+      new ShutdownJournal(storage, { clock: () => HANDED_AT + milliseconds });
+
+    it("waits within the window, while its run may still be read, and is no one's to clear yet", async () => {
+      const storage = store();
+      await handOver(storage);
+      const soon = after(storage, HOST_RUN_FOLLOW_WINDOW_MILLISECONDS - 1);
+      await soon.assertClean();
+      expect(await soon.blocking()).toEqual([]);
+      await expect(soon.reconcileHostRuns([])).rejects.toThrow("status files are unavailable");
+    });
+
+    it("needs clearing past the window, when nothing can say how it ended, and is cleared by a person", async () => {
+      const storage = store();
+      await handOver(storage);
+      const past = after(storage, HOST_RUN_FOLLOW_WINDOW_MILLISECONDS);
+      // The start still reaches its runs: one that can still be read is followed, however long ago it was handed over.
+      await past.assertClean();
+      await past.reconcileHostRuns([{ jobId: "job-3", result: new Promise(() => undefined) }]);
+      await expect(past.reconcileHostRuns([])).rejects.toThrow(
+        "1 unfinished operation needs clearing before this runner can start: host:job-3",
+      );
+      expect(await past.blocking()).toMatchObject([{ operation: "host:job-3", phase: "delegated" }]);
+      expect(await past.clearBlocking()).toHaveLength(1);
+      expect(await storage.volumes()).toEqual([]);
+      await past.reconcileHostRuns([]);
+    });
+
+    it("names the way past it where the runner is: its recover command, or the host's page over SSH", async () => {
+      const storage = store();
+      await handOver(storage);
+      const window = HOST_RUN_FOLLOW_WINDOW_MILLISECONDS;
+      await expect(after(storage, window).reconcileHostRuns([])).rejects.toThrow(RUNNER_MESSAGES.clearWithRecover);
+      const overSsh = new ShutdownJournal(storage, {
+        clock: () => HANDED_AT + window,
+        wayOut: RUNNER_MESSAGES.clearOnHostPage,
+      });
+      await expect(overSsh.reconcileHostRuns([])).rejects.toThrow(RUNNER_MESSAGES.clearOnHostPage);
+    });
   });
 
   describe("an action interrupted before it changed anything", () => {

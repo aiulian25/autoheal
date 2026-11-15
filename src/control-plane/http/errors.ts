@@ -72,6 +72,7 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.selfUpdateUnsigned]: HTTP_STATUS.conflict,
   [API_ERRORS.sshRootPasswordRefused]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.sshHostNotConnected]: HTTP_STATUS.conflict,
+  [API_ERRORS.sshHostRunnerRunning]: HTTP_STATUS.conflict,
   [API_ERRORS.hostRevoked]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.notLocalRunner]: HTTP_STATUS.conflict,
   [API_ERRORS.notRunnerHost]: HTTP_STATUS.conflict,
@@ -157,6 +158,8 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.passkeyNotAdded]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.passkeyNotFound]: HTTP_STATUS.notFound,
   [API_ERRORS.passkeyLimit]: HTTP_STATUS.conflict,
+  // The session that asked ended while its request was under way.
+  [API_ERRORS.notSignedIn]: HTTP_STATUS.unauthorized,
   [API_ERRORS.wrongPassword]: HTTP_STATUS.badRequest,
 };
 

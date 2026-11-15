@@ -188,6 +188,10 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
   // need not wait on Gotify or ntfy.
   app.post(RUNNER_ROUTES.notifications, async (request, reply) => {
     const notice = parseBody(incidentNoticeSchema, request.body);
+    // One that only repeats what already waits for a person was told with that one.
+    if (notice.incidentId !== null && services.incidentsService.isRepeat(notice.incidentId)) {
+      return reply.code(HTTP_STATUS.noContent).send();
+    }
     await services.notifier.incidentHandled(request.runnerHost!.label, notice, {
       hostId: request.runnerHost!.id,
       notificationKey: notice.notificationId,

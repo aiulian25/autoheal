@@ -38,6 +38,15 @@ describe("what a bulk action reaches", () => {
     expect(reached("check_updates")).toEqual(["web", "db", "cache", "nightly", "app"]);
   });
 
+  it("stops one Docker keeps starting again, and neither starts, restarts nor pauses it", () => {
+    const looping = [container("looper", "restarting")];
+    expect(targetsOf("stop", looping)).toEqual(looping);
+    expect(targetsOf("remove", looping)).toEqual(looping);
+    for (const action of ["start", "restart", "pause", "unpause"] as const) {
+      expect(targetsOf(action, looping), action).toEqual([]);
+    }
+  });
+
   it("excludes recovering containers from normal starts and removals", () => {
     const recovering = container("db", "exited", { recovery: { owner: "db" } });
     expect(targetsOf("start", [recovering])).toEqual([]);

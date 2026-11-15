@@ -1,7 +1,7 @@
 import { splitTag } from "../shared/image-reference.js";
 import { RUNNING_VERSION } from "../shared/build-version.js";
 import { and, eq } from "drizzle-orm";
-import { APP_VERSION, CONTAINER_STATE_RUNNING, HOST_STATUS_ACTIVE } from "../shared/constants.js";
+import { APP_VERSION, CONTAINER_STATE_RUNNING, HOST_STATUS_ACTIVE, JOB_ACTION } from "../shared/constants.js";
 import { hosts as hostsTable } from "./database/schema.js";
 import { JarvisService } from "./jarvis/jarvis-service.js";
 import { StackService } from "./container-access/stack-service.js";
@@ -347,6 +347,7 @@ export function createControlPlaneServices(
     hosts: sshHostsService,
     controlPlane: runnerApi,
     autohealImage: runners.image,
+    audit: auditLog,
   });
   const trustedProxies = tracked(new TrustedProxiesService(settingsStore, auditLog, trustedProxyAddresses));
   const homeAssistant = tracked(
@@ -936,6 +937,11 @@ export function createControlPlaneServices(
   hostsService.onRename((hostId, before, after) => services.jarvis.rememberOldName(hostId, before, after));
   homeAssistant.onState((state) => services.jarvis.read(state.entity_id, state.state));
   jobsService.onFinished((job, succeeded) => services.jarvis.jobFinished(job, succeeded));
+  // A person who stops a container has answered what waited for them about it.
+  jobsService.onFinished((job, succeeded) => {
+    const stoppedByPerson = succeeded && job.action === JOB_ACTION.stop && job.requestedByUserId !== null;
+    if (stoppedByPerson) incidentsService.settleStopped(job.hostId, job.containerName);
+  });
   lifecycle.onPause(() => {
     metricRollups.flush();
     topology.reset();

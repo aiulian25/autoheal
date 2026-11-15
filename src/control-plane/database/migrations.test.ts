@@ -12,6 +12,7 @@ import { rebootPlanRetentionMigration } from "./migrations/0060-reboot-plan-rete
 import { hostDefaultsMigration } from "./migrations/0013-host-defaults.js";
 import { containerChoicesMigration } from "./migrations/0015-container-choices.js";
 import { widgetKeyScopeMigration } from "./migrations/0035-widget-key-scope.js";
+import { healthReadMigration } from "./migrations/0077-host-health-at.js";
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate, schemaVersionOf } from "./migrations/index.js";
 import * as schema from "./schema.js";
 
@@ -100,6 +101,29 @@ describe("migrations", () => {
     expect(sqlite.prepare("select id, restart_default, update_default from hosts order by enrolled_at").all()).toEqual([
       { id: "before", restart_default: "restart", update_default: "ask" },
       { id: "after", restart_default: "ask", update_default: "ask" },
+    ]);
+    sqlite.close();
+  });
+
+  it("dates the system details a host already had by the report they came with, the latest they can be from", () => {
+    const sqlite = new Database(":memory:");
+    for (const migration of MIGRATIONS.filter(({ version }) => version < healthReadMigration.version)) {
+      sqlite.exec(migration.sql);
+      sqlite.pragma(`user_version = ${migration.version}`);
+    }
+    const addHost = sqlite.prepare(
+      "insert into hosts (id, label, token_hash, token_hint, enrolled_at, last_heartbeat_at, health_json) values (?, ?, ?, ?, ?, ?, ?)",
+    );
+    addHost.run("read", "Alder", "hash-read", "abcd", 1, 5_000, "{}");
+    addHost.run("unread", "Cedar", "hash-unread", "efgh", 2, 6_000, null);
+    addHost.run("silent", "Orion", "hash-silent", "ijkl", 3, null, null);
+
+    migrate(sqlite);
+
+    expect(sqlite.prepare("select id, health_at from hosts order by enrolled_at").all()).toEqual([
+      { id: "read", health_at: 5_000 },
+      { id: "unread", health_at: null },
+      { id: "silent", health_at: null },
     ]);
     sqlite.close();
   });

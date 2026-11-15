@@ -97,12 +97,11 @@ export function AvailabilityGroups({ admin }: { admin: boolean }) {
       members,
     });
   };
+  const count = groups.data?.length;
   return (
-    <section className="card stack" aria-labelledby="availability-title">
-      <div>
-        <h3 id="availability-title">{text.title}</h3>
-        <p className="small muted">{text.explanation}</p>
-      </div>
+    <details className="card fold availability-groups">
+      <summary>{count === undefined ? text.title : text.fold(count)}</summary>
+      <p className="small muted">{text.explanation}</p>
       {groups.data === undefined && (groups.error ? <ErrorNotice error={groups.error} /> : <Loading />)}
       {groups.data?.length === 0 && <p className="muted">{text.none}</p>}
       {(groups.data ?? []).map((group: AvailabilityGroupView) => (
@@ -181,6 +180,6 @@ export function AvailabilityGroups({ admin }: { admin: boolean }) {
           </button>
         </form>
       )}
-    </section>
+    </details>
   );
 }

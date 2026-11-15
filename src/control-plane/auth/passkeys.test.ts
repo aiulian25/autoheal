@@ -3,18 +3,56 @@ import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import {
+  NEW_ADMIN_PASSWORD,
+  currentCode,
+  fullySignedInAdmin,
+  fullySignedInUser,
+} from "../../../test/support/second-factor.js";
 import { SoftwarePasskey } from "../../../test/support/software-passkey.js";
 import { API_ROUTES, apiPath, type PasskeyStatusView, type PasskeyView, type SessionView } from "../../shared/api.js";
 import {
   LOCAL_PUBLIC_BASE_URL,
+  LOGIN_FAILURE_REASONS,
   PASSKEY_CEREMONY_LIMIT,
   PASSKEY_CEREMONY_MILLISECONDS,
   TOTP_PERIOD_SECONDS,
 } from "../../shared/constants.js";
+import { passkeys } from "../database/schema.js";
 import { PasskeyService } from "./passkey-service.js";
+
+// What a test does the moment the WebAuthn library has checked an answer, before the dashboard acts on it: whatever a
+// person may do to the account while a check is under way.
+const afterCheck = vi.hoisted(() => {
+  const nothing = async () => {};
+  return { nothing, signIn: nothing, enrol: nothing };
+});
+vi.mock("@simplewebauthn/server", async (original) => {
+  const library = await original<typeof import("@simplewebauthn/server")>();
+  return {
+    ...library,
+    verifyAuthenticationResponse: async (...options: Parameters<typeof library.verifyAuthenticationResponse>) => {
+      const checked = await library.verifyAuthenticationResponse(...options);
+      await afterCheck.signIn();
+      return checked;
+    },
+    verifyRegistrationResponse: async (...options: Parameters<typeof library.verifyRegistrationResponse>) => {
+      const checked = await library.verifyRegistrationResponse(...options);
+      await afterCheck.enrol();
+      return checked;
+    },
+  };
+});
+
+// Runs once, the first time a check finishes: an answer given from inside it is checked as any other.
+const once = (step: () => Promise<void>, which: "signIn" | "enrol") => {
+  afterCheck[which] = async () => {
+    afterCheck[which] = afterCheck.nothing;
+    await step();
+  };
+};
 
 const GOOGLE_PASSWORD_MANAGER = "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4";
 const NEXT_CODE_MILLISECONDS = TOTP_PERIOD_SECONDS * 1000;
@@ -37,6 +75,8 @@ describe("passkeys", () => {
   });
 
   afterEach(async () => {
+    afterCheck.signIn = afterCheck.nothing;
+    afterCheck.enrol = afterCheck.nothing;
     await controlPlane.app.close();
     await controlPlane.runnerApp.close();
   });
@@ -177,6 +217,13 @@ describe("passkeys", () => {
     expect((await admin.get(API_ROUTES.accountPasskeys)).json()).toEqual([]);
   });
 
+  it("keeps the same passkey once, though a device offers it again", async () => {
+    const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+    expect((await enrol(passkey)).statusCode).toBe(200);
+    expect((await enrol(passkey)).json()).toMatchObject({ error: "passkey_not_added" });
+    expect((await admin.get(API_ROUTES.accountPasskeys)).json<PasskeyView[]>()).toHaveLength(1);
+  });
+
   it("stops working for a deactivated account, and an admin's reset removes them", async () => {
     const viewer = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
     const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
@@ -205,5 +252,90 @@ describe("passkeys", () => {
     const atAddress = new PasskeyService(databaseHandle, auditLog, sessions, "https://192.168.10.83:8443");
     expect(atAddress.status()).toEqual({ usable: false, offered: false });
     await expect(atAddress.signInOptions({ ip: "192.0.2.10" })).rejects.toMatchObject({ code: "passkeys_unavailable" });
+  });
+
+  describe("while an answer is being checked", () => {
+    const stored = () => controlPlane.services.databaseHandle.database.select().from(passkeys).all();
+    const removal = (passkey: PasskeyView) => apiPath(API_ROUTES.accountPasskey, { passkeyId: passkey.id });
+
+    it("signs no one in with a passkey removed meanwhile, though removing one after leaves its sign-in open", async () => {
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      const added = (await enrol(passkey)).json<PasskeyView>();
+      once(async () => {
+        expect((await admin.delete(removal(added))).statusCode).toBe(204);
+      }, "signIn");
+      const visitor = controlPlane.client();
+      expect((await signIn(passkey, visitor)).json()).toMatchObject({ error: "passkey_refused" });
+      expect((await visitor.get(API_ROUTES.account)).statusCode).toBe(401);
+
+      const kept = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      const keptView = (await enrol(kept)).json<PasskeyView>();
+      const signedIn = controlPlane.client();
+      expect((await signIn(kept, signedIn)).statusCode).toBe(200);
+      expect((await admin.delete(removal(keptView))).statusCode).toBe(204);
+      expect((await signedIn.get(API_ROUTES.account)).statusCode).toBe(200);
+      expect((await signIn(kept)).statusCode).toBe(401);
+    });
+
+    it("signs no one into an account deactivated meanwhile", async () => {
+      const partner = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      expect((await enrol(passkey, partner.client, partner.secret)).statusCode).toBe(200);
+      const account = apiPath(API_ROUTES.user, { userId: partner.userId });
+      once(async () => {
+        await admin.request({ method: "PATCH", url: account, payload: { status: "deactivated" } });
+      }, "signIn");
+      expect((await signIn(passkey)).json()).toMatchObject({ error: "passkey_refused" });
+      const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
+      expect(audit).toContain(`"reason":"${LOGIN_FAILURE_REASONS.deactivated}"`);
+    });
+
+    it("keeps a passkey's count from going back when two of its answers are checked at once: the slower is refused", async () => {
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      await enrol(passkey);
+      const faster = controlPlane.client();
+      once(async () => {
+        expect((await signIn(passkey, faster)).statusCode).toBe(200);
+      }, "signIn");
+      expect((await signIn(passkey)).json()).toMatchObject({ error: "passkey_refused" });
+      expect(stored()[0]!.counter).toBe(2);
+      expect((await faster.get(API_ROUTES.account)).statusCode).toBe(200);
+    });
+
+    it("still signs in twice at once with a passkey whose count stays at 0, as many synced ones keep it", async () => {
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL, { synced: true, countsSignIns: false });
+      await enrol(passkey);
+      once(async () => {
+        expect((await signIn(passkey)).statusCode).toBe(200);
+      }, "signIn");
+      expect((await signIn(passkey)).statusCode).toBe(200);
+      expect(stored()[0]!.counter).toBe(0);
+    });
+
+    it("adds no passkey for a session that ended meanwhile", async () => {
+      const partner = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      once(async () => {
+        expect((await partner.client.post(API_ROUTES.logout)).statusCode).toBeLessThan(300);
+      }, "enrol");
+      const added = await enrol(passkey, partner.client, partner.secret);
+      expect(added.statusCode).toBe(401);
+      expect(added.json()).toMatchObject({ error: "not_signed_in" });
+      expect(stored()).toEqual([]);
+      expect((await signIn(passkey)).statusCode).toBe(401);
+    });
+
+    it("lets no other session of the account finish an enrolment it did not start", async () => {
+      const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
+      const options = (
+        await admin.post(API_ROUTES.accountPasskeyOptions, { code: freshCode() })
+      ).json<PublicKeyCredentialCreationOptionsJSON>();
+      const other = controlPlane.client();
+      await other.signIn("admin", NEW_ADMIN_PASSWORD);
+      expect((await other.post(API_ROUTES.secondFactor, { code: freshCode() })).statusCode).toBe(204);
+      const finished = await other.post(API_ROUTES.accountPasskeys, { response: passkey.register(options) });
+      expect(finished.json()).toMatchObject({ error: "passkey_not_added" });
+      expect(stored()).toEqual([]);
+    });
   });
 });

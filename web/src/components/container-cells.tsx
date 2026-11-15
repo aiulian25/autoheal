@@ -50,10 +50,9 @@ export function stateOf(container: ContainerView): string {
     container.health === CONTAINER_HEALTH_NONE ? null : container.health,
     container.problem,
   ];
-  return parts
-    .filter((part) => part !== null)
-    .map((part) => wordsOf(part))
-    .join(TEXT.separator);
+  const words = parts.filter((part) => part !== null).map((part) => wordsOf(part));
+  // A problem that is the state or the health already, as restarting or unhealthy, is said once.
+  return [...new Set(words)].join(TEXT.separator);
 }
 // Running reads green and a problem red, as the host page draws them; anything else stays quiet.
 

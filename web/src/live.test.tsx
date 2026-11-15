@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES, type JobView } from "../../src/shared/api.js";
 import type { UpdateProgress } from "../../src/shared/protocol.js";
 import { containersQuery, hostContainersQuery, hostsQuery, localHostQuery } from "./queries.js";
-import { LIVE_INVENTORY_BATCH_MILLISECONDS, LIVE_RECONNECT_MILLISECONDS } from "./constants.js";
+import {
+  LIVE_INVENTORY_BATCH_MILLISECONDS,
+  LIVE_LOST_NOTICE_AFTER_MILLISECONDS,
+  LIVE_RECONNECT_MILLISECONDS,
+} from "./constants.js";
 import { useLiveUpdates } from "./live.js";
 
 // The browser's EventSource, as much as the hook uses: the test sends what the control plane would.
@@ -255,6 +259,47 @@ describe("the dashboard's live stream", () => {
     act(() => vi.advanceTimersByTime(LIVE_RECONNECT_MILLISECONDS));
     expect(FakeEventSource.opened).toHaveLength(2);
     expect(FakeEventSource.opened[1]!.closed).toBe(true);
+  });
+
+  it("says when it has been out of contact a while, from the moment it was lost, until a stream opens again", () => {
+    vi.useFakeTimers();
+    const hook = listen();
+    const lostAt = Date.now();
+    act(() => FakeEventSource.opened[0]!.drop());
+    act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS - 1));
+    expect(hook.result.current).toBeNull();
+    // The browser trying again, and failing, does not move the moment it was lost.
+    act(() => FakeEventSource.opened[0]!.drop());
+    act(() => vi.advanceTimersByTime(1));
+    expect(hook.result.current).toBe(lostAt);
+
+    // Nor does a stream opened anew that fails too.
+    act(() => FakeEventSource.opened[0]!.fail());
+    act(() => vi.advanceTimersByTime(LIVE_RECONNECT_MILLISECONDS));
+    act(() => FakeEventSource.opened[1]!.fail());
+    act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS));
+    expect(hook.result.current).toBe(lostAt);
+
+    act(() => FakeEventSource.opened[2]!.send("open", {}));
+    expect(hook.result.current).toBeNull();
+    hook.unmount();
+  });
+
+  it("says nothing of a drop that is over before then", () => {
+    vi.useFakeTimers();
+    const hook = listen();
+    act(() => FakeEventSource.opened[0]!.drop());
+    act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS - 1));
+    act(() => FakeEventSource.opened[0]!.send("open", {}));
+    act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS));
+    expect(hook.result.current).toBeNull();
+
+    // A drop after that is counted from its own moment.
+    const lostAgainAt = Date.now();
+    act(() => FakeEventSource.opened[0]!.drop());
+    act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS));
+    expect(hook.result.current).toBe(lostAgainAt);
+    hook.unmount();
   });
 
   it("invalidates all cached page data whenever the connection opens again", () => {

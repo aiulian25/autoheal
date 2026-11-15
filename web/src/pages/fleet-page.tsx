@@ -40,7 +40,14 @@ import { isAdmin, useSignedInSession } from "../session.js";
 import { ConnectHostTile } from "./connect-host.js";
 import { powerBadge } from "./host-power.js";
 import { HomeAssistantFleetCard } from "./home-assistant-system.js";
-import { diskUsedPercent, fullestDisk, networkCeiling, rateDial, shareDial } from "./host-dial-values.js";
+import {
+  diskUsedPercent,
+  fullestDisk,
+  networkCeiling,
+  rateDial,
+  shareDial,
+  staleHealthAt,
+} from "./host-dial-values.js";
 
 const hostLink = (hostId: string) => apiPath(PATHS.host, { hostId });
 
@@ -115,14 +122,24 @@ function networkDetail(network: NonNullable<HostMetricsView["network"]>): string
 function gaugesOf(host: HostView, metrics: HostMetricsView): Gauge[] {
   const { memory, network } = metrics;
   const disk = fullestDisk(host.health);
+  // How full it is comes with the system details, not the live stats: read before the last report, it says when.
+  const staleAt = staleHealthAt(host);
   const disks: Gauge[] =
     disk === undefined
       ? []
       : [
           {
             label: TEXT.metrics.disk,
-            detail: disk.path,
+            // As memory says it, of as much of the disk as its dial counts: all that can be filled.
+            detail: [
+              disk.path,
+              bytesOf(disk.usedBytes, disk.usedBytes + disk.availableBytes),
+              staleAt === null ? null : TEXT.metrics.asOf(shortTimeAgo(staleAt)),
+            ]
+              .filter((part) => part !== null)
+              .join(TEXT.separator),
             mono: true,
+            stale: staleAt !== null,
             dial: shareDial(diskUsedPercent(disk), TEXT.metrics.used, "violet"),
           },
         ];

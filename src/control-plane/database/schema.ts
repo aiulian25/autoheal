@@ -244,6 +244,8 @@ export const hosts = sqliteTable("hosts", {
   restartWaitJson: text("restart_wait_json"),
   // When an admin reset each container's restarts: sent to its runner with every answer, for an hour.
   restartResetsJson: text("restart_resets_json").notNull().default("{}"),
+  // When its health was read: a report that could not read the host keeps the health before, with this time.
+  healthAt: integer("health_at"),
   // The runner's latest report: the host's health, every container on it, and the images none uses (null
   // until its runner reports them).
   healthJson: text("health_json"),
@@ -280,6 +282,8 @@ export const hosts = sqliteTable("hosts", {
   sshSettingsJson: text("ssh_settings_json"),
   // False once its report says Docker is not there: an SSH host watched for its system alone.
   docker: integer("docker", { mode: "boolean" }).notNull().default(true),
+  // Since when it has reported without the Docker it had; null while it has Docker, and when it never had it.
+  dockerLostAt: integer("docker_lost_at"),
   // Sealed; Autoheal runs root commands with it by itself, through sudo or su as it was found to work.
   sshRootPassword: text("ssh_root_password"),
   sshRootMethod: text("ssh_root_method", { enum: ROOT_METHODS }),

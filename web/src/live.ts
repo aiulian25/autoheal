@@ -1,11 +1,15 @@
 // What changes on the hosts as it changes: one stream for the whole signed-in dashboard.
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { API_ROUTES, type JobView } from "../../src/shared/api.js";
 import { LIVE_EVENT } from "../../src/shared/constants.js";
 import type { UpdateProgress } from "../../src/shared/protocol.js";
-import { LIVE_INVENTORY_BATCH_MILLISECONDS, LIVE_RECONNECT_MILLISECONDS } from "./constants.js";
+import {
+  LIVE_INVENTORY_BATCH_MILLISECONDS,
+  LIVE_LOST_NOTICE_AFTER_MILLISECONDS,
+  LIVE_RECONNECT_MILLISECONDS,
+} from "./constants.js";
 import { containerQueryMatchesHosts } from "./queries.js";
 
 interface HostEvent {
@@ -26,12 +30,18 @@ interface ProgressEvent extends HostEvent {
  * browser connects again by itself after a drop, but gives up for good on an answer that is not the stream, such as a
  * reverse proxy's error page while the control plane restarts: then a new stream is opened a little later. Every open
  * refreshes cached queries to cover missed events.
+ *
+ * Returns when contact was lost, once it has been lost for a while, and null while there is contact.
  */
-export function useLiveUpdates() {
+export function useLiveUpdates(): number | null {
   const queryClient = useQueryClient();
+  const [lostSince, setLostSince] = useState<number | null>(null);
   useEffect(() => {
     let source: EventSource | null = null;
     let reconnectTimer: number | undefined;
+    let lostTimer: number | undefined;
+    const sayLostLater = (lostAt: number) =>
+      window.setTimeout(() => setLostSince(lostAt), LIVE_LOST_NOTICE_AFTER_MILLISECONDS);
     const inventoryHosts = new Set<string>();
     let inventoryTimer: number | undefined;
     const clearInventory = () => {
@@ -57,6 +67,7 @@ export function useLiveUpdates() {
       const current = new EventSource(API_ROUTES.live);
       source = current;
       current.addEventListener("error", () => {
+        lostTimer ??= sayLostLater(Date.now());
         if (current.readyState !== EventSource.CLOSED) return;
         reconnectTimer ??= window.setTimeout(() => {
           reconnectTimer = undefined;
@@ -64,6 +75,9 @@ export function useLiveUpdates() {
         }, LIVE_RECONNECT_MILLISECONDS);
       });
       current.addEventListener("open", () => {
+        window.clearTimeout(lostTimer);
+        lostTimer = undefined;
+        setLostSince(null);
         clearInventory();
         void queryClient.invalidateQueries();
       });
@@ -95,7 +109,9 @@ export function useLiveUpdates() {
     return () => {
       clearInventory();
       window.clearTimeout(reconnectTimer);
+      window.clearTimeout(lostTimer);
       source?.close();
     };
   }, [queryClient]);
+  return lostSince;
 }

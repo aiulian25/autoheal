@@ -1,5 +1,5 @@
-import { request as httpRequest, type ClientRequestArgs, type IncomingMessage } from "node:http";
-import { once } from "node:events";
+import { request as httpRequest, type ClientRequest, type ClientRequestArgs, type IncomingMessage } from "node:http";
+import { addAbortListener, once } from "node:events";
 import { type Duplex, type Readable, type Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
@@ -243,6 +243,15 @@ async function readAll(response: IncomingMessage): Promise<Buffer> {
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
+}
+
+// Node fails an aborted request once its socket closes. Over SSH a channel that opens after the request was given up
+// is never read, so it never says it closed: the abort fails the request itself, until an answer makes that moot.
+function failOnAbort(outgoing: ClientRequest, signal: AbortSignal | undefined, fail: (reason: unknown) => void) {
+  if (signal === undefined) return;
+  const listening = addAbortListener(signal, () => fail(signal.reason));
+  const answered = () => listening[Symbol.dispose]();
+  outgoing.once("response", answered).once("upgrade", answered).once("close", answered);
 }
 
 const DISK_USAGE_VOLUMES = "volume";
@@ -689,6 +698,7 @@ export class DockerClient {
           },
         );
         outgoing.on("error", reject);
+        failOnAbort(outgoing, signal, reject);
         transfer = pipeline(archive, outgoing);
         void transfer.catch(reject);
       });
@@ -956,6 +966,7 @@ export class DockerClient {
         );
       });
       outgoing.on("error", reject);
+      failOnAbort(outgoing, signal, reject);
       outgoing.end(JSON.stringify(payload));
     });
   }
@@ -993,6 +1004,7 @@ export class DockerClient {
         resolve,
       );
       outgoing.on("error", reject);
+      failOnAbort(outgoing, options.signal, reject);
       outgoing.end(body ?? undefined);
     });
   }

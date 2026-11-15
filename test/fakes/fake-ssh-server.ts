@@ -57,6 +57,10 @@ function flood(stream: ServerChannel) {
 
 function answerWith(stream: ServerChannel, answer: FakeExecAnswer) {
   if (answer.hang === true) return;
+  if (answer.cutShort === true) {
+    stream.close();
+    return;
+  }
   if (answer.flood === true) {
     flood(stream);
     return;
@@ -79,6 +83,8 @@ const attributesOf = (status: Stats): Attributes => ({
 export interface FakeExecAnswer {
   // Never answers, as a command that does not end.
   hang?: boolean;
+  // Ends with no exit status, as a command whose connection dropped under it.
+  cutShort?: boolean;
   // Prints without end, as a command gone wrong, until the channel closes.
   flood?: boolean;
   stdout?: string;
@@ -107,6 +113,9 @@ export class FakeSshServer {
   // A host gone quiet: an exec request, or a file opened, is never answered.
   stallExec = false;
   stallFiles = false;
+  // A host that turns commands away, as sshd does once it has no session left to give; the ones it turned away.
+  refuseExec = false;
+  readonly refusedCommands: string[] = [];
   // The passwords that make root here: the user's own through sudo, root's through su; null where that way is shut.
   sudoPassword: string | null = null;
   rootPassword: string | null = null;
@@ -302,8 +311,13 @@ export class FakeSshServer {
               }
             });
           });
-          session.on("exec", (acceptExec, _reject, info) => {
+          session.on("exec", (acceptExec, rejectExec, info) => {
             if (this.stallExec) return;
+            if (this.refuseExec) {
+              this.refusedCommands.push(info.command);
+              rejectExec();
+              return;
+            }
             const stream = acceptExec();
             this.commands.push(info.command);
             const asRoot = rootCommandOf(info.command);

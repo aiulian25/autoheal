@@ -80,6 +80,15 @@ const NOT_CONFIGURED: HomeAssistantView = {
 const clockOffsetOf = (hostClock: number | undefined, at: number) =>
   hostClock === undefined ? null : Math.round((hostClock - at) / MILLISECONDS_PER_SECOND);
 
+/** Since when a host that had Docker has reported without it; null while it has Docker, and when it never had it. */
+function dockerLostSince(host: HostRow, hasDocker: boolean, at: number): number | null {
+  if (hasDocker) return null;
+  if (host.dockerLostAt !== null) return host.dockerLostAt;
+  // A first report has nothing to lose: a host added without Docker is watched for its system alone, as it should be.
+  const hadDocker = host.docker && host.lastHeartbeatAt !== null;
+  return hadDocker ? at : null;
+}
+
 /** Everything Autoheal watches: what each runner last reported, and what Home Assistant knows. */
 // Images stored before the dashboard noted when each was left unused have no such time.
 const storedImagesOf = (json: string): OldImageView[] =>
@@ -126,6 +135,7 @@ export class InventoryService {
     const stale = received.containersStale === true;
     const heartbeat = stale ? { ...received, containers: previousReportOf(host).containers } : received;
     const containersStaleSince = stale ? (host.containersStaleSince ?? host.lastHeartbeatAt ?? at) : null;
+    const hasDocker = heartbeat.docker ?? true;
     const reported = {
       lastHeartbeatAt: at,
       runnerVersion: heartbeat.runnerVersion,
@@ -150,14 +160,19 @@ export class InventoryService {
       containerAccess: heartbeat.containerAccess ?? false,
       hostTerminal: heartbeat.hostTerminal ?? null,
       hostDeploy: heartbeat.hostDeploy ?? null,
-      docker: heartbeat.docker ?? true,
+      docker: hasDocker,
+      dockerLostAt: dockerLostSince(host, hasDocker, at),
     };
-    // A host that could not be read this time keeps its last health instead of losing it; its images too. A full report
-    // says how far the host's clock is, or that its runner could not tell.
+    // A host that could not be read this time keeps its last health, and when it was read, instead of losing it; its
+    // images too. A full report says how far the host's clock is, or that its runner could not tell.
     const health =
       heartbeat.host === null
         ? {}
-        : { healthJson: JSON.stringify(heartbeat.host), clockOffsetSeconds: clockOffsetOf(heartbeat.hostClock, at) };
+        : {
+            healthJson: JSON.stringify(heartbeat.host),
+            healthAt: at,
+            clockOffsetSeconds: clockOffsetOf(heartbeat.hostClock, at),
+          };
     const images =
       heartbeat.unusedImages === undefined
         ? {}

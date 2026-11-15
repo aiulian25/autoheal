@@ -9,8 +9,9 @@ import { BUILD_ID_LENGTH } from "./constants.js";
  * compiled module a runner process loads goes in, found by following the imports from the entry points below rather
  * than by naming folders: a runner loads code from runner/, shared/, config/, ollama/, commands/ and host-helper/,
  * so the two folders this used to hash were always going to miss some of it. The versions of the packages that code
- * imports go in, and so do the base images, whose own tools (rsync, tar, nsenter) a runner runs. Code only the
- * dashboard loads stays out, so a dashboard-only change asks nothing of any host.
+ * imports go in, and so do the base images, and the tools copied out of the builder that a runner runs (rsync, tar,
+ * nsenter) by their Debian records, as they are upgraded at build time. Code only the dashboard loads stays out, so a
+ * dashboard-only change asks nothing of any host.
  *
  * What this does not see: a change inside a dependency of a dependency, which the lockfile pins but which leaves the
  * direct package's version alone.
@@ -54,7 +55,7 @@ export interface RunnerIdentityInputs {
   serverDirectory: string;
   manifestPath: string;
   lockfilePath: string;
-  /** The base images, as the Dockerfile pins them by digest. */
+  /** The base images, as the Dockerfile pins them by digest, and the copied tools by the digest of their records. */
   images: string[];
 }
 

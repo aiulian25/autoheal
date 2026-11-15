@@ -227,6 +227,8 @@ describe("the fleet page", () => {
     expect(within(card).getByRole("img", { name: "Memory: 43.8% used" })).toBeTruthy();
     expect(within(card).getByText("Ubuntu 24.04 · 8 CPUs · reported 0 s ago")).toBeTruthy();
     expect(within(card).getByText("7 of 16 GB")).toBeTruthy();
+    // The fullest disk as memory is: how much of it is used.
+    expect(within(card).getByText(`/${TEXT.separator}210 of 475 GB`)).toBeTruthy();
     expect(within(card).getByText("eth0 · 1 Gb/s")).toBeTruthy();
     expect(within(card).getByText(TEXT.hosts.running(15, 16))).toBeTruthy();
     // Two images and the host's own package.
@@ -283,6 +285,23 @@ describe("the fleet page", () => {
     expect(within(card).getByText("offline")).toBeTruthy();
     expect(within(card).getByText(TEXT.homeAssistant.box.noMonitor)).toBeTruthy();
     expect(screen.getByText(TEXT.hosts.empty)).toBeTruthy();
+  });
+
+  it("says how old a host's disk reading is while its system details are older than its last report", async () => {
+    serve({ [API_ROUTES.hosts]: [host({ healthAt: Date.now() - 2 * 60 * 60 * 1000 })], [API_ROUTES.containers]: [] });
+    renderFleet();
+    const card = await screen.findByRole("article", { name: "Alder" });
+    const disk = within(card)
+      .getByRole("img", { name: /^Disk:/ })
+      .closest("figure")!;
+    expect(disk.className).toContain("stale");
+    expect(
+      within(disk).getByText(`/${TEXT.separator}210 of 475 GB${TEXT.separator}${TEXT.metrics.asOf("2 h ago")}`),
+    ).toBeTruthy();
+    // The live ones are as they are.
+    expect(within(card).getByRole("img", { name: "CPU: 14.2% busy" }).closest("figure")!.className).not.toContain(
+      "stale",
+    );
   });
 
   it("says healing is paused, not online, on a host whose runner has lost Docker's events", async () => {

@@ -166,7 +166,7 @@ export const HOSTS_TEXT = {
     addLocalAgain: "Add this machine again",
     cpus: (count: number) => `${count} CPUs`,
     reported: (ago: string) => `reported ${ago}`,
-    noStats: "No live stats from this host yet.",
+    noStats: "No live stats from this host right now.",
     running: (running: number, total: number) => `${running} of ${total} running`,
     // Where a host without Docker would count its containers.
     systemOnly: "No Docker: its system alone",
@@ -234,6 +234,9 @@ export const HOSTS_TEXT = {
     rebootRequired: "reboot needed",
     // Its Docker could not list its containers this time: what is shown is how they were, as of the time after it.
     containersStale: "Docker on this host is not answering, so its containers are shown as they were",
+    // It had Docker and reports without it, as of the time after it.
+    dockerLost: "Docker on this host could no longer be reached",
+    dockerLostMeans: "Its containers are not watched or healed until it is back.",
     // Its latest report left these out to fit: they are shown as it last reported them.
     reportTrimmed: (parts: readonly TrimmableHeartbeatPart[]) =>
       `This host's report is too large to send whole, so for ${new Intl.ListFormat("en").format(parts.map((part) => REPORT_PARTS[part]))} you see what it reported last.`,
@@ -435,6 +438,9 @@ export const HOSTS_TEXT = {
   },
   hostSystem: {
     title: "System information",
+    detailsRead: "System details read",
+    // Its runner reports, and could not read the host since, as of the time after it.
+    detailsStale: "Autoheal cannot read this host's system, so these details are as they were",
     hostname: "Hostname",
     operatingSystem: "Operating system",
     runner: "Autoheal runner",

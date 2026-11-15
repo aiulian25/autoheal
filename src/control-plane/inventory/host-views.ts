@@ -132,6 +132,7 @@ export function toHostView(
     // Only a reporting runner's: one gone quiet may have gone with its update.
     runnerUpdate: hostStateOf(host, now) === HOST_STATE.online ? runnerUpdateOf(host) : null,
     containersStaleSince: hostStateOf(host, now) === HOST_STATE.online ? host.containersStaleSince : null,
+    dockerLostAt: hostStateOf(host, now) === HOST_STATE.online ? host.dockerLostAt : null,
     reportTrimmed:
       hostStateOf(host, now) === HOST_STATE.online && host.reportTrimmedJson !== null
         ? readOnce<TrimmableHeartbeatPart[]>(host, "reportTrimmed", host.reportTrimmedJson)
@@ -146,6 +147,7 @@ export function toHostView(
     hostDeploy: host.hostDeploy,
     tagChanges: host.tagChanges,
     health: host.healthJson === null ? null : readOnce<HostHealthView>(host, "health", host.healthJson),
+    healthAt: host.healthAt,
     metrics,
     containerCount: containers.length,
     runningCount: containers.filter((container) => container.state === CONTAINER_STATE_RUNNING).length,

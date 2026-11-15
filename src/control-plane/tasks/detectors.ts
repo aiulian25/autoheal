@@ -22,6 +22,7 @@ import {
   NOTIFICATIONS_LOST_WINDOW_MILLISECONDS,
   DETECTOR_THRESHOLDS,
   HOME_ASSISTANT_UPDATES_RESOURCE,
+  HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS,
   HOST_STATE,
   IMAGE_REFERENCE,
   POWER_PHASE,
@@ -277,6 +278,36 @@ function hosts(inputs: DetectorInputs): Detection {
           description: TASK_TEXT.healingPausedDetails,
           priority: TASK_PRIORITY.high,
           graceMilliseconds: DETECTOR_GRACE_MILLISECONDS.healingPaused,
+          hostId: online.id,
+          resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
+        }),
+      );
+    }
+    const dockerKey = keyOf(DETECTOR_KEYS.dockerLost, online.id);
+    judged.add(dockerKey);
+    if ((online.dockerLostAt ?? null) !== null) {
+      problems.push(
+        finding(inputs, {
+          key: dockerKey,
+          title: TASK_TEXT.dockerLost(online.label),
+          description: TASK_TEXT.dockerLostDetails,
+          priority: TASK_PRIORITY.high,
+          graceMilliseconds: DETECTOR_GRACE_MILLISECONDS.dockerLost,
+          hostId: online.id,
+          resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
+        }),
+      );
+    }
+    const unreadKey = keyOf(DETECTOR_KEYS.systemUnread, online.id);
+    judged.add(unreadKey);
+    const healthAt = online.healthAt ?? null;
+    if (healthAt !== null && inputs.now - healthAt >= HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS) {
+      problems.push(
+        finding(inputs, {
+          key: unreadKey,
+          title: TASK_TEXT.systemUnread(online.label),
+          description: TASK_TEXT.systemUnreadDetails,
+          priority: TASK_PRIORITY.medium,
           hostId: online.id,
           resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
         }),

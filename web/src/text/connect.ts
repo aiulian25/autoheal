@@ -75,6 +75,11 @@ export const CONNECT_TEXT = {
       rootSaved: (method: string) => `Saved: Autoheal runs root commands through ${method}.`,
       rootRemove: "Remove the password",
       rootRemoveConfirm: "Remove the saved password? Autoheal can no longer run root commands on this machine.",
+      interruptedTitle: "What holds its runner back",
+      interruptedExplanation:
+        "Its runner will not start over these: each was interrupted part-way, and nothing on the machine says how it ended. Look at the machine first: an upgrade cut short can leave its package manager half done. Clearing them undoes nothing and runs nothing again.",
+      interruptedClear: "I have looked: clear it and start",
+      interruptedConfirm: "Clear these records and start the runner? Nothing is undone or run again.",
       systemOnly:
         "No Docker here: Autoheal watches this machine's system. Its containers show by themselves if Docker is installed.",
       settingsTitle: "Settings",

@@ -4,6 +4,7 @@ import { API_ROUTES, apiPath, type HostView, type SshHostDetailsView } from "../
 import {
   HOST_PACKAGES_SETTINGS,
   ROOT_COMMANDS,
+  SSH_STATE,
   type HostPackagesSetting,
   type RootMethod,
 } from "../../../src/shared/constants.js";
@@ -232,6 +233,51 @@ function RootPassword({ hostId, method }: { hostId: string; method: RootMethod |
   );
 }
 
+/** What holds its runner back, and the way past it once a person has looked: only while its runner will not start. */
+function Interrupted({ host }: { host: HostView }) {
+  const queryClient = useQueryClient();
+  const asking = useAskInPlace();
+  const path = apiPath(API_ROUTES.sshHostInterrupted, { hostId: host.id });
+  const queryKey = ["ssh-interrupted", host.id];
+  // Connected, and yet a reason: its runner did not start, and why is said above.
+  const heldBack = host.ssh?.state === SSH_STATE.connected && (host.ssh.reason ?? null) !== null;
+  const interrupted = useQuery({ queryKey, queryFn: () => api<string[]>("GET", path), enabled: heldBack });
+  const clear = useMutation({
+    mutationFn: () => api<string[]>("DELETE", path),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
+      await queryClient.invalidateQueries({ queryKey: hostsQuery.queryKey });
+    },
+  });
+  const operations = interrupted.data ?? [];
+  if (!heldBack || operations.length === 0) {
+    return null;
+  }
+  return (
+    <div className="stack ssh-interrupted">
+      <h3>{text.interruptedTitle}</h3>
+      <p className="small muted">{text.interruptedExplanation}</p>
+      <ul className="small mono">
+        {operations.map((operation) => (
+          <li key={operation}>{operation}</li>
+        ))}
+      </ul>
+      <p className="row">
+        <button
+          type="button"
+          className="danger"
+          disabled={clear.isPending}
+          onClick={() => asking.confirm(text.interruptedConfirm, () => clear.mutate())}
+        >
+          {text.interruptedClear}
+        </button>
+      </p>
+      {asking.question}
+      <ErrorNotice error={clear.error} />
+    </div>
+  );
+}
+
 /** An SSH host's own: how it is reached, with which key, its host key, and its settings. For an admin. */
 export function SshHostCard({ host }: { host: HostView }) {
   const details = useQuery(sshHostQuery(host.id));
@@ -245,6 +291,7 @@ export function SshHostCard({ host }: { host: HostView }) {
       {host.docker === false && <p className="notice">{text.systemOnly}</p>}
       <p className="mono">{text.signsInAs(view.user, view.address, view.port)}</p>
       <p className="small muted">{sshConnectionText(host)}</p>
+      <Interrupted host={host} />
       <dl className="facts">
         <dt>{text.key}</dt>
         <dd>{view.keyName}</dd>

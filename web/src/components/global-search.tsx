@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router";
 import { API_ROUTES } from "../../../src/shared/api.js";
 import { SEARCH_KINDS, SEARCH_LIMITS, type SearchKind, type SearchResponse } from "../../../src/shared/search.js";
 import { api } from "../api-client.js";
-import { TEXT } from "../constants.js";
+import { SEARCH_KEY_SHORTCUTS, TEXT } from "../constants.js";
 import { ErrorNotice, TimeAgo } from "./common.js";
 
 const text = TEXT.globalSearch;
@@ -74,6 +74,8 @@ export function GlobalSearch({ currentHostId }: { currentHostId?: string }) {
         autoComplete="off"
         maxLength={SEARCH_LIMITS.query}
         placeholder={text.placeholder}
+        title={text.shortcutHint}
+        aria-keyshortcuts={SEARCH_KEY_SHORTCUTS}
         value={query}
         aria-expanded={show}
         aria-controls={`${id}-results`}

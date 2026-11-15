@@ -290,7 +290,11 @@ export async function createRuntime(
   // Which publishers this fleet trusts and where a signed image is required: the control plane's last word on it.
   const trust: { policy: ImageTrustPolicy } = { policy: EMPTY_TRUST_POLICY };
   const transport = new DockerClient(ports.docker, () => registries.allowed);
-  const shutdownJournal = new ShutdownJournal(transport);
+  // A host over SSH has no runner container for a person to clear its journal in: its page does it.
+  const shutdownJournal = new ShutdownJournal(
+    transport,
+    ports.localHost === null ? { wayOut: RUNNER_MESSAGES.clearOnHostPage } : {},
+  );
   const docker = shutdownJournal.docker(transport);
   const journal = new OperationJournal(docker);
   const guardState = await GuardState.open(transport);

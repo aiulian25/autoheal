@@ -148,8 +148,10 @@ describe("the SSH keys and SSH hosts API", () => {
       () => viewer.put(apiPath(API_ROUTES.sshHostSettings, { hostId }), DEFAULT_SSH_HOST_SETTINGS),
       () => viewer.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "pw" }),
       () => viewer.delete(apiPath(API_ROUTES.sshHostRoot, { hostId })),
+      () => viewer.get(apiPath(API_ROUTES.sshHostInterrupted, { hostId })),
+      () => viewer.delete(apiPath(API_ROUTES.sshHostInterrupted, { hostId })),
     ];
-    expect(calls).toHaveLength(12);
+    expect(calls).toHaveLength(14);
     for (const call of calls) {
       expect((await call()).statusCode).toBe(403);
     }

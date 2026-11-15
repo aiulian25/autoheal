@@ -35,6 +35,19 @@ it("says in its title that the host's runner holds its automatic recovery, and w
   expect(held.title).toBe(TEXT.hosts.recoveryHeldWhy.state_full);
 });
 
+it("says how old the uptime in its title is while its system details are older than its last report", async () => {
+  const reported = { ...host, health: hostHealthWithout, lastHeartbeatAt: Date.now() };
+  show(packageView, undefined, { ...reported, healthAt: Date.now() - 2 * 60 * 60 * 1000 });
+  const title = await screen.findByRole("heading", { level: 1, name: host.label });
+  const about = title.closest("header")!.querySelector("p.lede")!;
+  expect(about.textContent).toContain(TEXT.metrics.readingAsOf(TEXT.hosts.up("1 hour"), "2 hours ago"));
+  cleanup();
+
+  show(packageView, undefined, { ...reported, healthAt: Date.now() });
+  const current = await screen.findByRole("heading", { level: 1, name: host.label });
+  expect(current.closest("header")!.querySelector("p.lede")!.textContent).not.toContain("as of");
+});
+
 it("offers to switch a runner host to SSH, but not the machine Autoheal runs on", async () => {
   show();
   fireEvent.click(await screen.findByText(TEXT.ssh.add.switchTitle));

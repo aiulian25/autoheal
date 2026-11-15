@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { log } from "../shared/log.js";
 import { describeError } from "../shared/errors.js";
-import { HOST_HELPER, RUNNER_MESSAGES } from "../shared/constants.js";
+import { HOST_HELPER, HOST_RUN_FOLLOW_WINDOW_MILLISECONDS, RUNNER_MESSAGES } from "../shared/constants.js";
 import type { FollowedRun } from "./host-package-jobs.js";
 import type { DockerClient } from "./docker-client.js";
 
@@ -26,6 +26,8 @@ const schema = z.object({
 });
 export type ShutdownRecord = z.infer<typeof schema>;
 const isPowerJob = (record: ShutdownRecord) => record.power === true || record.bootId !== undefined;
+// A host package run systemd owns now: followed after a restart, never launched again.
+const isHandedOver = (record: ShutdownRecord) => record.phase === "delegated" && record.operation.startsWith("host:");
 // A reboot's leftover helper container is removed with its record, where the store can remove containers.
 type Store = Pick<DockerClient, "volumes" | "createVolume" | "removeVolume"> & Partial<Pick<DockerClient, "remove">>;
 const UNTOUCHED_OPERATION = /^job:[^:]+:(start|stop|restart|pause|unpause|update)$/;
@@ -57,7 +59,17 @@ const mutations = new Set([
 /** A write-ahead operation/phase record, on the existing engine. Never contains commands, settings or output. */
 export class ShutdownJournal {
   private readonly context = new AsyncLocalStorage<{ record: ShutdownRecord; writes: Promise<void> }>();
-  constructor(private readonly store: Store) {}
+  private readonly clock: () => number;
+  // How a person clears what holds a runner back, where this runner runs.
+  private readonly wayOut: string;
+
+  constructor(
+    private readonly store: Store,
+    { clock = Date.now, wayOut = RUNNER_MESSAGES.clearWithRecover }: { clock?: () => number; wayOut?: string } = {},
+  ) {
+    this.clock = clock;
+    this.wayOut = wayOut;
+  }
 
   async pending(): Promise<ShutdownRecord[]> {
     const latest = new Map<string, ShutdownRecord>();
@@ -108,17 +120,17 @@ export class ShutdownJournal {
 
   /**
    * What stands between this runner and starting: operations interrupted part-way, which it will not step over on
-   * its own because one of them may have half-applied something destructive. A hand-over to systemd is not one.
+   * its own because one of them may have half-applied something destructive. A hand-over to systemd is not one while
+   * its run may still be followed; handed over longer ago than any run is, it is over, and only a person can say how.
    */
   async blocking(): Promise<ShutdownRecord[]> {
-    return (await this.pending()).filter(
-      (record) => record.phase !== "delegated" || !record.operation.startsWith("host:"),
-    );
+    return (await this.pending()).filter((record) => !isHandedOver(record) || this.beyondFollowing(record));
   }
 
+  // A hand-over is judged once its runs are read, in reconcileHostRuns: one whose run can still be read is followed.
   async assertClean() {
-    const pending = await this.blocking();
-    if (pending.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(pending));
+    const pending = (await this.blocking()).filter((record) => !isHandedOver(record));
+    if (pending.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(pending, this.wayOut));
   }
 
   /**
@@ -153,7 +165,7 @@ export class ShutdownJournal {
       step: 0,
       phase: "admitted",
       reference: null,
-      at: Date.now(),
+      at: this.clock(),
       ...(reboot ? { power: true } : {}),
     };
     await this.save(record);
@@ -180,8 +192,14 @@ export class ShutdownJournal {
   }
 
   async reconcileHostRuns(runs: FollowedRun[]) {
-    for (const record of (await this.pending()).filter((entry) => entry.phase === "delegated")) {
-      const run = runs.find((entry) => `host:${entry.jobId}` === record.operation && entry.jobId === record.reference);
+    const handedOver = (await this.pending()).filter(isHandedOver);
+    const runOf = (record: ShutdownRecord) =>
+      runs.find((entry) => `host:${entry.jobId}` === record.operation && entry.jobId === record.reference);
+    const lost = handedOver.filter((record) => runOf(record) === undefined && this.beyondFollowing(record));
+    if (lost.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(lost, this.wayOut));
+    for (const record of handedOver) {
+      const run = runOf(record);
+      // Its files may be out of reach for now, as over a session short of channels: the next start looks again.
       if (!run)
         throw new Error(
           `Host job ${record.reference} needs operator reconciliation; its status files are unavailable.`,
@@ -190,8 +208,13 @@ export class ShutdownJournal {
     }
   }
 
+  // Handed over longer ago than any run is followed: its run is over.
+  private beyondFollowing(record: ShutdownRecord) {
+    return this.clock() - record.at >= HOST_RUN_FOLLOW_WINDOW_MILLISECONDS;
+  }
+
   private async finish(record: ShutdownRecord) {
-    const next = { ...record, step: record.step + 1, phase: "finished", reference: null, at: Date.now() };
+    const next = { ...record, step: record.step + 1, phase: "finished", reference: null, at: this.clock() };
     await this.save(next);
     const volumes = (await this.store.volumes(LABEL)).filter((volume) =>
       volume.Name.startsWith(`autoheal-shutdown-${record.id}-`),
@@ -224,7 +247,7 @@ export class ShutdownJournal {
   private phase(phase: string, reference: string | null): Promise<void> {
     const context = this.context.getStore()!;
     context.writes = context.writes.then(async () => {
-      const next = { ...context.record, step: context.record.step + 1, phase, reference, at: Date.now() };
+      const next = { ...context.record, step: context.record.step + 1, phase, reference, at: this.clock() };
       await this.save(next);
       context.record = next;
     });

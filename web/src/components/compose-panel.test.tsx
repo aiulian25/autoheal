@@ -243,6 +243,15 @@ describe("a stack's row", () => {
     );
   });
 
+  it("stops one whose only life is a member Docker keeps starting again", async () => {
+    show(head([container({ state: "restarting" }), container({ name: "Cache", state: "exited" })]));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop stack wiki" }));
+    await waitFor(() =>
+      expect(jobs).toEqual([{ action: "stack_stop", stack: { project: "wiki", removeData: false } }]),
+    );
+    expect(screen.queryByRole("button", { name: "Start stack wiki" })).toBeNull();
+  });
+
   it("opens its Compose file in place", async () => {
     show(head([container({})]));
     fireEvent.click(await screen.findByRole("button", { name: "Compose file of wiki" }));

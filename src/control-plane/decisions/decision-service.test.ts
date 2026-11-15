@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hosts, incidents } from "../database/schema.js";
+import { notificationEvents } from "../notifications/delivery-schema.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeOllama, MODEL_DIGEST, answer } from "../../../test/fakes/fake-ollama.js";
 import {
@@ -392,6 +393,51 @@ describe("decisions on the control plane", () => {
     const { incidentId, decision } = (await submit()).json<DecisionResponse>();
     expect(decision).toMatchObject({ action: "escalate", target: "paperless" });
     expect((await detail(incidentId)).status).toBe("awaiting_approval");
+  });
+
+  it("asks a person once about a container that keeps failing: the next escalation is no second question, and tells nobody", async () => {
+    const tenMinutes = 10 * 60 * 1000;
+    const notice = (incidentId: string) =>
+      controlPlane.runnerApp.inject({
+        method: "POST",
+        url: RUNNER_ROUTES.notifications,
+        headers: { authorization: `Bearer ${runnerToken}` },
+        payload: {
+          incidentId,
+          containerName: "paperless",
+          verdict: "needs you",
+          outcome: "Left for a person.",
+          diagnosis: "default answer",
+          stateSummary: "status=exited",
+        },
+      });
+    const told = () =>
+      controlPlane.services.databaseHandle.database
+        .select({ incidentId: notificationEvents.resourceId })
+        .from(notificationEvents)
+        .all()
+        .map(({ incidentId }) => incidentId);
+    const first = (await submit()).json<DecisionResponse>();
+    expect((await notice(first.incidentId)).statusCode).toBe(204);
+    controlPlane.clock.now += tenMinutes;
+    const again = (
+      await submit({ ...submission, detectedAt: submission.detectedAt + tenMinutes })
+    ).json<DecisionResponse>();
+
+    // Its runner still hears the decision, which asks nothing of it.
+    expect(again.decision.action).toBe("escalate");
+    expect((await detail(first.incidentId)).status).toBe("awaiting_approval");
+    const repeat = await detail(again.incidentId);
+    expect(repeat).toMatchObject({
+      status: "cancelled",
+      verdict: "no longer needed",
+      outcome: "paperless failed again while it already waits for you: nothing new to decide.",
+    });
+    expect(repeat.trace.at(-1)).toMatchObject({ kind: "no_longer_needed", payload: { sameAs: first.incidentId } });
+    expect((await notice(again.incidentId)).statusCode).toBe(204);
+    expect(told()).toEqual([first.incidentId]);
+    const waiting = await admin.get(`${API_ROUTES.incidents}?status=awaiting_approval`);
+    expect(waiting.json<{ id: string }[]>().map(({ id }) => id)).toEqual([first.incidentId]);
   });
 
   it("escalates and says so when Ollama fails", async () => {

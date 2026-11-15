@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { runRecover } from "./recover.js";
 import { EXIT_FAILURE, EXIT_SUCCESS } from "../shared/constants.js";
-import type { ShutdownRecord } from "../runner/shutdown-journal.js";
+import { ShutdownJournal, type ShutdownRecord } from "../runner/shutdown-journal.js";
+import type { DockerVolume } from "../runner/docker-client.js";
+import { HOST_RUN_FOLLOW_WINDOW_MILLISECONDS } from "../shared/constants.js";
 
 const record = (change: Partial<ShutdownRecord> = {}): ShutdownRecord => ({
   version: 1,
@@ -37,6 +39,32 @@ const said = () => {
 };
 
 describe("the way past a runner that will not start", () => {
+  it("lists and clears a package run handed to systemd long enough ago that it can no longer be followed", async () => {
+    const volumes = new Map<string, DockerVolume>();
+    const store = {
+      volumes: async () => [...volumes.values()],
+      createVolume: async (Name: string, Labels: Record<string, string>) => void volumes.set(Name, { Name, Labels }),
+      removeVolume: async (name: string) => void volumes.delete(name),
+    };
+    const handedAt = Date.UTC(2026, 10, 15, 8, 0);
+    const handing = new ShutdownJournal(store, { clock: () => handedAt });
+    let delegated!: () => void;
+    const handedOver = new Promise<void>((resolve) => (delegated = resolve));
+    void handing.run("host:job-4", "", async () => {
+      await handing.delegate("job-4");
+      delegated();
+      await new Promise(() => undefined);
+    });
+    await handedOver;
+    const journal = new ShutdownJournal(store, { clock: () => handedAt + HOST_RUN_FOLLOW_WINDOW_MILLISECONDS });
+    const { lines, output } = said();
+
+    expect(await runRecover(["--clear"], output, journal)).toBe(EXIT_SUCCESS);
+    expect(lines[0]).toMatch(/^host:job-4 \(step 1, 2026-11-15 08:00\)$/);
+    expect(lines.at(-1)).toContain("1 unfinished operation cleared");
+    expect(volumes.size).toBe(0);
+  });
+
   it("says what holds it back, in words rather than a dump, and changes nothing", async () => {
     const { journal, state } = journalWith([
       record(),

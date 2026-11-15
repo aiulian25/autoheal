@@ -1,7 +1,13 @@
 import { BACKUP_DIALOG, BackupDialog, type BackupDialogMode } from "../pages/container-backup.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { API_ROUTES, apiPath, type ContainerView, type StackRestartView } from "../../../src/shared/api.js";
+import {
+  API_ROUTES,
+  apiPath,
+  isStoppable,
+  type ContainerView,
+  type StackRestartView,
+} from "../../../src/shared/api.js";
 import {
   CONTAINER_HEALTH_NONE,
   CONTAINER_STATE_RUNNING,
@@ -117,7 +123,8 @@ export function StackHead({
     refetchInterval: DRIFT_REFRESH_MILLISECONDS,
   });
   const drift = drifts.data?.find(({ project }) => project === stack);
-  const anyRunning = members.some((member) => member.state === CONTAINER_STATE_RUNNING);
+  // A member Docker keeps starting again counts: stopping the stack is the way out of its loop.
+  const stoppable = members.some(isStoppable);
   const canChange = admin && !keptByHost;
   const job = stackJob.job;
   const toggle = (next: Panel) => setPanel(panel === next ? null : next);
@@ -190,7 +197,7 @@ export function StackHead({
           </button>
         )}
         {canChange &&
-          (anyRunning ? (
+          (stoppable ? (
             <button
               type="button"
               className="quiet stack-restart"

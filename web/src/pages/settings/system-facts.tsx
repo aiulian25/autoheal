@@ -7,11 +7,15 @@ const text = TEXT.settingsPage;
 
 export function SystemFacts({ settings }: { settings: SettingsView }) {
   const facts = text.systemFacts;
+  // Only an admin is told which proxies are trusted.
+  const proxies = settings.trustedProxies;
   const rows: { label: string; value: string; mono: boolean }[] = [
     { label: facts.version, value: settings.version, mono: true },
     { label: facts.address, value: settings.publicBaseUrl, mono: true },
     { label: facts.certificate, value: TEXT.settings.madeBy.certificate[settings.certificate], mono: false },
-    { label: facts.proxies, value: settings.trustedProxies.addresses.join(TEXT.listComma) || TEXT.none, mono: true },
+    ...(proxies === undefined
+      ? []
+      : [{ label: facts.proxies, value: proxies.addresses.join(TEXT.listComma) || TEXT.none, mono: true }]),
     { label: facts.passphrase, value: TEXT.settings.madeBy.passphrase[settings.backupPassphrase], mono: false },
     {
       label: facts.offbox,

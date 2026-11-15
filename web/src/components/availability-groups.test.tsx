@@ -140,9 +140,20 @@ it("lets a viewer read the groups and change nothing", async () => {
   expect(screen.queryByRole("button", { name: text.removeFor("Wiki") })).toBeNull();
 });
 
+it("stays folded away under one line that says how many there are, and opens in place", async () => {
+  show();
+
+  const line = await screen.findByText(text.fold(1));
+  const fold = line.closest("details")!;
+  expect(fold.open).toBe(false);
+  fireEvent.click(line);
+  expect(fold.open).toBe(true);
+});
+
 it("says plainly when none is set up", async () => {
   groups = [];
   show();
 
+  expect(await screen.findByText(text.fold(0))).toBeTruthy();
   expect(await screen.findByText(text.none)).toBeTruthy();
 });

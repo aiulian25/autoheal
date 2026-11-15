@@ -32,7 +32,7 @@ export function TrustedProxiesCard({ view }: { view: TrustedProxiesView }) {
     // One change after another, each on top of the list the last one kept: two quick ones keep each other.
     scope: { id: API_ROUTES.trustedProxies },
     mutationFn: (change: (addresses: string[]) => string[]) => {
-      const kept = queryClient.getQueryData<SettingsView>(settingsQuery.queryKey)?.trustedProxies.addresses ?? [];
+      const kept = queryClient.getQueryData<SettingsView>(settingsQuery.queryKey)?.trustedProxies?.addresses ?? [];
       return api<TrustedProxiesView>("PUT", API_ROUTES.trustedProxies, { addresses: change(kept) });
     },
     onSuccess: (trustedProxies) => {

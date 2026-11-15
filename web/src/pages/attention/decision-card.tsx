@@ -21,8 +21,9 @@ import {
 import { incidentHandable, incidentItem, startDrag } from "../../agent-dispatch.js";
 import { api } from "../../api-client.js";
 import { ErrorNotice } from "../../components/common.js";
+import { LatestJob } from "../../components/container-actions.js";
 import { Icon } from "../../components/icons.js";
-import { approvalOf, incidentLink, incidentQuery, useApproval } from "../../components/incident-parts.js";
+import { approvalOf, incidentLink, incidentQuery, useApproval, useLeaveIt } from "../../components/incident-parts.js";
 import { TEXT } from "../../constants.js";
 import { timeAgo } from "../../format.js";
 import { type HandOver, Grip } from "./attention-parts.js";
@@ -79,6 +80,8 @@ export function DecisionCard({
   const detail = useQuery(incidentQuery(incident.id));
   const decide = useApproval(incident.id);
   const stopWatching = useStopWatching(incident);
+  const leave = useLeaveIt(decide, incident, container);
+  const busy = decide.isPending || leave.stopping;
   const nameId = useId();
   const text = TEXT.attention;
   const escalated = incident.action === ACTION_ESCALATE;
@@ -123,20 +126,11 @@ export function DecisionCard({
       <div className="card-actions">
         {decidable && (
           <>
-            <button
-              type="button"
-              className={escalated ? undefined : "primary"}
-              disabled={decide.isPending}
-              onClick={approve}
-            >
+            <button type="button" className={escalated ? undefined : "primary"} disabled={busy} onClick={approve}>
               {escalated ? text.restartIt : text.approve}
             </button>
-            <button
-              type="button"
-              disabled={decide.isPending}
-              onClick={() => decide.mutate({ choice: APPROVAL_DISMISS })}
-            >
-              {text.leave}
+            <button type="button" disabled={busy} onClick={leave.run}>
+              {leave.looping ? text.stopIt : text.leave}
             </button>
             {escalated && (
               <button
@@ -160,7 +154,9 @@ export function DecisionCard({
           {text.seeWhy}
         </Link>
       </div>
-      <ErrorNotice error={decide.error ?? stopWatching.error} />
+      {leave.job !== undefined && <LatestJob job={leave.job} />}
+      {leave.question}
+      <ErrorNotice error={decide.error ?? leave.error ?? stopWatching.error} />
     </article>
   );
 }

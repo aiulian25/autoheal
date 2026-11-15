@@ -26,6 +26,7 @@ import {
 } from "../../shared/api.js";
 import {
   CONTAINER_ACCESS_REFUSALS,
+  RUNNER_MESSAGES,
   HOST_KIND,
   HOST_STATE,
   JOB_STATUS,
@@ -240,6 +241,93 @@ describe("an SSH host's runner inside the control plane", () => {
     });
   });
 
+  const NOT_ASKED = "its Docker could not be asked about";
+
+  it("keeps a host's containers when its Docker check gets no answer at a start, and starts once it does", async () => {
+    const runners = controlPlane.services.embeddedRunners;
+    runners.begin();
+    await online();
+    await runners.stop();
+    const silentSince = (await host()).lastHeartbeatAt;
+    controlPlane.clock.now += 1_000;
+
+    server.refuseExec = true;
+    runners.begin();
+    const unanswered = await until(
+      host,
+      (view) => view.docker === false || view.ssh?.reason?.includes(NOT_ASKED) === true,
+    );
+    expect(unanswered).toMatchObject({ docker: true, containerCount: 2, lastHeartbeatAt: silentSince });
+    expect(unanswered.ssh?.reason).toContain(NOT_ASKED);
+
+    server.refuseExec = false;
+    runners.tick();
+    const back = await until(host, (view) => view.lastHeartbeatAt !== silentSince && view.ssh?.reason === null);
+    expect(back).toMatchObject({ docker: true, containerCount: 2, ssh: { state: SSH_STATE.connected } });
+  });
+
+  it("takes a Docker check cut short, as when the connection drops under it, for no answer either", async () => {
+    const answered = server.exec;
+    server.exec = (command) => (command === SSH_READINESS.command ? { cutShort: true } : answered(command));
+    const runners = controlPlane.services.embeddedRunners;
+    runners.begin();
+    const unanswered = await until(
+      host,
+      (view) => view.lastHeartbeatAt !== null || view.ssh?.reason?.includes(NOT_ASKED) === true,
+    );
+    expect(unanswered.lastHeartbeatAt).toBeNull();
+    expect(unanswered.ssh?.reason).toBe(`${NOT_ASKED}: the check ended before it answered`);
+
+    server.exec = answered;
+    runners.tick();
+    const back = await until(host, (view) => view.containerCount === 2 && view.ssh?.reason === null);
+    expect(back.docker).toBe(true);
+  });
+
+  it("leaves a host watched for its system alone as it is while its Docker check gets no answer", async () => {
+    server.readiness = "";
+    const runners = controlPlane.services.embeddedRunners;
+    runners.begin();
+    await until(host, (view) => view.docker === false && view.lastHeartbeatAt !== null);
+    const sessions = server.connections.length;
+
+    server.readiness = `${SSH_READINESS.socketMark}\n${SSH_READINESS.usableMark}\n`;
+    server.refuseExec = true;
+    runners.tick();
+    await until(
+      () => server.refusedCommands,
+      (refused) => refused.includes(SSH_READINESS.command),
+    );
+    expect(await host()).toMatchObject({ docker: false, ssh: { state: SSH_STATE.connected } });
+
+    server.refuseExec = false;
+    runners.tick();
+    await until(host, (view) => view.docker === true && view.containerCount === 2);
+    // One new session, for the full runner: the look that got no answer opened none.
+    expect(server.connections.slice(sessions)).toEqual(["closed", "ready"]);
+  });
+
+  it("says since when a host that had Docker has been without it, once its user can no longer use Docker there", async () => {
+    const runners = controlPlane.services.embeddedRunners;
+    runners.begin();
+    expect((await online()).dockerLostAt).toBeNull();
+    await runners.stop();
+    const silentSince = (await host()).lastHeartbeatAt;
+    controlPlane.clock.now += 1_000;
+
+    // The user left the docker group: the check answers, and Docker is not there for them.
+    server.readiness = `${SSH_READINESS.socketMark}\n`;
+    runners.begin();
+    const lost = await until(host, (view) => view.lastHeartbeatAt !== silentSince && view.docker === false);
+    expect(lost).toMatchObject({ dockerLostAt: lost.lastHeartbeatAt, containerCount: 0 });
+
+    server.readiness = `${SSH_READINESS.socketMark}\n${SSH_READINESS.usableMark}\n`;
+    runners.tick();
+    expect(await until(host, (view) => view.docker === true && view.containerCount === 2)).toMatchObject({
+      dockerLostAt: null,
+    });
+  });
+
   it("works out how an SSH host is set up from its containers, over its session", async () => {
     controlPlane.services.embeddedRunners.begin();
     await online();
@@ -346,7 +434,7 @@ describe("an SSH host's runner inside the control plane", () => {
     const jobId = randomUUID();
     const name = `autoheal-shutdown-${id}-1`;
     const record = { version: 1, id, operation: `host:${jobId}`, target: "", step: 1, phase: "delegated", ...extra };
-    const labels = { [JOURNAL_LABEL]: "1", [JOURNAL_RECORD]: JSON.stringify({ ...record, reference: jobId, at: 1 }) };
+    const labels = { [JOURNAL_LABEL]: "1", [JOURNAL_RECORD]: JSON.stringify({ reference: jobId, at: 1, ...record }) };
     engine.volumes.set(name, { Name: name, Labels: labels });
   };
   const journalVolumes = () => [...engine.volumes.values()].filter((volume) => volume.Labels?.[JOURNAL_LABEL] === "1");
@@ -363,9 +451,9 @@ describe("an SSH host's runner inside the control plane", () => {
     const runners = controlPlane.services.embeddedRunners;
     runners.begin();
     await online();
-    // An upgrade handed to systemd whose status files are gone: a person has to look, and each start stops there,
-    // once the root password the host's package jobs need has its runner follow them.
-    handedOver();
+    // An upgrade handed to systemd just now whose status files are gone: each start stops there while it might still be
+    // read, once the root password the host's package jobs need has its runner follow them.
+    handedOver({ at: Date.now() });
     await admin.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "alex's own" });
     await until(host, (view) => view.ssh?.reason?.includes("needs operator reconciliation") === true);
     // What the session keeps open of its own: each try has to give back what it opened, or sshd soon refuses more.
@@ -384,6 +472,54 @@ describe("an SSH host's runner inside the control plane", () => {
     }
     // Still the full runner it tries, its Docker still asked for: not the host's system alone, for want of a channel.
     expect((await host()).ssh?.reason).toContain("needs operator reconciliation");
+  });
+});
+
+describe("a package run an SSH host's runner can no longer follow", () => {
+  let setup: EmbeddedSshHost;
+
+  beforeEach(async () => {
+    setup = await startEmbeddedSshHost();
+  });
+
+  afterEach(() => setup.stop());
+
+  const host = async () =>
+    (await setup.admin.get(API_ROUTES.hosts)).json<HostView[]>().find((candidate) => candidate.id === setup.hostId)!;
+
+  it("says it needs clearing, shows an admin what goes, and starts once they clear it, as the audit log says", async () => {
+    const { admin, engine, server, controlPlane, hostId } = setup;
+    server.sudoPassword = "alex's own";
+    controlPlane.services.embeddedRunners.begin();
+    await until(host, (view) => view.containerCount === 2);
+    // An upgrade handed to systemd long before any run is still followed, with nothing on the host to say how it ended.
+    const id = randomUUID();
+    const name = `autoheal-shutdown-${id}-1`;
+    const record = { version: 1, id, operation: "host:job-5", target: "", step: 1 };
+    const labels = {
+      [JOURNAL_LABEL]: "1",
+      [JOURNAL_RECORD]: JSON.stringify({ ...record, phase: "delegated", reference: "job-5", at: 1 }),
+    };
+    engine.volumes.set(name, { Name: name, Labels: labels });
+    await admin.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "alex's own" });
+    const blocked = await until(host, (view) => view.ssh?.reason?.includes("needs clearing") === true);
+    expect(blocked.ssh?.reason).toContain(RUNNER_MESSAGES.clearOnHostPage);
+
+    const interrupted = apiPath(API_ROUTES.sshHostInterrupted, { hostId });
+    const listed = (await admin.get(interrupted)).json<string[]>();
+    expect(listed).toEqual(["host:job-5 (step 1, 1970-01-01 00:00)"]);
+    const cleared = await admin.delete(interrupted);
+    expect(cleared.statusCode, cleared.body).toBe(200);
+    expect(cleared.json()).toEqual(listed);
+    expect(engine.volumes.has(name)).toBe(false);
+    const started = await until(host, (view) => view.ssh?.reason === null && view.lastHeartbeatAt !== null);
+    expect(started.containerCount).toBe(2);
+    const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
+    expect(audit).toContain("host.ssh_interrupted_cleared");
+    expect(audit).toContain("host:job-5");
+
+    // Once it runs, nothing is cleared under it.
+    expect((await admin.delete(interrupted)).json()).toEqual({ error: "ssh_host_runner_running" });
   });
 });
 

@@ -39,6 +39,22 @@ export function ContainersStale({ host }: { host: HostView }) {
   );
 }
 
+/** A host that had Docker reports without it: nothing in its containers is watched or healed until it is back. */
+export function DockerLost({ host }: { host: HostView }) {
+  const since = host.dockerLostAt ?? null;
+  if (since === null) {
+    return null;
+  }
+  return (
+    <div className="banner danger" role="status">
+      <Icon name="alert" />
+      <p>
+        {TEXT.hosts.dockerLost} <TimeAgo timestamp={since} />. {TEXT.hosts.dockerLostMeans}
+      </p>
+    </div>
+  );
+}
+
 /** A report too large to send whole: what it left out is shown as last reported, and says nothing of now. */
 export function ReportTrimmed({ host }: { host: HostView }) {
   const parts = host.reportTrimmed ?? [];

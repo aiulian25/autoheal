@@ -14,6 +14,7 @@ import { decodeClientDataJSON } from "@simplewebauthn/server/helpers";
 import { and, asc, eq } from "drizzle-orm";
 import { API_ERRORS, type PasskeyStatusView, type PasskeyView, type SessionView } from "../../shared/api.js";
 import {
+  ACCESS_FULL,
   ACTOR_USER,
   APP_NAME,
   AUDIT_ACTIONS,
@@ -43,8 +44,8 @@ type CeremonyPurpose = (typeof CEREMONY)[keyof typeof CEREMONY];
 
 interface Ceremony {
   purpose: CeremonyPurpose;
-  // Who an enrolment is for; null for a sign-in, which doesn't know yet.
-  userId: string | null;
+  // The session an enrolment was asked from, by its token's hash; null for a sign-in, which has none yet.
+  sessionTokenHash: string | null;
   // Where it was asked from.
   address: string;
   expiresAt: number;
@@ -59,6 +60,10 @@ type PasskeyRow = typeof passkeys.$inferSelect;
 type UserRow = typeof users.$inferSelect;
 
 export type PasskeySignInResult = { kind: "signed_in"; token: string; session: SessionView } | { kind: "refused" };
+
+type FinishedSignIn =
+  | { kind: "signed_in"; user: UserRow; token: string; csrfToken: string }
+  | { kind: "refused"; reason: string; user: UserRow | null };
 
 // Browsers keep passkeys to a site reached by name: an address like 192.168.10.83 can have none.
 function relyingPartyOf(publicBaseUrl: string): RelyingParty | null {
@@ -144,24 +149,45 @@ export class PasskeyService {
       this.recordRefusedSignIn(found?.user ?? null, LOGIN_FAILURE_REASONS.passkeyRefused, context);
       return { kind: "refused" };
     }
-    if (found.user.status !== USER_STATUS_ACTIVE) {
-      this.recordRefusedSignIn(found.user, LOGIN_FAILURE_REASONS.deactivated, context);
+    const finished = this.database.transaction(() => this.finishSignIn(found.passkey, found.user.id, counter, context));
+    if (finished.kind === "refused") {
+      this.recordRefusedSignIn(finished.user, finished.reason, context);
       return { kind: "refused" };
     }
-    const now = this.clock();
-    this.database.update(passkeys).set({ counter, lastUsedAt: now }).where(eq(passkeys.id, found.passkey.id)).run();
-    this.database.update(users).set({ lastLoginAt: now }).where(eq(users.id, found.user.id)).run();
-    const { token, csrfToken } = this.sessions.create(found.user.id, context, true);
+    const { user, token, csrfToken } = finished;
     this.auditLog.record({
       actorKind: ACTOR_USER,
-      actorId: found.user.id,
-      actorLabel: found.user.username,
+      actorId: user.id,
+      actorLabel: user.username,
       action: AUDIT_ACTIONS.loginSucceeded,
       details: { method: SIGN_IN_METHOD.passkey, passkey: found.passkey.name },
       ip: context.ip,
       requestId: context.requestId,
     });
-    return { kind: "signed_in", token, session: { user: userView(found.user), csrfToken, secondFactorDone: true } };
+    return { kind: "signed_in", token, session: { user: userView(user), csrfToken, secondFactorDone: true } };
+  }
+
+  // What was read before the answer's check is read again in the one step that signs in: the account must still be
+  // active, and the passkey still there with the count its answer was checked against.
+  private finishSignIn(passkey: PasskeyRow, userId: string, counter: number, context: RequestContext): FinishedSignIn {
+    const user = this.database.select().from(users).where(eq(users.id, userId)).get();
+    if (user === undefined) {
+      return { kind: "refused", reason: LOGIN_FAILURE_REASONS.passkeyRefused, user: null };
+    }
+    if (user.status !== USER_STATUS_ACTIVE) {
+      return { kind: "refused", reason: LOGIN_FAILURE_REASONS.deactivated, user };
+    }
+    const now = this.clock();
+    const { changes } = this.database
+      .update(passkeys)
+      .set({ counter, lastUsedAt: now })
+      .where(and(eq(passkeys.id, passkey.id), eq(passkeys.counter, passkey.counter)))
+      .run();
+    if (changes === 0) {
+      return { kind: "refused", reason: LOGIN_FAILURE_REASONS.passkeyRefused, user };
+    }
+    this.database.update(users).set({ lastLoginAt: now }).where(eq(users.id, user.id)).run();
+    return { kind: "signed_in", user, ...this.sessions.create(user.id, context, true) };
   }
 
   list(session: ResolvedSession): PasskeyView[] {
@@ -192,7 +218,7 @@ export class PasskeyService {
       authenticatorSelection: { residentKey: "required", userVerification: "required" },
       timeout: PASSKEY_CEREMONY_MILLISECONDS,
     });
-    this.remember(options.challenge, CEREMONY.enrol, session.user.id, client.ip);
+    this.remember(options.challenge, CEREMONY.enrol, session.tokenHash, client.ip);
     return options;
   }
 
@@ -204,7 +230,7 @@ export class PasskeyService {
     context: RequestContext,
   ): Promise<PasskeyView> {
     const relyingParty = this.requireRelyingParty();
-    const challenge = this.takeChallenge(response, CEREMONY.enrol, session.user.id);
+    const challenge = this.takeChallenge(response, CEREMONY.enrol, session.tokenHash);
     if (challenge === null) {
       throw new DomainError(API_ERRORS.passkeyNotAdded);
     }
@@ -216,8 +242,7 @@ export class PasskeyService {
       requireUserVerification: true,
     }).catch(() => null);
     const info = registration?.verified === true ? registration.registrationInfo : null;
-    const taken = info !== null && this.findByCredential(info.credential.id) !== undefined;
-    if (info === null || taken) {
+    if (info === null) {
       throw new DomainError(API_ERRORS.passkeyNotAdded);
     }
     const row: PasskeyRow = {
@@ -233,9 +258,21 @@ export class PasskeyService {
       createdAt: this.clock(),
       lastUsedAt: null,
     };
-    this.database.insert(passkeys).values(row).run();
+    this.database.transaction(() => this.keep(session, row));
     this.audit(session, AUDIT_ACTIONS.passkeyAdded, { name: row.name }, context);
     return this.viewOf(row);
+  }
+
+  // Kept only while the session that asked is still live and still may add one: the check took time, and a session
+  // ended meanwhile, by signing out or an admin's reset, must leave nothing behind.
+  private keep(session: ResolvedSession, row: PasskeyRow) {
+    if (!this.sessions.isLive(session.tokenHash, ACCESS_FULL)) {
+      throw new DomainError(API_ERRORS.notSignedIn);
+    }
+    if (this.findByCredential(row.credentialId) !== undefined) {
+      throw new DomainError(API_ERRORS.passkeyNotAdded);
+    }
+    this.database.insert(passkeys).values(row).run();
   }
 
   rename(session: ResolvedSession, passkeyId: string, name: string, context: RequestContext): PasskeyView {
@@ -289,7 +326,7 @@ export class PasskeyService {
     return this.relyingParty;
   }
 
-  private remember(challenge: string, purpose: CeremonyPurpose, userId: string | null, address: string) {
+  private remember(challenge: string, purpose: CeremonyPurpose, sessionTokenHash: string | null, address: string) {
     const now = this.clock();
     for (const [waiting, ceremony] of this.ceremonies) {
       if (ceremony.expiresAt <= now) {
@@ -306,7 +343,12 @@ export class PasskeyService {
     if (this.ceremonies.size >= PASSKEY_CEREMONY_LIMIT && oldest.done !== true) {
       this.ceremonies.delete(oldest.value);
     }
-    this.ceremonies.set(challenge, { purpose, userId, address, expiresAt: now + PASSKEY_CEREMONY_MILLISECONDS });
+    this.ceremonies.set(challenge, {
+      purpose,
+      sessionTokenHash,
+      address,
+      expiresAt: now + PASSKEY_CEREMONY_MILLISECONDS,
+    });
   }
 
   // An answer ends the ceremony it names before anything else about it is checked, so a refused answer ends it too.
@@ -314,20 +356,20 @@ export class PasskeyService {
   private takeChallenge(
     response: AuthenticationResponseJSON | RegistrationResponseJSON,
     purpose: CeremonyPurpose,
-    userId: string | null,
+    sessionTokenHash: string | null,
   ): string | null {
     const challenge = challengeOf(response);
-    return challenge !== null && this.consume(challenge, purpose, userId) ? challenge : null;
+    return challenge !== null && this.consume(challenge, purpose, sessionTokenHash) ? challenge : null;
   }
 
-  // Once, for what it was made for, by whom, in time.
-  private consume(challenge: string, purpose: CeremonyPurpose, userId: string | null): boolean {
+  // Once, for what it was made for, from the session that asked, in time.
+  private consume(challenge: string, purpose: CeremonyPurpose, sessionTokenHash: string | null): boolean {
     const ceremony = this.ceremonies.get(challenge);
     this.ceremonies.delete(challenge);
     return (
       ceremony !== undefined &&
       ceremony.purpose === purpose &&
-      ceremony.userId === userId &&
+      ceremony.sessionTokenHash === sessionTokenHash &&
       ceremony.expiresAt > this.clock()
     );
   }

@@ -1,5 +1,5 @@
-import { type HostHealthView, type HostMetricsView } from "../../../src/shared/api.js";
-import { PERCENT } from "../../../src/shared/constants.js";
+import { type HostHealthView, type HostMetricsView, type HostView } from "../../../src/shared/api.js";
+import { HOST_HEALTH_STALE_AFTER_MILLISECONDS, PERCENT } from "../../../src/shared/constants.js";
 import { type Tone } from "../components/charts.js";
 import { BYTES_PER_MEGABIT, METER_DANGER_PERCENT, METER_WARNING_PERCENT, RATE_DIAL_SCALE, TEXT } from "../constants.js";
 import { percentOf, precisePercent, rate } from "../format.js";
@@ -59,6 +59,13 @@ export type FileSystem = HostHealthView["disks"][number];
 
 // Used as df counts it: blocks reserved for root are neither used nor available.
 export const diskUsedPercent = (disk: FileSystem) => percentOf(disk.usedBytes, disk.usedBytes + disk.availableBytes);
+
+/** When the host's system details were read, while they are older than its last report allows; null while current. */
+export function staleHealthAt({ healthAt, lastHeartbeatAt }: Pick<HostView, "healthAt" | "lastHeartbeatAt">) {
+  const readAt = healthAt ?? null;
+  if (readAt === null || lastHeartbeatAt === null) return null;
+  return lastHeartbeatAt - readAt > HOST_HEALTH_STALE_AFTER_MILLISECONDS ? readAt : null;
+}
 
 // The fullest filesystem is the one that will cause trouble first.
 export const fullestDisk = (health: HostHealthView | null) =>

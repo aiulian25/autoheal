@@ -24,6 +24,7 @@ import {
   percentOf,
   precisePercent,
   rate,
+  shortTimeAgo,
   watts,
 } from "../format.js";
 import {
@@ -37,6 +38,7 @@ import {
   type HostNetwork,
   networkCeiling,
   fullestDisk,
+  staleHealthAt,
 } from "./host-dial-values.js";
 
 type Gpu = HostMetricsView["gpus"][number];
@@ -60,6 +62,8 @@ interface StatCardProps {
   facts: Fact[];
   // Something on it is about to go wrong: the card's edge says so too.
   alert?: boolean;
+  // Its dial was read before the host's last report: how long ago, and the dial shows it as it was then.
+  asOf?: string;
 }
 
 const factClass = (fact: Fact, mono: boolean) =>
@@ -67,11 +71,13 @@ const factClass = (fact: Fact, mono: boolean) =>
     .filter(Boolean)
     .join(" ") || undefined;
 
-function StatCard({ title, tag, tagMono = false, dial, facts, alert = false }: StatCardProps) {
+function StatCard({ title, tag, tagMono = false, dial, facts, alert = false, asOf }: StatCardProps) {
+  const classes = ["card", "stat-card", alert && "alert", asOf !== undefined && "stale"].filter(Boolean).join(" ");
   return (
-    <section className={alert ? "card stat-card alert" : "card stat-card"}>
+    <section className={classes}>
       <header className="stat-card-header">
         <h3>{title}</h3>
+        {asOf !== undefined && <span className="stat-card-as-of">{asOf}</span>}
         {tag !== null && (
           <span className={tagMono ? "chip mono" : "chip"} title={tag}>
             {tag}
@@ -114,7 +120,13 @@ function shortPartOf(part: string, whole: string) {
   return TEXT.metrics.shortPartOf(sameUnit ? (partNumber ?? part) : part, whole);
 }
 
-function cpuCard(cpu: HostMetricsView["cpu"], health: HostHealthView | null): StatCardProps {
+// The load comes with the system details, not the live stats: read before the last report, it says when.
+function loadOf(health: HostHealthView | null, staleAt: number | null): string {
+  const reading = orMissing(health?.loadAverage[0] ?? null, loadAverage);
+  return staleAt === null ? reading : TEXT.metrics.readingAsOf(reading, shortTimeAgo(staleAt));
+}
+
+function cpuCard(cpu: HostMetricsView["cpu"], health: HostHealthView | null, staleAt: number | null): StatCardProps {
   return {
     title: TEXT.metrics.cpu,
     tag: health === null ? null : TEXT.metrics.threads(health.cpuCount),
@@ -123,7 +135,7 @@ function cpuCard(cpu: HostMetricsView["cpu"], health: HostHealthView | null): St
       { label: TEXT.metrics.clock, value: orMissing(cpu.frequencyMegahertz, gigahertz) },
       { label: TEXT.metrics.temperatureShort, value: orMissing(cpu.temperatureCelsius, celsius) },
       { label: TEXT.metrics.ioWait, value: precisePercent(cpu.ioWaitPercent) },
-      { label: TEXT.metrics.load, value: orMissing(health?.loadAverage[0] ?? null, loadAverage) },
+      { label: TEXT.metrics.load, value: loadOf(health, staleAt) },
     ],
   };
 }
@@ -173,7 +185,12 @@ function diskTone(percent: number): Tone | undefined {
 }
 
 // How full the disks are, the fullest on the dial, with what the drives read and write beside it.
-function disksCard(disks: readonly FileSystem[], fullest: FileSystem, io: HostDisk | null): StatCardProps {
+function disksCard(
+  disks: readonly FileSystem[],
+  fullest: FileSystem,
+  io: HostDisk | null,
+  staleAt: number | null,
+): StatCardProps {
   const throughput =
     io === null
       ? []
@@ -196,6 +213,8 @@ function disksCard(disks: readonly FileSystem[], fullest: FileSystem, io: HostDi
       ...throughput,
     ],
     alert: diskUsedPercent(fullest) >= DISK_FULL_DANGER_PERCENT,
+    // How full each disk is comes with the system details, not the live stats.
+    ...(staleAt === null ? {} : { asOf: TEXT.metrics.asOf(shortTimeAgo(staleAt)) }),
   };
 }
 
@@ -235,21 +254,22 @@ function networkCard(network: HostNetwork): StatCardProps {
 }
 
 // Usage when the host's filesystem is mounted; otherwise only what the drives read and write.
-function diskCards(metrics: HostMetricsView, health: HostHealthView | null): StatCardProps[] {
+function diskCards(metrics: HostMetricsView, health: HostHealthView | null, staleAt: number | null): StatCardProps[] {
   const fullest = fullestDisk(health);
   if (health !== null && fullest !== undefined) {
-    return [disksCard(health.disks, fullest, metrics.disk)];
+    return [disksCard(health.disks, fullest, metrics.disk, staleAt)];
   }
   return metrics.disk === null ? [] : [diskCard(metrics.disk)];
 }
 
-function hostCards(metrics: HostMetricsView, health: HostHealthView | null): StatCardProps[] {
+function hostCards(host: HostView, metrics: HostMetricsView): StatCardProps[] {
   const network = metrics.network === null ? [] : [networkCard(metrics.network)];
+  const staleAt = staleHealthAt(host);
   return [
-    cpuCard(metrics.cpu, health),
+    cpuCard(metrics.cpu, host.health, staleAt),
     ...metrics.gpus.map(gpuCard),
     memoryCard(metrics.memory),
-    ...diskCards(metrics, health),
+    ...diskCards(metrics, host.health, staleAt),
     ...network,
   ];
 }
@@ -373,7 +393,7 @@ export function HostDials({ host }: { host: HostView }) {
       {host.metrics === null ? (
         <p className="muted">{TEXT.metrics.waiting}</p>
       ) : (
-        <StatCards cards={hostCards(host.metrics, host.health)} />
+        <StatCards cards={hostCards(host, host.metrics)} />
       )}
       {host.health !== null && host.health.disks.length === 0 && (
         <p className="muted small">{TEXT.hosts.hostRootHint}</p>

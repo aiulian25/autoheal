@@ -100,6 +100,12 @@
   width: var(--fleet-dial-width);
 }
 
+/* Read before the host's last report: shown as it was then, faded, its detail saying when. */
+.gauge.stale .dial {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
 .gauge figcaption {
   display: flex;
   flex-direction: column;
@@ -126,6 +132,12 @@
 /* Under a box's dials, what would add the missing one. */
 .box-hint {
   margin-top: var(--space-4);
+}
+
+/* What is above the footer takes a card's spare height, so the footers of a row line up whatever their dials say. */
+.host-card > .gauges,
+.host-card > .host-card-empty {
+  flex-grow: 1;
 }
 
 .host-card-foot {
@@ -414,6 +426,11 @@ dialog.connect-host > h2 {
 
 .step-form button {
   align-self: flex-start;
+}
+
+/* An availability group's form keeps to a form's width, not the page's. */
+.availability-groups .step-form {
+  max-width: var(--form-width);
 }
 
 .hint {

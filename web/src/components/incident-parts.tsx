@@ -5,22 +5,29 @@ import {
   API_ROUTES,
   apiPath,
   type ApprovalView,
+  type ContainerView,
   type IncidentDetailView,
   type IncidentSummaryView,
+  type JobView,
 } from "../../../src/shared/api.js";
 import {
   ACTION_RESTART,
   ACTION_RESTART_DEPENDENCY,
   APPROVAL_DISMISS,
   APPROVAL_NOTE_LIMIT,
+  CONTAINER_STATE_RESTARTING,
   INCIDENT_STATUS,
+  JOB_ACTION,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
-import { PATHS, REFRESH_MILLISECONDS, TEXT } from "../constants.js";
+import { askFirstQuestion } from "../ask-first.js";
+import { JOB_REFRESH_MILLISECONDS, PATHS, REFRESH_MILLISECONDS, TEXT } from "../constants.js";
 import { incidentSteps } from "../incident-steps.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { boardQuery } from "../queries.js";
+import { useAskInPlace } from "./ask-in-place.js";
 import { Badge, ErrorNotice, Loading, PlainText, TimeAgo } from "./common.js";
+import { isWaiting, jobsQuery } from "./container-actions.js";
 
 export const incidentLink = (incidentId: string) => apiPath(PATHS.incident, { incidentId });
 
@@ -59,6 +66,49 @@ export function useApproval(incidentId: string) {
       await queryClient.invalidateQueries({ queryKey: boardQuery.queryKey });
     },
   });
+}
+
+/**
+ * Leaving it be, wherever that is chosen. A stopped container is left stopped. One Docker keeps starting again has
+ * to be stopped first, or it would fail again and ask again: its stop is followed to its end, which settles what
+ * waits about it.
+ */
+export function useLeaveIt(
+  decide: ReturnType<typeof useApproval>,
+  incident: Pick<IncidentSummaryView, "hostId" | "containerName">,
+  container: ContainerView | undefined,
+) {
+  const queryClient = useQueryClient();
+  const asking = useAskInPlace();
+  const stop = useMutation({
+    mutationFn: () =>
+      api<JobView>(
+        "POST",
+        apiPath(API_ROUTES.containerActions, { hostId: incident.hostId, containerName: incident.containerName }),
+        { action: JOB_ACTION.stop },
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", incident.hostId] }),
+  });
+  const jobs = useQuery({
+    ...jobsQuery(incident.hostId, incident.containerName),
+    enabled: stop.data !== undefined,
+    refetchInterval: (query) => (query.state.data?.some(isWaiting) ? JOB_REFRESH_MILLISECONDS : false),
+  });
+  const job = jobs.data?.find(({ id }) => id === stop.data?.id) ?? stop.data;
+  const looping = container?.state === CONTAINER_STATE_RESTARTING;
+  const stopIt = () => {
+    const question = askFirstQuestion(JOB_ACTION.stop, [incident.containerName]);
+    if (question === null) stop.mutate();
+    else asking.confirm(question, () => stop.mutate());
+  };
+  return {
+    looping,
+    stopping: stop.isPending || (job !== undefined && isWaiting(job)),
+    error: stop.error,
+    job,
+    question: asking.question,
+    run: looping ? stopIt : () => decide.mutate({ choice: APPROVAL_DISMISS }),
+  };
 }
 
 /**

@@ -131,6 +131,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   ssh_root_password_refused:
     "That password made neither sudo nor su work on the host: give root's password, or your user's if it may use sudo.",
   ssh_host_not_connected: "Autoheal is not connected to that host just now: try again once it shows as connected.",
+  ssh_host_runner_running:
+    "That host's runner is running, or starting, so nothing it holds is cleared: what held it back is gone.",
   runbook_suggestion_not_found:
     "That case is no longer suggested: its draft was published or archived, or it stopped recurring.",
   not_awaiting_approval: "Someone already decided this incident.",

@@ -73,6 +73,19 @@ describe("trusted proxies", () => {
     expect(controlPlane.services.trustedProxies.addresses()).toEqual(["10.0.0.0/8", "fd00::/16"]);
   });
 
+  it("tells only an admin whose word on a client counts, and how the request arrived", async () => {
+    controlPlane = await startTestControlPlane({ trustedProxyAddresses: [] });
+    const { client: admin } = await fullySignedInAdmin(controlPlane);
+    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+    expect(await throughProxy(admin)).toMatchObject({ peer: "127.0.0.1", forwardedFor: CLIENT });
+
+    // A viewer is told everything else an admin is.
+    const { trustedProxies: _adminOnly, ...forEveryone } = (await admin.get(API_ROUTES.settings)).json<SettingsView>();
+    const seen = (await viewer.get(API_ROUTES.settings)).json<SettingsView>();
+    expect(seen).not.toHaveProperty("trustedProxies");
+    expect(seen).toEqual(forEveryone);
+  });
+
   it("leaves the proxies the .env names to the .env", async () => {
     controlPlane = await startTestControlPlane();
     const { client: admin } = await fullySignedInAdmin(controlPlane);

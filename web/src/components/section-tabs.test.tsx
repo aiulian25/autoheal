@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { BrowserRouter, createMemoryRouter, Link, RouterProvider } from "react-router";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { SessionView } from "../../../src/shared/api.js";
 import { PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
 import { SettingsNav, type SettingsSection } from "./section-tabs.js";
@@ -33,6 +33,40 @@ it("derives the settings active section from a same-page router navigation", asy
   expect(
     within(nav).getByRole("link", { name: TEXT.settingsPage.nav.notifications }).getAttribute("aria-current"),
   ).toBe("true");
+});
+
+it("brings the current section to the middle of the menu's row, which scrolls on a narrow screen", async () => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(SESSION_QUERY_KEY, {
+    user: { id: "u", username: "admin", role: "admin", mustChangePassword: false, totpEnabled: true },
+    csrfToken: "csrf",
+    secondFactorDone: true,
+  });
+  const router = createMemoryRouter([{ path: PATHS.settings, element: <SettingsNav current={null} /> }], {
+    initialEntries: [PATHS.settings],
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  const nav = screen.getByRole("navigation", { name: TEXT.settingsPage.nav.label });
+  // A phone's row shows 300 pixels; each link sits where it is with the row scrolled back to its start.
+  Object.defineProperty(nav, "clientWidth", { value: 300 });
+  const placed = {
+    [TEXT.settingsPage.nav.notifications]: { start: 110, width: 110 },
+    [TEXT.settingsPage.nav.system]: { start: 560, width: 80 },
+  };
+  for (const [name, place] of Object.entries(placed)) {
+    vi.spyOn(within(nav).getByRole("link", { name }), "getBoundingClientRect").mockImplementation(
+      () => ({ left: place.start - nav.scrollLeft, width: place.width }) as DOMRect,
+    );
+  }
+
+  await act(() => router.navigate("#system"));
+  expect(nav.scrollLeft).toBe(560 - (300 - 80) / 2);
+  await act(() => router.navigate("#notifications"));
+  expect(nav.scrollLeft).toBe(110 - (300 - 110) / 2);
 });
 
 function show({

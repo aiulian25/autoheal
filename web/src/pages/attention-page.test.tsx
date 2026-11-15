@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES, apiPath, type IncidentSummaryView } from "../../../src/shared/api.js";
+import { API_ROUTES, apiPath, type IncidentSummaryView, type JobView } from "../../../src/shared/api.js";
 import { TEXT } from "../constants.js";
 import {
   waitingImage,
@@ -11,6 +11,7 @@ import {
   needsYou,
   serve,
   renderAttention,
+  TIKA,
 } from "../test-support/attention-page.js";
 
 describe("updates on the attention page", () => {
@@ -166,6 +167,75 @@ describe("updates on the attention page", () => {
     expect(sent("PUT", apiPath(API_ROUTES.containerControls, { hostId: "h1" }))).toEqual([
       '{"names":["tika"],"restart":"ignore"}',
     ]);
+  });
+
+  it("offers a problem's actions as buttons: its way there and Done on one row, then how long to put it off", async () => {
+    serve("admin", needsYou);
+    renderAttention("admin");
+    const card = (await screen.findByText("Alder's disk is 97% full")).closest("article")!;
+    const open = within(card).getByRole("link", { name: /^Open / });
+    const done = within(card).getByRole("button", { name: "Done" });
+    const snooze = within(card).getByRole("group", { name: TEXT.tasks.snooze.label });
+    expect([...open.parentElement!.children]).toEqual([open, done, snooze]);
+    for (const button of [done, ...within(snooze).getAllByRole("button")]) {
+      expect(button.classList.contains("quiet"), button.textContent!).toBe(false);
+    }
+  });
+
+  it("leaves a stopped container stopped, and stops one Docker keeps starting again, following its stop", async () => {
+    const approval = apiPath(API_ROUTES.incidentApproval, { incidentId: "i1" });
+    const actions = apiPath(API_ROUTES.containerActions, { hostId: "h1", containerName: "tika" });
+    const stop: JobView = {
+      id: "j1",
+      hostId: "h1",
+      hostLabel: "Alder",
+      containerName: "tika",
+      action: "stop",
+      status: "pending",
+      requestedBy: "admin",
+      taskId: null,
+      createdAt: Date.now(),
+      completedAt: null,
+      outcome: null,
+      output: null,
+      packages: [],
+      recoveryBackupId: null,
+      progress: null,
+      stack: null,
+    };
+    const sentTo = (fetch: ReturnType<typeof serve>, path: string) =>
+      fetch.mock.calls.filter(([url, init]) => url === path && init?.method === "POST").map(([, init]) => init?.body);
+
+    const stopped = serve("admin", needsYou);
+    renderAttention("admin");
+    fireEvent.click(await screen.findByRole("button", { name: "Leave it stopped" }));
+    await waitFor(() => expect(sentTo(stopped, approval)).toEqual(['{"choice":"dismiss"}']));
+    expect(sentTo(stopped, actions)).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Stop it" })).toBeNull();
+    cleanup();
+
+    // Dismissing it would only bring the question back at its next failure: the way out is to stop it.
+    const refused = "Alder is in dry-run: tika was not stopped.";
+    const looping = serve(
+      "admin",
+      needsYou,
+      { homeAssistant: null },
+      { packages: [], automatic: [] },
+      {
+        [API_ROUTES.containers]: [{ ...TIKA, state: "restarting" }],
+        [actions]: stop,
+        [API_ROUTES.jobs]: [{ ...stop, status: "failed", completedAt: Date.now(), outcome: refused }],
+      },
+    );
+    renderAttention("admin");
+    fireEvent.click(await screen.findByRole("button", { name: "Stop it" }));
+    await waitFor(() => expect(sentTo(looping, actions)).toEqual(['{"action":"stop"}']));
+    expect(await screen.findByText(refused)).toBeTruthy();
+    expect(sentTo(looping, approval)).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Leave it stopped" })).toBeNull();
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Stop it" }) as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 
   it("shows a viewer what waits, with nothing to tick, apply or decide", async () => {

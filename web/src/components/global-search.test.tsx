@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { SEARCH_LIMITS, type SearchResponse } from "../../../src/shared/search.js";
+import { TEXT } from "../constants.js";
 import { GlobalSearch } from "./global-search.js";
 const response: SearchResponse = {
   query: "Atlas",
@@ -78,6 +79,14 @@ it("cancels an obsolete request and does not render its result", async () => {
   expect(firstSignal!.aborted).toBe(true);
   expect(screen.queryByRole("option")).toBeNull();
 });
+it("keeps its shortcut out of the placeholder, which a phone would show and the menu cuts short", () => {
+  const input = show(vi.fn());
+  expect(input.getAttribute("placeholder")).toBe("Name, title or #task");
+  // Said where a pointer can rest on the field, and to assistive technology.
+  expect(input.getAttribute("title")).toBe(TEXT.globalSearch.shortcutHint);
+  expect(input.getAttribute("aria-keyshortcuts")).toBe("Control+K Meta+K");
+});
+
 it("supports a host filter, an accessible failure state, and the focus shortcut", async () => {
   const fetch = vi
     .fn()

@@ -27,6 +27,7 @@ import {
   NOTIFICATIONS_LOST_WINDOW_MILLISECONDS,
   DETECTOR_KEY_SEPARATOR,
   DETECTOR_KEYS,
+  HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS,
   HOST_SILENT_AFTER_MILLISECONDS,
   METRICS_INTERVAL_MILLISECONDS,
   NOTIFY_TEXT,
@@ -423,6 +424,116 @@ describe("detectors", () => {
     await detector.run();
     expect(await tasks()).toEqual([]);
     expect(resolved).toEqual(["Healing is paused on Alder"]);
+  });
+
+  describe("a host that loses Docker", () => {
+    const LOST = "Docker can no longer be reached on Alder: its containers are not watched";
+    const withoutDocker = { docker: false, eventStreamConnected: false };
+    const hostOf = async () =>
+      (await admin.get(API_ROUTES.hosts)).json<HostView[]>().find((view) => view.id === hostId)!;
+
+    it("opens a high task once a host that had Docker stays without it, and closes it when Docker is back", async () => {
+      await report([running]);
+      await detector.run();
+      later(MINUTE);
+      await report([], withoutDocker);
+      const lostAt = controlPlane.clock.now;
+      await detector.run();
+      // A reboot can leave Docker a little behind the host: only Docker that stays away is news.
+      later(DETECTOR_GRACE_MILLISECONDS.dockerLost / 2);
+      await report([], withoutDocker);
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+
+      later(DETECTOR_GRACE_MILLISECONDS.dockerLost / 2);
+      await report([], withoutDocker);
+      await detector.run();
+      expect(await tasks()).toMatchObject([
+        { title: LOST, priority: "high", hostId, resource: { kind: "host", id: hostId, label: "Alder" } },
+      ]);
+      expect(opened).toEqual([[LOST, false]]);
+      // Dated from the report that first came without it, whatever came since.
+      expect((await hostOf()).dockerLostAt).toBe(lostAt);
+
+      later(MINUTE);
+      await report([running]);
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+      expect(resolved).toEqual([LOST]);
+      expect((await hostOf()).dockerLostAt).toBeNull();
+    });
+
+    it("opens nothing for a host that never had Docker: it is watched for its system alone, as it was added", async () => {
+      await report([], withoutDocker);
+      await detector.run();
+      later(DETECTOR_GRACE_MILLISECONDS.dockerLost);
+      await report([], withoutDocker);
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+      expect((await hostOf()).dockerLostAt).toBeNull();
+    });
+
+    it("closes its task with the host's other tasks once the host is revoked", async () => {
+      await report([running]);
+      later(MINUTE);
+      await report([], withoutDocker);
+      await detector.run();
+      later(DETECTOR_GRACE_MILLISECONDS.dockerLost);
+      await report([], withoutDocker);
+      await detector.run();
+      expect(await tasks()).toMatchObject([{ title: LOST }]);
+      await admin.post(apiPath(API_ROUTES.hostRevoke, { hostId }));
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+      expect((await hostOf()).dockerLostAt).toBeNull();
+    });
+  });
+
+  describe("a host whose system cannot be read", () => {
+    const UNREAD = "Autoheal cannot read Alder's system";
+    const unread = { host: null };
+    const hostOf = async () =>
+      (await admin.get(API_ROUTES.hosts)).json<HostView[]>().find((view) => view.id === hostId)!;
+
+    it("keeps its last details with the time they were read, and opens a task once they stay unread", async () => {
+      await report([running]);
+      const readAt = controlPlane.clock.now;
+      await detector.run();
+      // Its runner still reports, but cannot read the host: what it read last stays, dated when it was read.
+      later(2 * MINUTE);
+      await report([running], unread);
+      await detector.run();
+      const kept = await hostOf();
+      expect(kept).toMatchObject({ healthAt: readAt, lastHeartbeatAt: controlPlane.clock.now });
+      expect(kept.health).not.toBeNull();
+
+      later(2 * MINUTE);
+      await report([running], unread);
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+
+      later(MINUTE);
+      await report([running], unread);
+      await detector.run();
+      expect(await tasks()).toMatchObject([
+        { title: UNREAD, priority: "medium", hostId, resource: { kind: "host", id: hostId, label: "Alder" } },
+      ]);
+      expect(opened).toEqual([[UNREAD, false]]);
+
+      later(MINUTE);
+      await report([running]);
+      await detector.run();
+      expect(await tasks()).toEqual([]);
+      expect(resolved).toEqual([UNREAD]);
+      expect((await hostOf()).healthAt).toBe(controlPlane.clock.now);
+    });
+
+    it("leaves a host that stopped reporting to its own task", async () => {
+      await report([running]);
+      later(HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS);
+      await detector.run();
+      expect((await tasks()).map(({ title }) => title)).toEqual(["The runner on Alder stopped reporting"]);
+    });
   });
 
   describe("a disk that is almost full", () => {

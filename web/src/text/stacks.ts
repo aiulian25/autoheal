@@ -85,6 +85,9 @@ export const STACKS_TEXT = {
   },
   availability: {
     title: "Availability groups",
+    // The folded line under the host cards: how many there are, before anything is opened.
+    fold: (count: number) =>
+      count === 0 ? "Availability groups: none set up" : `Availability groups: ${count} set up`,
     explanation:
       "An application's replicas across the fleet, and how much of it must keep serving. A reboot or a rollout that would leave a group with less than it needs is refused, and so is one that would do it together with an operation already under way. This counts what Autoheal can see — it is not a claim about what a cluster inside those containers believes about itself.",
     none: "None set up. Reboots and rollouts go on as they always have.",

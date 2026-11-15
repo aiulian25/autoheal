@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -10,7 +10,8 @@ import {
   type NotificationDeliveryView,
 } from "../../../src/shared/api.js";
 import { api, rememberCsrfToken } from "../api-client.js";
-import { PATHS, SESSION_QUERY_KEY } from "../constants.js";
+import { LIVE_LOST_NOTICE_AFTER_MILLISECONDS, PATHS, SESSION_QUERY_KEY, TEXT } from "../constants.js";
+import { timeOfDay } from "../format.js";
 import {
   boardQuery,
   integrationsQuery,
@@ -36,6 +37,27 @@ function SlowSignIn() {
   while (performance.now() < until);
   return <p>Sign in</p>;
 }
+// The live stream, as much as the layout needs: a test can say how it went.
+class FakeEventSource {
+  static readonly CLOSED = 2;
+  static last: FakeEventSource | null = null;
+  readonly listeners = new Map<string, () => void>();
+  readyState = 0;
+
+  constructor() {
+    FakeEventSource.last = this;
+  }
+
+  addEventListener(kind: string, listener: () => void) {
+    this.listeners.set(kind, listener);
+  }
+
+  close() {}
+
+  send(kind: string) {
+    this.listeners.get(kind)?.();
+  }
+}
 let router: ReturnType<typeof createMemoryRouter>;
 function show() {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -49,13 +71,7 @@ function show() {
   client.setQueryData(integrationsQuery.queryKey, [
     { kind: "gotify", source: "dashboard", url: "https://gotify.test", tokenSet: true, topic: null, plainHttp: false },
   ]);
-  vi.stubGlobal(
-    "EventSource",
-    class {
-      addEventListener() {}
-      close() {}
-    },
-  );
+  vi.stubGlobal("EventSource", FakeEventSource);
   const fetch = vi.fn();
   vi.stubGlobal("fetch", fetch);
   router = createMemoryRouter(
@@ -66,6 +82,7 @@ function show() {
         children: [
           { index: true, element: <p>Attention</p> },
           { path: PATHS.hosts, element: <p>Fleet page</p> },
+          { path: PATHS.settings, element: <p>Settings page</p> },
         ],
       },
       { path: PATHS.login, element: <SlowSignIn /> },
@@ -82,6 +99,7 @@ function show() {
 afterEach(() => {
   cleanup();
   client?.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   rememberCsrfToken(null);
@@ -120,6 +138,93 @@ it("lists what is connected on every page, Jarvis and the router among them", as
     client.setQueryData(jarvisQuery.queryKey, { ...ON_ITS_KEY, paused: true, lastHeardAt: 1 });
   });
   await screen.findByText("Jarvis paused");
+});
+
+it("brings the current section to the middle of the menu's row, which scrolls on a phone", async () => {
+  show();
+  const menu = await screen.findByRole("navigation", { name: TEXT.nav.label });
+  // A phone's row shows 300 pixels; each link sits where it is with the row scrolled back to its start.
+  Object.defineProperty(menu, "clientWidth", { value: 300 });
+  const placed = {
+    [TEXT.nav.attention]: { start: 0, width: 99 },
+    [TEXT.nav.fleet]: { start: 120, width: 80 },
+    [TEXT.nav.settings]: { start: 430, width: 94 },
+  };
+  for (const [name, place] of Object.entries(placed)) {
+    vi.spyOn(within(menu).getByRole("link", { name }), "getBoundingClientRect").mockImplementation(
+      () => ({ left: place.start - menu.scrollLeft, width: place.width }) as DOMRect,
+    );
+  }
+  fireEvent.click(within(menu).getByRole("link", { name: TEXT.nav.settings }));
+  await screen.findByText("Settings page");
+  expect(menu.scrollLeft).toBe(430 - (300 - 94) / 2);
+
+  // The router's section joins the menu ahead of Settings and moves it along: it is brought back to the middle.
+  placed[TEXT.nav.settings]!.start = 530;
+  act(() => client.setQueryData(routerSettingsQuery.queryKey, { configured: true }));
+  await within(menu).findByRole("link", { name: TEXT.nav.network });
+  expect(menu.scrollLeft).toBe(530 - (300 - 94) / 2);
+
+  fireEvent.click(within(menu).getByRole("link", { name: TEXT.nav.fleet }));
+  await screen.findByText("Fleet page");
+  expect(menu.scrollLeft).toBe(120 - (300 - 80) / 2);
+});
+
+it("sums the connections up in one line that leads to Settings, its dot as bad as the worst of them", async () => {
+  show();
+  const summary = async (name: string) => screen.findByRole("link", { name: `Connections: ${name}` });
+  // Ollama answers; Gotify is set up but has sent nothing yet; Home Assistant is off.
+  expect((await summary("1 connected")).getAttribute("href")).toBe(PATHS.settings);
+
+  const dotOf = (link: HTMLElement) => link.querySelector(".status-dot")!.className;
+  const ollamaAnswers = (reachable: boolean) => act(() => client.setQueryData(ollamaQuery.queryKey, { reachable }));
+  const gotifySent = (delivery: NotificationDeliveryView) =>
+    act(() => {
+      client.setQueryData<IntegrationView[]>(integrationsQuery.queryKey, (rows) =>
+        rows!.map((row) => ({ ...row, delivery })),
+      );
+    });
+
+  ollamaAnswers(false);
+  const failing = await summary("1 problem");
+  expect(failing.textContent).toBe("1 problem");
+  expect(dotOf(failing)).toContain("tone-danger");
+
+  gotifySent({ status: "healthy", lastAttemptAt: Date.now(), lastSuccessAt: Date.now(), failureCode: null });
+  const mixed = await summary("1 connected · 1 problem");
+  expect(mixed.textContent).toBe("1 connected · 1 problem");
+  expect(dotOf(mixed)).toContain("tone-danger");
+
+  ollamaAnswers(true);
+  expect(dotOf(await summary("2 connected"))).toContain("tone-good");
+
+  ollamaAnswers(false);
+  gotifySent({ status: "degraded", lastAttemptAt: Date.now(), lastSuccessAt: null, failureCode: "refused" });
+  expect((await summary("2 problems")).textContent).toBe("2 problems");
+
+  // Nothing working and nothing failing, as while Ollama is still being asked: no line, rather than a green dot.
+  gotifySent({ status: "unknown", lastAttemptAt: null, lastSuccessAt: null, failureCode: null });
+  await act(() => client.resetQueries({ queryKey: ollamaQuery.queryKey }));
+  await waitFor(() => expect(screen.queryByRole("link", { name: /^Connections:/ })).toBeNull());
+  expect(screen.getByRole("list", { name: TEXT.nav.connections })).toBeTruthy();
+});
+
+it("says on every page when it has lost contact with Autoheal, and since when, until contact is back", async () => {
+  const fetch = show();
+  // What the open stream reads again never comes back here: the page keeps what it shows.
+  fetch.mockReturnValue(new Promise(() => {}));
+  await screen.findByRole("list", { name: "Connections" });
+  vi.useFakeTimers();
+  const lostAt = Date.now();
+  const notice = TEXT.connectionLost(timeOfDay(lostAt));
+  act(() => FakeEventSource.last!.send("error"));
+  act(() => vi.advanceTimersByTime(LIVE_LOST_NOTICE_AFTER_MILLISECONDS - 1));
+  expect(screen.queryByText(notice)).toBeNull();
+  act(() => vi.advanceTimersByTime(1));
+  expect(screen.getByRole("status").textContent).toBe(notice);
+
+  act(() => FakeEventSource.last!.send("open"));
+  expect(screen.queryByText(notice)).toBeNull();
 });
 
 it("calls an assistant on the blueprint connected by what comes back to Autoheal, as it never calls", async () => {

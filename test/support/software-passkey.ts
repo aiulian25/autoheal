@@ -25,6 +25,8 @@ interface PasskeyTraits {
   userVerified?: boolean;
   // Kept by a password manager that syncs it between devices.
   synced?: boolean;
+  // Whether it counts its sign-ins; many synced passkeys keep the count at 0 for good.
+  countsSignIns?: boolean;
   // Where it believes it is: a page elsewhere answering for this dashboard is refused.
   origin?: string;
 }
@@ -88,7 +90,9 @@ export class SoftwarePasskey {
   }
 
   signIn(options: PublicKeyCredentialRequestOptionsJSON): AuthenticationResponseJSON {
-    this.counter += 1;
+    if (this.traits.countsSignIns ?? true) {
+      this.counter += 1;
+    }
     const authenticatorData = this.header(options.rpId!, 0);
     const clientData = this.clientData("webauthn.get", options.challenge);
     const signature = sign("sha256", Buffer.concat([authenticatorData, sha256(clientData)]), this.keys.privateKey);

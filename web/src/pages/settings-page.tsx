@@ -100,7 +100,7 @@ export function SettingsPage() {
           <SettingsBlock section={SETTINGS_SECTIONS.system}>
             <SystemFacts settings={view} />
             {admin && <SelfUpdateCard />}
-            {admin && <TrustedProxiesCard view={view.trustedProxies} />}
+            {admin && view.trustedProxies !== undefined && <TrustedProxiesCard view={view.trustedProxies} />}
           </SettingsBlock>
         </>
       )}

@@ -6,17 +6,12 @@ import {
   API_ROUTES,
   apiPath,
   hasUpdate,
+  isStoppable,
   type ContainerView,
   type HostVolumesView,
   type JobView,
 } from "../../src/shared/api.js";
-import {
-  CONTAINER_STATE_PAUSED,
-  CONTAINER_STATE_RESTARTING,
-  CONTAINER_STATE_RUNNING,
-  JOB_ACTION,
-  JOB_STATUS,
-} from "../../src/shared/constants.js";
+import { CONTAINER_STATE_PAUSED, CONTAINER_STATE_RUNNING, JOB_ACTION, JOB_STATUS } from "../../src/shared/constants.js";
 import { api } from "./api-client.js";
 import { isWaiting } from "./components/container-actions.js";
 import { BULK_REFRESH_MILLISECONDS } from "./constants.js";
@@ -40,13 +35,12 @@ export type RowAction = BulkAction | typeof JOB_ACTION.logs | typeof JOB_ACTION.
 const isRunning = (container: ContainerView) => container.state === CONTAINER_STATE_RUNNING;
 const isPaused = (container: ContainerView) => container.state === CONTAINER_STATE_PAUSED;
 // Neither running nor between the two (paused, restarting): what starting is for.
-export const isStopped = (container: ContainerView) =>
-  !isRunning(container) && container.state !== CONTAINER_STATE_PAUSED && container.state !== CONTAINER_STATE_RESTARTING;
+export const isStopped = (container: ContainerView) => !isStoppable(container) && !isPaused(container);
 
 const FITS: Record<BulkAction, (container: ContainerView) => boolean> = {
   [JOB_ACTION.restart]: isRunning,
   [JOB_ACTION.start]: isStopped,
-  [JOB_ACTION.stop]: isRunning,
+  [JOB_ACTION.stop]: isStoppable,
   [JOB_ACTION.pause]: isRunning,
   [JOB_ACTION.unpause]: isPaused,
   [JOB_ACTION.update]: hasUpdate,

@@ -76,7 +76,9 @@
   gap: var(--space-1);
 }
 
+/* Small buttons: the lengths read as a step down from the main ones beside them. */
 .snooze-choices button {
+  min-height: var(--chip-height);
   padding-inline: var(--space-2);
 }
 

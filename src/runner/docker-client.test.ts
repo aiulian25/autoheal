@@ -252,6 +252,19 @@ describe("DockerClient over the unix socket", () => {
       await vi.waitFor(() => expect(engine.heldOpen()).toBe(0));
     });
 
+    it("ends at its deadline a command whose connection to the engine never opens", async () => {
+      const local = new LocalDockerConnection(engine.socketPath);
+      let connections = 0;
+      // The exec is made; the stream to start it never opens, as a channel a quiet host never answers.
+      const stalling = { connect: () => (++connections === 1 ? local.connect() : new Promise<never>(() => undefined)) };
+      const { output } = collected();
+      const asked = new DockerClient(stalling).streamCommand("db", ["pg_dumpall"], {
+        output,
+        timeoutMilliseconds: 200,
+      });
+      await expect(asked).rejects.toThrow(RUNNER_MESSAGES.commandTookTooLong);
+    });
+
     it("ends at the same deadline a command whose stream runs on", async () => {
       engine.holdStreams = true;
       const { output } = collected();
@@ -350,6 +363,25 @@ describe("DockerClient over the unix socket", () => {
 
 const SSH_USER = "alex";
 const CONNECT_MILLISECONDS = 5_000;
+const GIVEN_UP_WITHIN_MILLISECONDS = 1_000;
+
+// A session to the fake server, connected before the test asks anything of it.
+async function connectedSession(server: FakeSshServer, key: string) {
+  const session = new SshSession(() => ({
+    address: "127.0.0.1",
+    port: server.port,
+    user: SSH_USER,
+    privateKey: key,
+    passphrase: null,
+    pinnedHostKey: server.hostKeyBlob(),
+  }));
+  session.start();
+  const started = Date.now();
+  while (session.state().state !== SSH_STATE.connected && Date.now() - started < CONNECT_MILLISECONDS) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return session;
+}
 
 // What one engine answers to the same requests, over whichever connection reaches it.
 async function sameRequests(engine: FakeDockerEngine, docker: DockerClient) {
@@ -413,20 +445,8 @@ describe("DockerClient over a connection: the local socket, or an SSH host's ses
     // The fake server reads the public half from whichever key it is given.
     const key = FakeSshServer.newHostKey();
     const server = await FakeSshServer.start(SSH_USER, [key], remote.socketPath);
-    const session = new SshSession(() => ({
-      address: "127.0.0.1",
-      port: server.port,
-      user: SSH_USER,
-      privateKey: key,
-      passphrase: null,
-      pinnedHostKey: server.hostKeyBlob(),
-    }));
+    const session = await connectedSession(server, key);
     try {
-      session.start();
-      const started = Date.now();
-      while (session.state().state !== SSH_STATE.connected && Date.now() - started < CONNECT_MILLISECONDS) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
       const overSocket = await sameRequests(local, new DockerClient(new LocalDockerConnection(local.socketPath)));
       const overSsh = await sameRequests(remote, new DockerClient(new SshDockerConnection(session)));
       expect(overSocket).toMatchObject({
@@ -446,6 +466,26 @@ describe("DockerClient over a connection: the local socket, or an SSH host's ses
       session.close();
       await server.stop();
       await Promise.all([local.close(), remote.close()]);
+    }
+  });
+
+  // A runner that stops while its event stream is still opening: the channel that opens after it is never read,
+  // so it never says it closed, and a stop waiting on the stream would wait forever.
+  it("gives a request up at once when its signal aborts before the channel to the engine opens", async () => {
+    const remote = await FakeDockerEngine.start();
+    const key = FakeSshServer.newHostKey();
+    const server = await FakeSshServer.start(SSH_USER, [key], remote.socketPath);
+    const session = await connectedSession(server, key);
+    try {
+      const stopping = new AbortController();
+      const opening = new DockerClient(new SshDockerConnection(session)).events(stopping.signal);
+      stopping.abort();
+      const stillWaiting = new Promise((resolve) => setTimeout(resolve, GIVEN_UP_WITHIN_MILLISECONDS, "still waiting"));
+      await expect(Promise.race([opening, stillWaiting])).rejects.toThrow(/aborted/);
+    } finally {
+      session.close();
+      await server.stop();
+      await remote.close();
     }
   });
 

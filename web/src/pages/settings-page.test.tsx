@@ -73,6 +73,22 @@ describe("the settings page", () => {
     expect(screen.queryByText(words.explanation)).toBeNull();
   });
 
+  it("tells an admin the system's facts, the proxies Autoheal trusts among them", async () => {
+    serve("admin");
+    renderSettings("admin");
+    const facts = (await screen.findByText(TEXT.settingsPage.systemFacts.version)).closest("dl")!;
+    expect(within(facts).getByText(TEXT.settingsPage.systemFacts.proxies)).toBeTruthy();
+  });
+
+  it("tells a viewer the system's facts, but not which proxies Autoheal trusts", async () => {
+    serve("viewer");
+    renderSettings("viewer");
+    const facts = (await screen.findByText(TEXT.settingsPage.systemFacts.version)).closest("dl")!;
+    expect(within(facts).getByText(settings.version)).toBeTruthy();
+    expect(within(facts).queryByText(TEXT.settingsPage.systemFacts.proxies)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Trusted proxies" })).toBeNull();
+  });
+
   it("does not show viewers administrator repair notices", async () => {
     serve("viewer", { [API_ROUTES.settings]: { ...settings, invalidSettings: ["integration.gotify"] } });
     renderSettings("viewer");

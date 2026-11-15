@@ -44,6 +44,10 @@ export const settings: SettingsView = {
   runnerAddress: "https://autoheal.example:9443",
 };
 
+// What a viewer is told: all but the proxies, which only an admin is.
+const { trustedProxies: _adminOnly, ...viewerSettings } = settings;
+export { viewerSettings };
+
 export const fromEnvironment = { url: "http://192.168.10.178:30271", model: "qwen3:30b-a3b", contextTokens: 16384 };
 export const ollamaSettings = (overrides: Partial<OllamaSettingsView> = {}): OllamaSettingsView => ({
   source: "environment",
@@ -98,7 +102,7 @@ export const selfUpdate: SelfUpdateView = {
 export function serve(role: "admin" | "viewer", extra: Record<string, unknown> = {}) {
   const answers: Record<string, unknown> = {
     [API_ROUTES.session]: sessionFor(role),
-    [API_ROUTES.settings]: settings,
+    [API_ROUTES.settings]: role === "admin" ? settings : viewerSettings,
     [API_ROUTES.integrations]: INTEGRATIONS,
     [API_ROUTES.ollamaSettings]: ollamaSettings(),
     [API_ROUTES.ollamaServers]: { extras: [], reviewServerId: null, defaultName: null },

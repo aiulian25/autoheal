@@ -47,7 +47,9 @@ export const COMMON_TEXT = {
       change: "Host changes",
     },
     label: "Search infrastructure",
-    placeholder: "Name, title or #task · Ctrl K",
+    placeholder: "Name, title or #task",
+    // Where a pointer can rest on the field: the menu has no room to show it.
+    shortcutHint: "Ctrl K from any page",
     onlyThisHost: "Only this host",
     explanation: "Matches the beginning of display names/titles. Logs and settings are excluded.",
     searching: "Searching…",
@@ -78,6 +80,10 @@ export const COMMON_TEXT = {
     settings: "Settings",
     // What Autoheal leans on, at the foot of the menu.
     connections: "Connections",
+    // The same on a phone, as one line that leads to Settings.
+    connectionsSummary: (counts: string) => `Connections: ${counts}`,
+    connectedCount: (count: number) => `${count} connected`,
+    problemCount: (count: number) => `${count} ${count === 1 ? "problem" : "problems"}`,
     ollama: (answering: boolean) => (answering ? "Ollama answering" : "Ollama not answering"),
 
     homeAssistant: {
@@ -102,8 +108,12 @@ export const COMMON_TEXT = {
     line: "Autoheal was updated. This page is still the old version.",
     reload: "Reload",
   },
+  connectionLost: (time: string) => `Not connected to Autoheal since ${time}. What is shown may be out of date.`,
   metrics: {
-    waiting: `No live stats from this host yet. Its runner sends them every ${METRICS_INTERVAL_MILLISECONDS / MILLISECONDS_PER_SECOND} seconds.`,
+    waiting: `No live stats from this host right now. Its runner sends them every ${METRICS_INTERVAL_MILLISECONDS / MILLISECONDS_PER_SECOND} seconds.`,
+    // A reading that comes with the system details, read before the host's last report.
+    asOf: (ago: string) => `as of ${ago}`,
+    readingAsOf: (reading: string, ago: string) => `${reading} (as of ${ago})`,
     collecting: "Collecting…",
     statsHistory: "Stats history",
     dials: "Live dials",

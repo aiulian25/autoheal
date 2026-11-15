@@ -42,10 +42,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function show(view: SshHostDetailsView, shown: HostView = host) {
+function show(view: SshHostDetailsView, shown: HostView = host, more: Record<string, unknown> = {}) {
   const fetch = vi.fn(async (path: string, options?: RequestInit) => {
     const method = options?.method ?? "GET";
     const answers: Record<string, unknown> = {
+      ...more,
       [`GET ${apiPath(API_ROUTES.sshHost, { hostId: HOST_ID })}`]: view,
       [`GET ${API_ROUTES.sshKeys}`]: [key("k1", "laptop"), key("k2", "made-for-mini")],
       [`PUT ${apiPath(API_ROUTES.sshHostSettings, { hostId: HOST_ID })}`]: JSON.parse(String(options?.body ?? "{}")),
@@ -90,6 +91,34 @@ describe("an SSH host's own card", () => {
         ),
       ).toBe(true),
     );
+  });
+
+  describe("what an interrupted package run left", () => {
+    const interrupted = apiPath(API_ROUTES.sshHostInterrupted, { hostId: HOST_ID });
+    const left = "host:job-5 (step 1, 2026-11-15 08:00)";
+    const connected = (reason: string | null) =>
+      ({ ...host, ssh: { state: "connected", since: Date.now(), reason } }) as HostView;
+    const asked = (fetch: ReturnType<typeof show>, method: string) =>
+      fetch.mock.calls.some(([url, options]) => url === interrupted && (options?.method ?? "GET") === method);
+
+    it("is listed where its runner will not start, and cleared only once a person says they looked", async () => {
+      const fetch = show(details(), connected("1 unfinished operation needs clearing before this runner can start"), {
+        [`GET ${interrupted}`]: [left],
+        [`DELETE ${interrupted}`]: [left],
+      });
+      expect(await screen.findByText(left)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: text.interruptedClear }));
+      expect(asked(fetch, "DELETE")).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
+      await waitFor(() => expect(asked(fetch, "DELETE")).toBe(true));
+    });
+
+    it("is not asked about while its runner runs", async () => {
+      const fetch = show(details(), connected(null), { [`GET ${interrupted}`]: [left] });
+      await screen.findByText(text.title);
+      expect(asked(fetch, "GET")).toBe(false);
+      expect(screen.queryByRole("button", { name: text.interruptedClear })).toBeNull();
+    });
   });
 
   it("says a host without Docker is watched for its system alone", async () => {

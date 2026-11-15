@@ -9,6 +9,8 @@ import { NOTIFICATION_DELIVERY_ROUTES, type NotificationEventView } from "./noti
 import { DIAGNOSTIC_ROUTES } from "./diagnostics.js";
 import type { SshHostSettings } from "./ssh-hosts.js";
 import {
+  CONTAINER_STATE_RESTARTING,
+  CONTAINER_STATE_RUNNING,
   IGNORE_EVERY_VERSION,
   RESTART_CHOICE,
   TASK_LABEL,
@@ -161,6 +163,8 @@ export const API_ROUTES = {
   sshHostSettings: "/api/hosts/:hostId/ssh/settings",
   // The password Autoheal runs root commands with on the host, saved or removed; never read back.
   sshHostRoot: "/api/hosts/:hostId/ssh/root",
+  // What holds the host's runner back from starting, listed (GET), and cleared once a person has looked (DELETE).
+  sshHostInterrupted: "/api/hosts/:hostId/ssh/interrupted",
   // A runner host reached over SSH from now on, as the same host: dialled first, then confirmed as a new one is.
   sshHostSwitch: "/api/hosts/:hostId/ssh/switch",
   // Autoheal updating itself: how it stands (GET), and the update started (POST).
@@ -435,6 +439,7 @@ export const API_ERRORS = {
   selfUpdateUnsigned: "self_update_unsigned",
   sshRootPasswordRefused: "ssh_root_password_refused",
   sshHostNotConnected: "ssh_host_not_connected",
+  sshHostRunnerRunning: "ssh_host_runner_running",
   hostRevoked: "host_revoked",
   // Only a revoked runner on the dashboard's own machine can be added again from the dashboard.
   notLocalRunner: "not_local_runner",
@@ -784,6 +789,9 @@ export interface HostView {
   inPlace?: { problem: string | null };
   // False for an SSH host without Docker: its system is watched, it has no containers. Absent from older views.
   docker?: boolean;
+  // Since when this host, which had Docker, has reported without it: nothing in its containers is watched or healed
+  // meanwhile. Null or absent while it reports Docker, when it never had it, and while it does not report.
+  dockerLostAt?: number | null;
   // Whether its runner can make service checks from its own host; absent from views before it.
   serviceProbes?: boolean;
   state: HostState;
@@ -825,6 +833,9 @@ export interface HostView {
   tagChanges?: boolean;
   // From the runner's latest report; null until it has sent one.
   health: HostHealthView | null;
+  // When that health was read: a report that could not read the host keeps it, with this time. Null or absent while
+  // it never was.
+  healthAt?: number | null;
   // The latest live stats; null when none arrived lately.
   metrics: HostMetricsView | null;
   containerCount: number;
@@ -1057,6 +1068,13 @@ export interface AgentDispatchView {
   incidents: number;
   tags: number;
 }
+
+/**
+ * What stopping is for: a container that runs, or one Docker starts again each time it fails. Stopping that one is the
+ * way out of its loop: Docker stops trying.
+ */
+export const isStoppable = ({ state }: Pick<ContainerView, "state">) =>
+  state === CONTAINER_STATE_RUNNING || state === CONTAINER_STATE_RESTARTING;
 
 /** A newer image waits behind its tag, and its label lets someone update it. */
 export const hasUpdate = (container: ContainerView) =>
@@ -1502,7 +1520,8 @@ export interface SettingsView {
   invalidSettings?: SettingKey[];
   version: string;
   publicBaseUrl: string;
-  trustedProxies: TrustedProxiesView;
+  // Admin-only: whose word on a client counts, and how the request asking arrived.
+  trustedProxies?: TrustedProxiesView;
   offboxBackupsConfigured: boolean;
   // Whether Autoheal made its certificate, or the .env names the operator's own.
   certificate: SecretSource;

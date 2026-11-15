@@ -3,11 +3,17 @@
 ARG BUILDER_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
 ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs24-debian13:nonroot@sha256:088a01637f22908632ba09018be2e0b516f2fa6f7869c191d29491139db43c78
 
+# The two tool stages copy programs and libraries out of the builder, upgraded first: they ship as Debian has them now,
+# not as the builder's pinned image had them. Their Debian records go into the image beside the base image's own, where
+# its scan reads them; a cached stage the scan finds behind is refreshed by a build with a newer builder digest, or by
+# docker build --no-cache-filter checkpoint-tool,host-terminal-tool.
+
 # Metadata-capable checkpoint tool, isolated from the Node build dependencies.
 FROM ${BUILDER_IMAGE} AS checkpoint-tool
-RUN apt-get update && apt-get install -y --no-install-recommends rsync \
+RUN apt-get update && apt-get -y --no-install-recommends upgrade \
+  && apt-get install -y --no-install-recommends rsync \
   && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /checkpoint-tool/lib /checkpoint-tool/licenses \
+RUN mkdir -p /checkpoint-tool/lib /checkpoint-tool/licenses /tool-records \
   && cp /usr/bin/rsync /checkpoint-tool/rsync \
   && ldd /usr/bin/rsync | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' | while read -r library; do \
        case "$(basename "$library")" in libc.so.6) continue ;; esac; \
@@ -17,9 +23,11 @@ RUN mkdir -p /checkpoint-tool/lib /checkpoint-tool/licenses \
   && ldd /usr/bin/tar | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' | while read -r library; do \
        case "$library" in */libc.so*) ;; *) cp -L "$library" /checkpoint-tool/lib/ ;; esac; \
      done \
-  && for package in tar libselinux1 libpcre2-8-0 rsync libacl1 libpopt0 liblz4-1 libzstd1 libxxhash0 libssl3t64 zlib1g; do \
+  && packages="tar libselinux1 libpcre2-8-0 rsync libacl1 libpopt0 liblz4-1 libzstd1 libxxhash0 libssl3t64 zlib1g" \
+  && for package in $packages; do \
        cp -L "/usr/share/doc/$package/copyright" "/checkpoint-tool/licenses/$package"; \
      done \
+  && dpkg-query --status $packages > /tool-records/autoheal-checkpoint-tool \
   && cp -R /usr/share/common-licenses /checkpoint-tool/licenses/common \
   && dpkg-query -W > /checkpoint-tool/debian-packages.txt \
   && printf '%s\n' 'Corresponding Debian source packages: https://sources.debian.org/' \
@@ -30,7 +38,9 @@ RUN mkdir -p /checkpoint-tool/lib /checkpoint-tool/licenses \
 # nsenter, for a shell on the host: the helper container that opens one enters the host's namespaces with it. Copied
 # to where the builder has it, with the two libraries the runtime lacks, by their real paths (not /lib's symlink).
 FROM ${BUILDER_IMAGE} AS host-terminal-tool
-RUN mkdir -p /host-terminal-tool/usr/bin /host-terminal-licenses \
+RUN apt-get update && apt-get -y --no-install-recommends upgrade \
+  && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /host-terminal-tool/usr/bin /host-terminal-licenses /tool-records \
   && cp /usr/bin/nsenter /host-terminal-tool/usr/bin/nsenter \
   && ldd /usr/bin/nsenter | awk '$2 == "=>" && $3 ~ /^\// { print $3 }' | while read -r library; do \
        case "$(basename "$library")" in libc.so.6) continue ;; esac; \
@@ -38,9 +48,11 @@ RUN mkdir -p /host-terminal-tool/usr/bin /host-terminal-licenses \
        mkdir -p "/host-terminal-tool$(dirname "$real")"; \
        cp "$real" "/host-terminal-tool$(dirname "$real")/$(basename "$library")"; \
      done \
-  && for package in util-linux libselinux1 libpcre2-8-0; do \
+  && packages="util-linux libselinux1 libpcre2-8-0" \
+  && for package in $packages; do \
        cp -L "/usr/share/doc/$package/copyright" "/host-terminal-licenses/$package"; \
      done \
+  && dpkg-query --status $packages > /tool-records/autoheal-host-terminal-tool \
   && /usr/bin/nsenter --version
 
 FROM ${BUILDER_IMAGE} AS dependencies
@@ -56,10 +68,14 @@ COPY tsconfig.json tsconfig.build.json vite.config.ts ./
 COPY src ./src
 COPY web ./web
 RUN npm run build && npm prune --omit=dev
+COPY --from=checkpoint-tool /tool-records/ /build/tool-records/
+COPY --from=host-terminal-tool /tool-records/ /build/tool-records/
 # What tells two builds of one release apart: every runtime input a runner has, which src/shared/runner-identity.ts
-# works out from the imports of the code a runner runs, so a dashboard-only change asks nothing of it.
+# works out from the imports of the code a runner runs, so a dashboard-only change asks nothing of it. The copied tools
+# go in by their Debian records: an upgrade there changes what a runner runs without changing a base image.
 RUN node dist/server/shared/runner-identity.js dist/server package.json package-lock.json \
-      "${BUILDER_IMAGE}" "${RUNTIME_IMAGE}" > dist/server/build-id \
+      "${BUILDER_IMAGE}" "${RUNTIME_IMAGE}" "tools@sha256:$(cat /build/tool-records/* | sha256sum | cut -d ' ' -f 1)" \
+      > dist/server/build-id \
   && cat dist/server/build-id
 # Keep only this platform's SQLite binary; its C sources, other platforms' builds and type
 # definitions are ~28 MB the runtime never reads. ssh2's optional native helpers are never built
@@ -81,6 +97,8 @@ COPY --from=build /build/dist ./dist
 COPY --from=checkpoint-tool /checkpoint-tool ./checkpoint-tool
 COPY --from=host-terminal-tool /host-terminal-tool/ /
 COPY --from=host-terminal-tool /host-terminal-licenses ./host-terminal-tool/licenses
+COPY --from=checkpoint-tool /tool-records/ /var/lib/dpkg/status.d/
+COPY --from=host-terminal-tool /tool-records/ /var/lib/dpkg/status.d/
 # A fresh named volume takes its directory's owner, so the non-root app can write its data, and
 # the control plane the join code its own host's runner reads.
 COPY --from=build --chown=65532:65532 /build/empty-data /data

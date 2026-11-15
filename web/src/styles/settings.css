@@ -19,16 +19,37 @@
   }
 }
 
+/* Above the page on a narrow screen: one row that scrolls sideways, as the main menu does on a phone, what reaches
+   its right edge fading out. */
 .settings-nav {
   display: flex;
-  flex-direction: column;
   gap: 2px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--menu-fade-width)), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - var(--menu-fade-width)), transparent);
 }
 
+/* Room after the last link, under the fade, so the row can scroll it clear. */
+.settings-nav::after {
+  content: "";
+  flex: none;
+  width: var(--menu-fade-width);
+}
+
+/* Beside the page: the sections down the side. */
 @media (min-width: 64rem) {
   .settings-nav {
+    flex-direction: column;
     position: sticky;
     top: 24px;
+    overflow-x: visible;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  .settings-nav::after {
+    content: none;
   }
 }
 
@@ -40,6 +61,8 @@
   border-radius: var(--radius);
   color: var(--text-muted);
   text-decoration: none;
+  white-space: nowrap;
+  scroll-snap-align: center;
 }
 
 .settings-nav a:hover {

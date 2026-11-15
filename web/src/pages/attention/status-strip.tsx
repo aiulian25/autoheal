@@ -213,7 +213,11 @@ function OllamaCard({
       {several && <FleetLines fleet={fleet} />}
       <AgentNetwork working={working || over} answering={fleet.state !== FLEET_STATE.none} />
       <span className={several ? "status-card-line agent-line agent-line-end" : "status-card-line agent-line"}>
-        {!several && <span className="mono">{ollama.data.model}</span>}
+        {!several && (
+          <span className="mono" title={ollama.data.model}>
+            {ollama.data.model}
+          </span>
+        )}
         {dropping && (
           <span className="drop-chip">
             <Icon name="arrowDown" />
