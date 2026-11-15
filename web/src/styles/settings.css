@@ -114,6 +114,43 @@
   font-size: var(--text-card-title);
 }
 
+/* A card folded to its line: its chevron, its title, how it stands now, and any badge at the line's end. On a narrow
+   screen what it says wraps under the title. */
+.settings-fold > summary {
+  flex-wrap: wrap;
+  min-height: var(--badge-height);
+}
+
+.settings-fold > summary h3 {
+  font-size: var(--text-card-title);
+}
+
+.fold-state {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+.settings-fold > summary .badge {
+  margin-left: auto;
+}
+
+/* Folded, a card is one line about as tall as a fold on any other page. */
+.settings-card.settings-fold {
+  padding-block: var(--fold-padding-block);
+}
+
+/* A list of rows runs to the card's edges: its line has the rows' padding, and the rows meet at their dividers. */
+.keys-card.settings-fold > summary {
+  padding: var(--fold-padding-block) 20px;
+}
+
+.keys-card.settings-fold > * + * {
+  margin-top: 0;
+}
+
 .settings-card-head {
   display: flex;
   align-items: center;
@@ -290,14 +327,10 @@
   width: 131px;
 }
 
-/* The tick sits a little apart from the times, and leaves room under it, as drawn. */
+/* The tick sits a little apart from the times, as drawn. */
 label.security-fixes {
   min-height: 0;
   margin-top: 26.5px;
-}
-
-.settings-card:has(.security-fixes) {
-  padding-bottom: 30.5px;
 }
 
 .settings-row {
@@ -340,15 +373,10 @@ label.security-fixes {
   padding: 0;
 }
 
+/* What the list is for, under its folded line. */
 .keys-head {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 18px 20px 10px;
-}
-
-.keys-head h3 {
-  font-size: var(--text-card-title);
+  margin: 0;
+  padding: 0 20px 12px;
 }
 
 .keys-created {
@@ -373,6 +401,12 @@ label.security-fixes {
 .key-row > span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* A key's name keeps its width beside the fingerprint, up to a share of the row. */
+.key-row > .key-name {
+  flex-shrink: 0;
+  max-width: var(--key-name-share);
 }
 
 .key-row button.quiet {

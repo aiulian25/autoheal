@@ -143,6 +143,10 @@ it("keeps a settings subpage's explicit current section regardless of its hash",
   await waitFor(() => expect(window.location.hash).toBe("#schedules"));
   selected(nav, TEXT.settingsPage.nav.people);
 });
+it("marks Connections for a viewer whose address names a section only administrators have", () => {
+  selected(show({ hash: "#backups", role: "viewer" }), TEXT.settingsPage.nav.connections);
+});
+
 it("preserves viewer navigation filtering and the default section", async () => {
   const nav = show({ hash: "#unknown", role: "viewer" });
   const words = TEXT.settingsPage.nav;

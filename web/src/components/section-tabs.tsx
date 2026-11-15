@@ -52,19 +52,24 @@ const SETTINGS_ITEMS: readonly { section: SettingsSection; adminOnly: boolean }[
   { section: SETTINGS_SECTIONS.account, adminOnly: false },
 ];
 
-const isSettingsSection = (hash: string): hash is SettingsSection =>
-  SETTINGS_ITEMS.some(({ section }) => section === hash);
+/**
+ * The section shown now. On Settings the address names it, among those the person may open, Connections
+ * otherwise; the pages the settings lead on to name their own.
+ */
+export function useSettingsSection(current: SettingsSection | null): SettingsSection {
+  const admin = isAdmin(useSignedInSession());
+  const hash = useLocation().hash.slice(1);
+  const named = SETTINGS_ITEMS.find(({ section, adminOnly }) => section === hash && (admin || !adminOnly));
+  return current ?? named?.section ?? SETTINGS_SECTIONS.connections;
+}
 
 /**
- * The settings down the side: on the settings page each one jumps to its section; from the pages they
+ * The settings down the side: on the settings page each one shows its section; from the pages they
  * lead on to (people, backups, your account) each one goes back to it. Your account is a page of its own.
  */
 export function SettingsNav({ current }: { current: SettingsSection | null }) {
   const admin = isAdmin(useSignedInSession());
-  const hash = useLocation().hash.slice(1);
-  const jumped = isSettingsSection(hash) ? hash : SETTINGS_SECTIONS.connections;
-  // On Settings, the URL names the current section; subpages supply their own.
-  const active = current ?? jumped;
+  const active = useSettingsSection(current);
   const onPage = current === null;
   const row = useRef<HTMLElement>(null);
   const activeLink = useRef<HTMLAnchorElement>(null);
@@ -100,10 +105,19 @@ export function SettingsNav({ current }: { current: SettingsSection | null }) {
   );
 }
 
-/** The settings area: its title, the sections down the side, and the page's own content beside them. */
+/**
+ * The settings area: its title, the sections down the side, and the page's own content beside them. Another section
+ * chosen far down the page starts from its top.
+ */
 export function SettingsFrame({ current, children }: { current: SettingsSection | null; children: ReactNode }) {
+  const active = useSettingsSection(current);
+  const frame = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const above = (frame.current?.getBoundingClientRect().top ?? 0) < 0;
+    if (above) frame.current?.scrollIntoView();
+  }, [active]);
   return (
-    <div className="page settings-page">
+    <div className="page settings-page" ref={frame}>
       <h1>{TEXT.settingsPage.title}</h1>
       <div className="settings-layout">
         <SettingsNav current={current} />

@@ -72,6 +72,8 @@ export const STACKS_TEXT = {
       directory: "Folder on each host",
       copy: "Second copy",
       copyHint: "A folder already mounted on each host, such as a NAS. Leave empty for none.",
+      secondCopy: (folder: string) => `second copy in ${folder}`,
+      noSecondCopy: "no second copy",
       badFolder: "That needs to be a full path, and not one of the host's own folders such as /etc.",
       save: "Save",
       saved: "Saved",
@@ -146,9 +148,12 @@ export const STACKS_TEXT = {
     removeRule: "Remove",
     removeRuleFor: (scope: string) => `Stop requiring a signed image for ${scope}`,
     removeRuleConfirm: (scope: string) => `Stop requiring a signed image for ${scope}?`,
+    publishersCount: (count: number) => (count === 1 ? "1 publisher" : `${count} publishers`),
+    rulesCount: (count: number) => (count === 1 ? "required in 1 place" : `required in ${count} places`),
   },
   registries: {
     title: "Private registries",
+    count: (count: number) => (count === 1 ? "1 registry" : `${count} registries`),
     explanation:
       "What a private registry wants, for the hosts allowed to use it. A password goes in here and is never shown again; each host is given only what its scope covers, from its next report on. Public images need nothing here.",
     none: "None set up. Public images are read and pulled as they always were.",

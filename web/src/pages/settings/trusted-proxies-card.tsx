@@ -7,6 +7,7 @@ import { ErrorNotice } from "../../components/common.js";
 import { TEXT } from "../../constants.js";
 import { settingsQuery } from "../../queries.js";
 import { refreshSettingsNotice } from "./refresh-settings-notice.js";
+import { countState, SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -52,12 +53,12 @@ export function TrustedProxiesCard({ view }: { view: TrustedProxiesView }) {
     save.mutate((addresses) => [...addresses, entry]);
     event.currentTarget.reset();
   };
+  const state = [countState(view.addresses, proxies.count), fixed ? text.fold.fromEnvironment : null]
+    .filter((part) => part !== null)
+    .join(TEXT.separator);
   return (
-    <section className="card keys-card" aria-labelledby="proxies-title">
-      <div className="keys-head">
-        <h3 id="proxies-title">{proxies.title}</h3>
-        <p className="small muted">{proxies.explanation}</p>
-      </div>
+    <SettingsFold title={proxies.title} state={state} kind="keys-card" attention={offered !== null}>
+      <p className="keys-head small muted">{proxies.explanation}</p>
       <div className="key-row">
         <span className="arrival small">{arrivalLine(view)}</span>
         {offered !== null && (
@@ -101,6 +102,6 @@ export function TrustedProxiesCard({ view }: { view: TrustedProxiesView }) {
         </form>
       )}
       <ErrorNotice error={save.error} />
-    </section>
+    </SettingsFold>
   );
 }

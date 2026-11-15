@@ -190,6 +190,7 @@ export const NETWORK_TEXT = {
       title: "Router",
       explanation: "Autoheal reads your network from it, and never changes anything on it.",
       connected: "connected",
+      notSetUp: "not set up",
       address: "Address",
       addressPlaceholder: "https://192.168.10.1",
       username: "Read-only user",

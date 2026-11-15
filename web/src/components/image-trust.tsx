@@ -7,11 +7,19 @@ import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { TEXT } from "../constants.js";
 import { imageTrustQuery, type ImageTrustView } from "../queries.js";
+import { SettingsFold } from "../pages/settings/settings-fold.js";
 
 const text = TEXT.provenance;
 
 const scopeOf = (rule: { registry: string; repository: string | null }) =>
   rule.repository === null ? rule.registry : `${rule.registry}/${rule.repository}`;
+
+// Who is trusted, and where a signature is required, on the card's folded line.
+function trustState(publishers: number, rules: number): string {
+  if (publishers === 0) return TEXT.settingsPage.fold.none;
+  const required = rules === 0 ? null : text.rulesCount(rules);
+  return [text.publishersCount(publishers), required].filter((part) => part !== null).join(TEXT.separator);
+}
 
 /**
  * Who an admin trusts to publish an image, and where Autoheal waits for a signed one. Nothing here is secret: a
@@ -62,11 +70,8 @@ export function ImageTrustCard() {
   const publishers = view?.publishers ?? [];
   const rules = view?.rules ?? [];
   return (
-    <section className="card stack" aria-labelledby="image-trust-title">
-      <div>
-        <h3 id="image-trust-title">{text.title}</h3>
-        <p className="small muted">{text.explanation}</p>
-      </div>
+    <SettingsFold title={text.title} state={view === undefined ? null : trustState(publishers.length, rules.length)}>
+      <p className="small muted">{text.explanation}</p>
       {view === undefined && (trust.error ? <ErrorNotice error={trust.error} /> : <Loading />)}
       {view !== undefined && publishers.length === 0 && <p className="muted">{text.none}</p>}
       {publishers.map((publisher) => (
@@ -152,6 +157,6 @@ export function ImageTrustCard() {
           </button>
         </form>
       )}
-    </section>
+    </SettingsFold>
   );
 }

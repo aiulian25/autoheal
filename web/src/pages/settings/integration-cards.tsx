@@ -19,6 +19,7 @@ import { ErrorNotice } from "../../components/common.js";
 import { TEXT } from "../../constants.js";
 import { homeAssistantQuery, integrationsQuery } from "../../queries.js";
 import { refreshSettingsNotice } from "./refresh-settings-notice.js";
+import { SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -170,18 +171,20 @@ export function HomeAssistantCard({ view, admin }: { view: IntegrationView; admi
     asking.confirm(TEXT.services.removeConfirm(TEXT.services.names[view.kind]), () => remove.mutate());
   };
   return (
-    <section className={configured ? "card settings-card" : "card settings-card dashed"} aria-labelledby="ha-title">
-      <header className="settings-card-head">
-        <h3 id="ha-title">{TEXT.services.names.homeAssistant}</h3>
-        {configured ? (
+    <SettingsFold
+      title={TEXT.services.names.homeAssistant}
+      state={configured ? view.url : TEXT.attention.homeAssistant.notConnected}
+      dashed={!configured}
+      attention={configured && status !== undefined && !connected}
+      badge={
+        configured && (
           <span className={connected ? "badge good" : "badge danger"}>
             <span className="status-dot" />
             {connected ? TEXT.nav.homeAssistant.connected : TEXT.nav.homeAssistant.notAnswering}
           </span>
-        ) : (
-          <span className="small muted">{TEXT.attention.homeAssistant.notConnected}</span>
-        )}
-      </header>
+        )
+      }
+    >
       <p className="settings-card-text">{text.homeAssistant.explanation}</p>
       {configured && (
         <p className="mono small muted">
@@ -216,7 +219,7 @@ export function HomeAssistantCard({ view, admin }: { view: IntegrationView; admi
       )}
       {asking.question}
       <ErrorNotice error={remove.error} />
-    </section>
+    </SettingsFold>
   );
 }
 

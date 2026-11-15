@@ -14,6 +14,7 @@ import {
 import { api } from "../api-client.js";
 import { INVENTORY_REFRESH_MILLISECONDS, NOTIFICATION_ROUTING_DEFAULTS, PATHS, TEXT } from "../constants.js";
 import { hostsQuery } from "../queries.js";
+import { countState, SettingsFold } from "../pages/settings/settings-fold.js";
 import { ErrorNotice, Loading, TimeAgo } from "./common.js";
 
 const inbox = TEXT.notificationInbox;
@@ -185,15 +186,13 @@ const minuteValue = (value: string) => {
 const toggle = <Value,>(values: Value[], value: Value, checked: boolean) =>
   checked ? [...values, value] : values.filter((item) => item !== value);
 export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
-  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<NotificationRule[] | null>(null);
   const client = useQueryClient();
   const current = useQuery({
     queryKey: ["notification-routing"],
     queryFn: () => api<NotificationRoutingView>("GET", API_ROUTES.notificationRouting),
-    enabled: open,
   });
-  const hosts = useQuery({ ...hostsQuery, enabled: open });
+  const hosts = useQuery(hostsQuery);
   const rules = draft ?? current.data?.rules ?? [];
   const change = (index: number, patch: Partial<NotificationRule>) =>
     setDraft(rules.map((rule, at) => (at === index ? { ...rule, ...patch } : rule)));
@@ -206,205 +205,195 @@ export function NotificationRoutingEditor({ admin }: { admin: boolean }) {
   });
   const invalid = !notificationRoutingSchema.safeParse({ rules }).success;
   return (
-    <details className="card" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>{routing.title}</summary>
-      {open && (
-        <>
-          <p className="small muted">{routing.explanation}</p>
-          {!current.data && !current.error && <Loading />}
-          <fieldset disabled={!admin || save.isPending}>
-            <legend>{routing.rules}</legend>
-            {rules.map((rule, index) => (
-              <section className="section" key={rule.id}>
-                <h3>{routing.rule(index + 1)}</h3>
+    <SettingsFold title={routing.title} state={countState(current.data?.rules, routing.count)}>
+      <p className="small muted">{routing.explanation}</p>
+      {!current.data && !current.error && <Loading />}
+      <fieldset disabled={!admin || save.isPending}>
+        <legend>{routing.rules}</legend>
+        {rules.map((rule, index) => (
+          <section className="section" key={rule.id}>
+            <h4>{routing.rule(index + 1)}</h4>
+            <label>
+              {routing.host}
+              <select
+                value={rule.hostId ?? ""}
+                onChange={(event) => change(index, { hostId: event.target.value || null })}
+              >
+                <option value="">{routing.allHosts}</option>
+                {hosts.data?.map((host) => (
+                  <option key={host.id} value={host.id}>
+                    {host.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <fieldset>
+              <legend>{routing.severity}</legend>
+              {TASK_PRIORITIES.map((priority) => (
+                <label className="choice-option" key={priority}>
+                  <input
+                    type="checkbox"
+                    checked={rule.priorities.includes(priority)}
+                    onChange={(event) =>
+                      change(index, { priorities: toggle(rule.priorities, priority, event.target.checked) })
+                    }
+                  />
+                  {priority}
+                </label>
+              ))}
+            </fieldset>
+            <fieldset>
+              <legend>{routing.primaryChannels}</legend>
+              {NOTIFICATION_KINDS.map((channel) => (
+                <label className="choice-option" key={channel}>
+                  <input
+                    type="checkbox"
+                    checked={rule.channels.includes(channel)}
+                    onChange={(event) =>
+                      change(index, { channels: toggle(rule.channels, channel, event.target.checked) })
+                    }
+                  />
+                  {channel}
+                </label>
+              ))}
+            </fieldset>
+            <label className="choice-option">
+              <input
+                type="checkbox"
+                checked={rule.quietStartMinute !== null}
+                onChange={(event) =>
+                  change(index, {
+                    quietStartMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietStartMinute : null,
+                    quietEndMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietEndMinute : null,
+                  })
+                }
+              />
+              {routing.quietHours}
+            </label>
+            {rule.quietStartMinute !== null && (
+              <div className="row">
                 <label>
-                  {routing.host}
-                  <select
-                    value={rule.hostId ?? ""}
-                    onChange={(event) => change(index, { hostId: event.target.value || null })}
-                  >
-                    <option value="">{routing.allHosts}</option>
-                    {hosts.data?.map((host) => (
-                      <option key={host.id} value={host.id}>
-                        {host.label}
-                      </option>
-                    ))}
-                  </select>
+                  {routing.quietFrom}
+                  <input
+                    type="time"
+                    value={timeValue(rule.quietStartMinute)}
+                    onChange={(event) => change(index, { quietStartMinute: minuteValue(event.target.value) })}
+                  />
+                </label>
+                <label>
+                  {routing.quietUntil}
+                  <input
+                    type="time"
+                    value={timeValue(rule.quietEndMinute)}
+                    onChange={(event) => change(index, { quietEndMinute: minuteValue(event.target.value) })}
+                  />
+                </label>
+              </div>
+            )}
+            <label className="choice-option">
+              <input
+                type="checkbox"
+                checked={rule.urgentOverride}
+                onChange={(event) => change(index, { urgentOverride: event.target.checked })}
+              />
+              {routing.urgentOverride}
+            </label>
+            <label className="choice-option">
+              <input
+                type="checkbox"
+                checked={rule.escalateAfterMinutes !== null}
+                onChange={(event) =>
+                  change(index, {
+                    escalateAfterMinutes: event.target.checked
+                      ? NOTIFICATION_ROUTING_DEFAULTS.escalateAfterMinutes
+                      : null,
+                  })
+                }
+              />
+              {routing.escalateOnce}
+            </label>
+            {rule.escalateAfterMinutes !== null && (
+              <>
+                <label>
+                  {routing.escalateAfter}
+                  <input
+                    type="number"
+                    min={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.min}
+                    max={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.max}
+                    value={rule.escalateAfterMinutes}
+                    onChange={(event) => change(index, { escalateAfterMinutes: Number(event.target.value) })}
+                  />
                 </label>
                 <fieldset>
-                  <legend>{routing.severity}</legend>
-                  {TASK_PRIORITIES.map((priority) => (
-                    <label className="choice-option" key={priority}>
-                      <input
-                        type="checkbox"
-                        checked={rule.priorities.includes(priority)}
-                        onChange={(event) =>
-                          change(index, { priorities: toggle(rule.priorities, priority, event.target.checked) })
-                        }
-                      />
-                      {priority}
-                    </label>
-                  ))}
-                </fieldset>
-                <fieldset>
-                  <legend>{routing.primaryChannels}</legend>
-                  {NOTIFICATION_KINDS.map((channel) => (
+                  <legend>{routing.escalationChannels}</legend>
+                  {NOTIFICATION_KINDS.map((channel: NotificationKind) => (
                     <label className="choice-option" key={channel}>
                       <input
                         type="checkbox"
-                        checked={rule.channels.includes(channel)}
+                        checked={rule.escalationChannels.includes(channel)}
                         onChange={(event) =>
-                          change(index, { channels: toggle(rule.channels, channel, event.target.checked) })
+                          change(index, {
+                            escalationChannels: toggle(rule.escalationChannels, channel, event.target.checked),
+                          })
                         }
                       />
                       {channel}
                     </label>
                   ))}
                 </fieldset>
-                <label className="choice-option">
-                  <input
-                    type="checkbox"
-                    checked={rule.quietStartMinute !== null}
-                    onChange={(event) =>
-                      change(index, {
-                        quietStartMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietStartMinute : null,
-                        quietEndMinute: event.target.checked ? NOTIFICATION_ROUTING_DEFAULTS.quietEndMinute : null,
-                      })
-                    }
-                  />
-                  {routing.quietHours}
-                </label>
-                {rule.quietStartMinute !== null && (
-                  <div className="row">
-                    <label>
-                      {routing.quietFrom}
-                      <input
-                        type="time"
-                        value={timeValue(rule.quietStartMinute)}
-                        onChange={(event) => change(index, { quietStartMinute: minuteValue(event.target.value) })}
-                      />
-                    </label>
-                    <label>
-                      {routing.quietUntil}
-                      <input
-                        type="time"
-                        value={timeValue(rule.quietEndMinute)}
-                        onChange={(event) => change(index, { quietEndMinute: minuteValue(event.target.value) })}
-                      />
-                    </label>
-                  </div>
-                )}
-                <label className="choice-option">
-                  <input
-                    type="checkbox"
-                    checked={rule.urgentOverride}
-                    onChange={(event) => change(index, { urgentOverride: event.target.checked })}
-                  />
-                  {routing.urgentOverride}
-                </label>
-                <label className="choice-option">
-                  <input
-                    type="checkbox"
-                    checked={rule.escalateAfterMinutes !== null}
-                    onChange={(event) =>
-                      change(index, {
-                        escalateAfterMinutes: event.target.checked
-                          ? NOTIFICATION_ROUTING_DEFAULTS.escalateAfterMinutes
-                          : null,
-                      })
-                    }
-                  />
-                  {routing.escalateOnce}
-                </label>
-                {rule.escalateAfterMinutes !== null && (
-                  <>
-                    <label>
-                      {routing.escalateAfter}
-                      <input
-                        type="number"
-                        min={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.min}
-                        max={NOTIFICATION_ROUTING_LIMITS.escalateMinutes.max}
-                        value={rule.escalateAfterMinutes}
-                        onChange={(event) => change(index, { escalateAfterMinutes: Number(event.target.value) })}
-                      />
-                    </label>
-                    <fieldset>
-                      <legend>{routing.escalationChannels}</legend>
-                      {NOTIFICATION_KINDS.map((channel: NotificationKind) => (
-                        <label className="choice-option" key={channel}>
-                          <input
-                            type="checkbox"
-                            checked={rule.escalationChannels.includes(channel)}
-                            onChange={(event) =>
-                              change(index, {
-                                escalationChannels: toggle(rule.escalationChannels, channel, event.target.checked),
-                              })
-                            }
-                          />
-                          {channel}
-                        </label>
-                      ))}
-                    </fieldset>
-                  </>
-                )}
-                <div className="row">
-                  <button
-                    type="button"
-                    disabled={index === 0}
-                    onClick={() => {
-                      const next = [...rules];
-                      [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
-                      setDraft(next);
-                    }}
-                  >
-                    {routing.moveUp}
-                  </button>
-                  <button type="button" onClick={() => setDraft(rules.filter((item) => item.id !== rule.id))}>
-                    {routing.remove}
-                  </button>
-                </div>
-              </section>
-            ))}
-            {admin && (
-              <div className="row">
-                <button
-                  type="button"
-                  disabled={rules.length >= NOTIFICATION_ROUTING_LIMITS.rules}
-                  onClick={() =>
-                    setDraft([
-                      ...rules,
-                      {
-                        id: crypto.randomUUID(),
-                        hostId: null,
-                        priorities: ["urgent", "high"],
-                        channels: [...NOTIFICATION_KINDS],
-                        quietStartMinute: null,
-                        quietEndMinute: null,
-                        urgentOverride: true,
-                        escalateAfterMinutes: null,
-                        escalationChannels: [],
-                      },
-                    ])
-                  }
-                >
-                  {routing.add}
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={invalid || !current.data}
-                  onClick={() => save.mutate()}
-                >
-                  {routing.save}
-                </button>
-              </div>
+              </>
             )}
-          </fieldset>
-          {invalid && <p className="notice warning">{routing.invalid}</p>}
-          <ErrorNotice error={current.error ?? hosts.error ?? save.error} />
-          {save.isSuccess && <p role="status">{routing.saved}</p>}
-        </>
-      )}
-    </details>
+            <div className="row">
+              <button
+                type="button"
+                disabled={index === 0}
+                onClick={() => {
+                  const next = [...rules];
+                  [next[index - 1], next[index]] = [next[index]!, next[index - 1]!];
+                  setDraft(next);
+                }}
+              >
+                {routing.moveUp}
+              </button>
+              <button type="button" onClick={() => setDraft(rules.filter((item) => item.id !== rule.id))}>
+                {routing.remove}
+              </button>
+            </div>
+          </section>
+        ))}
+        {admin && (
+          <div className="row">
+            <button
+              type="button"
+              disabled={rules.length >= NOTIFICATION_ROUTING_LIMITS.rules}
+              onClick={() =>
+                setDraft([
+                  ...rules,
+                  {
+                    id: crypto.randomUUID(),
+                    hostId: null,
+                    priorities: ["urgent", "high"],
+                    channels: [...NOTIFICATION_KINDS],
+                    quietStartMinute: null,
+                    quietEndMinute: null,
+                    urgentOverride: true,
+                    escalateAfterMinutes: null,
+                    escalationChannels: [],
+                  },
+                ])
+              }
+            >
+              {routing.add}
+            </button>
+            <button type="button" className="primary" disabled={invalid || !current.data} onClick={() => save.mutate()}>
+              {routing.save}
+            </button>
+          </div>
+        )}
+      </fieldset>
+      {invalid && <p className="notice warning">{routing.invalid}</p>}
+      <ErrorNotice error={current.error ?? hosts.error ?? save.error} />
+      {save.isSuccess && <p role="status">{routing.saved}</p>}
+    </SettingsFold>
   );
 }

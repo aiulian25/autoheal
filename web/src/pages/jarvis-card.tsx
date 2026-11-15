@@ -24,6 +24,7 @@ import { CopyButton, ErrorNotice, TimeAgo } from "../components/common.js";
 import { JOB_REFRESH_MILLISECONDS, TEXT } from "../constants.js";
 import { timeOfDay } from "../format.js";
 import { jarvisQuery } from "../queries.js";
+import { SettingsFold } from "./settings/settings-fold.js";
 
 const text = TEXT.jarvis;
 // The webhook ID is a password: the card shows this in its place, and Copy takes the real one.
@@ -163,6 +164,12 @@ function aboutLine(question: JarvisOpenQuestionView): string {
 
 function openLine(question: JarvisOpenQuestionView): string {
   return text.asked(timeOfDay(question.askedAt), aboutLine(question), question.asks);
+}
+
+// Where the assistant stands, on its card's folded line.
+function standing(view: JarvisView): string {
+  if (!view.connected) return text.state.notConnected;
+  return view.paused ? text.state.paused : text.state.connected;
 }
 
 const isWaiting = (view: JarvisView | undefined) =>
@@ -375,15 +382,12 @@ export function JarvisCard() {
     inPlace.confirm(text.disconnectConfirm(view.name), () => disconnect.mutate());
   };
   return (
-    <section className={view.connected ? "card settings-card" : "card settings-card dashed"} aria-labelledby="jarvis">
-      <header className="settings-card-head">
-        <h3 id="jarvis">{text.title}</h3>
-        <span className={view.connected ? "small" : "small muted"}>
-          {view.paused && text.paused}
-          {view.connected && !view.paused && text.connected}
-          {!view.connected && text.notConnected}
-        </span>
-      </header>
+    <SettingsFold
+      title={text.title}
+      state={standing(view)}
+      dashed={!view.connected}
+      attention={view.notConfirmed > 0 || view.linesDropped > 0}
+    >
       <p className="settings-card-text">{text.explanation(view.name)}</p>
       {!view.homeAssistantSet && <p className="small muted">{text.needsHomeAssistant}</p>}
       {view.homeAssistantSet && view.links !== null && (
@@ -479,6 +483,6 @@ export function JarvisCard() {
       )}
       {inPlace.question}
       <ErrorNotice error={connect.error ?? testQuestion.error ?? test.error ?? pause.error ?? disconnect.error} />
-    </section>
+    </SettingsFold>
   );
 }

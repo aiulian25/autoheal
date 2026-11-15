@@ -139,6 +139,8 @@ export const CONNECT_TEXT = {
       add: "Add a key",
       makeName: "Name for a new key",
       madeNotice: (name: string) => `${name} is made. Its public line goes in ~/.ssh/authorized_keys on each host:`,
+      count: (count: number) => (count === 1 ? "1 key" : `${count} keys`),
+      unused: (count: number) => `${count} used by no host`,
     },
   },
   // The dashed tile at the end of the host grid, and the dialog it opens to connect a new host.

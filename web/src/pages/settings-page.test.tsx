@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES } from "../../../src/shared/api.js";
 import { TEXT } from "../constants.js";
@@ -14,6 +14,7 @@ import {
   serve,
   renderSettings,
   sent,
+  fold,
 } from "../test-support/settings-page.js";
 
 describe("the settings page", () => {
@@ -40,12 +41,12 @@ describe("the settings page", () => {
         });
       return answer(url, init);
     });
-    renderSettings("admin");
+    renderSettings("admin", "#system");
     const notice = await screen.findByText(/Saved settings for trusted proxies could not be read/);
     expect(notice.getAttribute("role")).toBe("status");
     expect(notice.textContent).toContain("Environment values or defaults are in use");
     expect(notice.textContent).toContain("verified configuration backup");
-    const card = (await screen.findByRole("heading", { name: "Trusted proxies" })).closest("section")!;
+    const card = await fold("Trusted proxies");
     fireEvent.click(within(card).getByRole("button", { name: `Trust ${RELAY}` }));
     await waitFor(() => expect(screen.queryByText(/Saved settings for trusted proxies/)).toBeNull());
     expect(repaired).toBe(true);
@@ -53,10 +54,10 @@ describe("the settings page", () => {
 
   it("shows administrators what the database holds and how long each kind is kept, and viewers nothing", async () => {
     serve("admin");
-    renderSettings("admin");
+    renderSettings("admin", "#backups");
     const words = TEXT.settingsPage.data;
     const line = [
-      words.size(bytes(DATA.bytes)),
+      bytes(DATA.bytes),
       `${words.cleaned} ${timeAgo(DATA.lastSweep!.at)}`,
       words.removed(wholeNumber(120)),
     ].join(TEXT.separator);
@@ -68,21 +69,21 @@ describe("the settings page", () => {
 
     cleanup();
     serve("viewer");
-    renderSettings("viewer");
+    renderSettings("viewer", "#backups");
     expect(await screen.findByRole("heading", { name: /Settings/ })).toBeTruthy();
     expect(screen.queryByText(words.explanation)).toBeNull();
   });
 
   it("tells an admin the system's facts, the proxies Autoheal trusts among them", async () => {
     serve("admin");
-    renderSettings("admin");
+    renderSettings("admin", "#system");
     const facts = (await screen.findByText(TEXT.settingsPage.systemFacts.version)).closest("dl")!;
     expect(within(facts).getByText(TEXT.settingsPage.systemFacts.proxies)).toBeTruthy();
   });
 
   it("tells a viewer the system's facts, but not which proxies Autoheal trusts", async () => {
     serve("viewer");
-    renderSettings("viewer");
+    renderSettings("viewer", "#system");
     const facts = (await screen.findByText(TEXT.settingsPage.systemFacts.version)).closest("dl")!;
     expect(within(facts).getByText(settings.version)).toBeTruthy();
     expect(within(facts).queryByText(TEXT.settingsPage.systemFacts.proxies)).toBeNull();
@@ -98,16 +99,17 @@ describe("the settings page", () => {
 
   it("says what Autoheal thinks with, and warns that Ollama is on plain http", async () => {
     serve("admin");
-    renderSettings("admin");
+    const router = renderSettings("admin");
 
-    const ollama = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const ollama = await fold("Ollama");
     expect((await within(ollama).findAllByText("qwen3:30b-a3b")).length).toBeGreaterThan(0);
     expect(within(ollama).getByText("16,384 tokens")).toBeTruthy();
     expect(await within(ollama).findByText("no model · 2 available")).toBeTruthy();
     expect(within(ollama).getByText("thinks before it answers · reads up to 262,144 tokens")).toBeTruthy();
     expect(within(ollama).getByText("From the .env. Changing it here overrides it, without a restart.")).toBeTruthy();
     expect(within(ollama).getByText(/^Plain http\./)).toBeTruthy();
-    const system = screen.getByRole("heading", { name: "System" }).closest("section")!;
+    await act(() => router.navigate("#system"));
+    const system = (await screen.findByRole("heading", { name: "System" })).closest("section")!;
     expect(within(system).getByText("Your own, from the .env")).toBeTruthy();
     expect(
       within(system).getByText(
@@ -119,7 +121,7 @@ describe("the settings page", () => {
   it("lists the models on that Ollama, and changes to one with a click", async () => {
     const fetch = serve("admin", { [`PUT ${API_ROUTES.ollamaSettings}`]: null });
     renderSettings("admin");
-    const ollama = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const ollama = await fold("Ollama");
     const choice = await within(ollama).findByRole("radio", { name: /qwen3:4b/ });
     fireEvent.click(choice);
     await waitFor(() => expect(sent(fetch, "PUT", API_ROUTES.ollamaSettings)[0]).toMatchObject({ model: "qwen3:4b" }));
@@ -131,7 +133,7 @@ describe("the settings page", () => {
       [`PUT ${API_ROUTES.ollamaSettings}`]: null,
     });
     renderSettings("admin");
-    const ollama = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const ollama = await fold("Ollama");
     fireEvent.click(await within(ollama).findByRole("button", { name: "Change" }));
     fireEvent.change(await within(ollama).findByLabelText(/^Name/), { target: { value: "Mini" } });
     await within(ollama).findByRole("radio", { name: /qwen3:4b/ });
@@ -144,14 +146,14 @@ describe("the settings page", () => {
   it("only shows a viewer the models, with none to click", async () => {
     serve("viewer");
     renderSettings("viewer");
-    const ollama = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const ollama = await fold("Ollama");
     expect(((await within(ollama).findByRole("radio", { name: /qwen3:4b/ })) as HTMLInputElement).disabled).toBe(true);
   });
 
   it("changes the Ollama Autoheal asks, with that server's models offered, and goes back to the .env's", async () => {
     const fetch = serve("admin", { [`PUT ${API_ROUTES.ollamaSettings}`]: null });
     renderSettings("admin");
-    const ollama = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const ollama = await fold("Ollama");
     fireEvent.click(await within(ollama).findByRole("button", { name: "Change" }));
     fireEvent.click(await within(ollama).findByRole("radio", { name: /qwen3:4b/ }));
     fireEvent.change(within(ollama).getByLabelText(/^Context window/), { target: { value: "32768" } });
@@ -167,7 +169,7 @@ describe("the settings page", () => {
       [API_ROUTES.ollamaSettings]: ollamaSettings({ source: "dashboard", model: "qwen3:4b" }),
     });
     renderSettings("admin");
-    const card = (await screen.findByRole("heading", { name: "Ollama" })).closest("section")!;
+    const card = await fold("Ollama");
     expect(await within(card).findByText("Chosen here; the .env's is the fallback.")).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: "Use the .env's" }));
     fireEvent.click(within(card).getByRole("button", { name: TEXT.yes }));
@@ -188,8 +190,8 @@ describe("the settings page", () => {
       const seenAs = addresses.includes(RELAY) ? BROWSER : RELAY;
       return json({ ...untrusted, source: "dashboard", addresses, seenAs });
     });
-    renderSettings("admin");
-    const card = (await screen.findByRole("heading", { name: "Trusted proxies" })).closest("section")!;
+    renderSettings("admin", "#system");
+    const card = await fold("Trusted proxies");
 
     fireEvent.click(within(card).getByRole("button", { name: `Trust ${RELAY}` }));
     expect(
@@ -213,6 +215,109 @@ describe("the settings page", () => {
     );
   });
 
+  it("shows one section at a time: Connections first, then the one the address names", async () => {
+    serve("admin");
+    const router = renderSettings("admin");
+    const section = (name: string) => screen.queryByRole("heading", { name, level: 2 });
+    expect(await screen.findByRole("heading", { name: "Connections", level: 2 })).toBeTruthy();
+    for (const other of ["Notifications", "Schedules", "Backups", "People and keys", "System"]) {
+      expect(section(other)).toBeNull();
+    }
+    await act(() => router.navigate("#backups"));
+    expect(await screen.findByRole("heading", { name: "Backups", level: 2 })).toBeTruthy();
+    expect(section("Connections")).toBeNull();
+  });
+
+  it("brings the page's top back into view when another section is chosen far down the page", async () => {
+    serve("admin");
+    const router = renderSettings("admin");
+    const page = (await screen.findByRole("heading", { name: "Settings", level: 1 })).parentElement!;
+    const brought = vi.spyOn(page, "scrollIntoView");
+    vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ top: 0 } as DOMRect);
+    await act(() => router.navigate("#schedules"));
+    expect(brought).not.toHaveBeenCalled();
+    vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ top: -600 } as DOMRect);
+    await act(() => router.navigate("#system"));
+    expect(brought).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a viewer who names an administrator's section Connections instead", async () => {
+    serve("viewer");
+    renderSettings("viewer", "#backups");
+    expect(await screen.findByRole("heading", { name: "Connections", level: 2 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Backups", level: 2 })).toBeNull();
+  });
+
+  it("folds each card to one line that says how it stands, closed until opened", async () => {
+    serve("admin", {
+      [API_ROUTES.sshKeys]: [
+        {
+          id: "s1",
+          name: "Alder",
+          publicLine: "",
+          fingerprint: "SHA256:a",
+          madeByAutoheal: true,
+          createdBy: "admin",
+          createdAt: 1,
+          hosts: ["Alder"],
+        },
+        {
+          id: "s2",
+          name: "Spare",
+          publicLine: "",
+          fingerprint: "SHA256:b",
+          madeByAutoheal: false,
+          createdBy: "admin",
+          createdAt: 1,
+          hosts: [],
+        },
+      ],
+    });
+    const router = renderSettings("admin");
+    const ollama = await fold("Ollama");
+    expect(ollama.open).toBe(false);
+    const line = ollama.querySelector("summary")!;
+    await waitFor(() => expect(line.textContent).toContain("answering"));
+    expect(line.textContent).toContain("qwen3:30b-a3b");
+    expect(line.textContent).toContain("plain http");
+
+    await act(() => router.navigate("#backups"));
+    const data = await fold("Data");
+    expect(data.open).toBe(false);
+    await waitFor(() => expect(data.querySelector("summary")!.textContent).toContain(bytes(DATA.bytes)));
+
+    await act(() => router.navigate("#people"));
+    const keys = await fold("SSH keys");
+    await waitFor(() => expect(keys.querySelector("summary")!.textContent).toContain("2 keys · 1 used by no host"));
+    expect(keys.open).toBe(false);
+  });
+
+  it("opens by itself a card that needs a person", async () => {
+    serve("admin", {
+      [API_ROUTES.ollama]: {
+        reachable: false,
+        checkedAt: Date.now(),
+        error: "connect ECONNREFUSED",
+        version: null,
+        model: "qwen3:30b-a3b",
+        modelPresent: false,
+        facts: null,
+        models: [],
+        loaded: [],
+      },
+    });
+    renderSettings("admin");
+    const ollama = await fold("Ollama");
+    await waitFor(() => expect(ollama.open).toBe(true));
+  });
+
+  it("keeps the warning that no backup leaves this machine in sight, outside any fold", async () => {
+    serve("admin");
+    renderSettings("admin", "#backups");
+    const warning = await screen.findByText(TEXT.settingsPage.backup.noOffbox);
+    expect(warning.closest("details")).toBeNull();
+  });
+
   it("shows the proxies the .env names, and leaves them to the .env", async () => {
     serve("admin", {
       [API_ROUTES.settings]: {
@@ -220,8 +325,8 @@ describe("the settings page", () => {
         trustedProxies: { ...untrusted, source: "environment", addresses: [RELAY], seenAs: BROWSER },
       },
     });
-    renderSettings("admin");
-    const card = (await screen.findByRole("heading", { name: "Trusted proxies" })).closest("section")!;
+    renderSettings("admin", "#system");
+    const card = await fold("Trusted proxies");
 
     expect(
       within(card).getByText("The .env names these in TRUSTED_PROXY_ADDRESSES, so they can only be changed there."),

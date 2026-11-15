@@ -161,6 +161,12 @@ function removeFixtureFiles(fixture: FixtureHost) {
 const rail = (page: Page, name: string | RegExp) =>
   page.getByRole("navigation", { name: "Sections" }).getByRole("link", { name });
 
+// Settings shows one section at a time: the one its own menu has chosen.
+const settingsSection = async (page: Page, name: string) => {
+  await rail(page, "Settings").click();
+  await page.getByRole("navigation", { name: "Settings sections" }).getByRole("link", { name }).click();
+};
+
 /**
  * Reload until the expectation holds: the dashboard also refreshes on its own every 15 s. The expectation waits
  * as any does, so a page still loading its data is not taken for one without what is looked for.
@@ -862,8 +868,10 @@ test.describe("Autoheal, end to end on the real image", () => {
         ),
       );
       const hourAway = (offset: number) => `${String((londonHour + offset) % 24).padStart(2, "0")}:00`;
-      await rail(admin, "Settings").click();
-      const window = admin.getByRole("region", { name: "Host package window" });
+      await settingsSection(admin, "Schedules");
+      // Folded to its line until opened, after each load too.
+      const window = admin.getByRole("group", { name: "Host package window", exact: true });
+      await window.locator(":scope > summary").click();
       await window.getByRole("checkbox", { name: /^Install security fixes on their own/ }).uncheck();
       await expect(window.getByText("Saved")).toBeVisible();
       // A time is saved once its field is left.
@@ -1121,7 +1129,7 @@ test.describe("Autoheal, end to end on the real image", () => {
           { timeout: 60_000 },
         )
         .toBeGreaterThan(Date.now() - 30_000);
-      await rail(admin, "Settings").click();
+      await settingsSection(admin, "People and keys");
       await admin.getByRole("link", { name: "Manage people" }).click();
       await admin.getByLabel("Username").fill("partner");
       await admin.getByRole("button", { name: "Add user" }).click();
@@ -1211,7 +1219,7 @@ test.describe("Autoheal, end to end on the real image", () => {
 
   test.describe.serial("backup restore and responsive navigation", () => {
     test("an uploaded backup is checked and previewed, a forged one refused", async () => {
-      await rail(admin, "Settings").click();
+      await settingsSection(admin, "Backups");
       await admin.getByRole("link", { name: "See all backups" }).click();
       await admin.getByRole("button", { name: "Make a backup now" }).click();
       const download = admin.getByRole("link", { name: "Download" }).first();
@@ -1237,7 +1245,7 @@ test.describe("Autoheal, end to end on the real image", () => {
     });
 
     test("restoring a backup signs everyone out, and the admin signs in again", async () => {
-      await rail(admin, "Settings").click();
+      await settingsSection(admin, "Backups");
       await admin.getByRole("link", { name: "See all backups" }).click();
       await admin.getByRole("button", { name: "Restore…" }).first().click();
       await expect(admin.getByText("Everyone is signed out")).toBeVisible();

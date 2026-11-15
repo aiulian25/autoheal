@@ -13,6 +13,7 @@ import {
   serve,
   renderSettings,
   sent,
+  fold,
 } from "../../test-support/settings-page.js";
 
 describe("the settings page", () => {
@@ -25,7 +26,7 @@ describe("the settings page", () => {
     const fetch = serve("admin");
     renderSettings("admin");
 
-    const card = (await screen.findByRole("heading", { name: "Home Assistant" })).closest("section")!;
+    const card = await fold("Home Assistant");
     fireEvent.change(within(card).getByLabelText(/^Address/), { target: { value: "http://ha.local:8123" } });
     fireEvent.change(within(card).getByLabelText(/^Long-lived token/), { target: { value: "secret-token" } });
     fireEvent.click(within(card).getByRole("button", { name: "Connect" }));
@@ -58,7 +59,7 @@ describe("the settings page", () => {
         return json(INTEGRATIONS.map((row) => (row.kind === "gotify" ? { ...row, delivery } : row)));
       return base(url, init);
     });
-    renderSettings("admin");
+    renderSettings("admin", "#notifications");
     const row = (await screen.findByText("Gotify")).closest("li")!;
     expect(within(row).getByText("Configured; untested")).toBeTruthy();
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
@@ -91,7 +92,7 @@ describe("the settings page", () => {
           : json(rows());
       return base(url, init);
     });
-    renderSettings("admin");
+    renderSettings("admin", "#notifications");
     const row = (await screen.findByText("Gotify")).closest("li")!;
     fireEvent.click(within(row).getByRole("button", { name: "Send a test" }));
     await waitFor(() => expect(finishTest).toBeDefined());
@@ -112,7 +113,7 @@ describe("the settings page", () => {
 
   it("tests and removes a channel that is set up, and sets one up that is not", async () => {
     const fetch = serve("admin");
-    renderSettings("admin");
+    renderSettings("admin", "#notifications");
 
     const gotify = (await screen.findByText("Gotify")).closest("li")!;
     expect(within(gotify).getByText("https://gotify.example · token set")).toBeTruthy();
@@ -146,7 +147,7 @@ describe("the settings page", () => {
       format: "discord",
     });
     const fetch = serve("admin", { [API_ROUTES.integrations]: [...INTEGRATIONS, webhook] });
-    renderSettings("admin");
+    renderSettings("admin", "#notifications");
 
     const row = (await screen.findByText("Webhook")).closest("li")!;
     expect(within(row).getByText("https://discord.com/… · Discord")).toBeTruthy();
@@ -169,7 +170,7 @@ describe("the settings page", () => {
 
   it("saves the package window's choice as soon as it changes", async () => {
     const fetch = serve("admin");
-    renderSettings("admin");
+    renderSettings("admin", "#schedules");
 
     const tick = await screen.findByRole("checkbox", { name: /Install security fixes on their own/ });
     expect((tick as HTMLInputElement).checked).toBe(true);
@@ -189,7 +190,7 @@ describe("the settings page", () => {
     fetch.mockImplementation(async (url, init) =>
       init?.method === "PUT" ? json(JSON.parse(String(init.body))) : answer(url, init),
     );
-    renderSettings("admin");
+    renderSettings("admin", "#schedules");
 
     const from = await screen.findByLabelText("From");
     const to = screen.getByLabelText("To");
@@ -208,7 +209,7 @@ describe("the settings page", () => {
 
   it("says there is no off-box copy yet, and how to add one", async () => {
     serve("admin");
-    renderSettings("admin");
+    renderSettings("admin", "#backups");
 
     expect(await screen.findByText(/^No off-box copy yet\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Add an off-box copy" }));
@@ -223,10 +224,10 @@ describe("the settings page", () => {
         secret: "the-secret",
       },
     });
-    renderSettings("admin");
+    renderSettings("admin", "#people");
 
     expect((await screen.findByText("1 person")).closest("p")!.textContent).toBe("1 person · admin");
-    const keys = screen.getByRole("heading", { name: "Widget and metrics keys" }).closest("section")!;
+    const keys = await fold("Widget and metrics keys");
     expect(within(keys).getByText("homepage")).toBeTruthy();
     expect(within(keys).getByText("Homepage · never used")).toBeTruthy();
     fireEvent.change(within(keys).getByLabelText(/^New key name/), { target: { value: "phone" } });
@@ -246,9 +247,9 @@ describe("the settings page", () => {
         secret: "ahw_metrics-secret",
       },
     });
-    renderSettings("admin");
+    renderSettings("admin", "#people");
 
-    const keys = (await screen.findByRole("heading", { name: "Widget and metrics keys" })).closest("section")!;
+    const keys = await fold("Widget and metrics keys");
     fireEvent.change(within(keys).getByLabelText(/^New key name/), { target: { value: "prometheus" } });
     fireEvent.change(within(keys).getByLabelText("Reads"), { target: { value: "metrics" } });
     fireEvent.click(within(keys).getByRole("button", { name: "Create key" }));
@@ -266,12 +267,17 @@ describe("the settings page", () => {
 
   it("shows a viewer what is set up, and nothing to change or only admins may see", async () => {
     serve("viewer");
-    renderSettings("viewer");
+    const router = renderSettings("viewer", "#notifications");
 
     expect(await screen.findByText("Gotify")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Send a test" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    await act(() => router.navigate("#connections"));
+    await fold("Ollama");
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    await act(() => router.navigate("#system"));
+    expect(await screen.findByText(TEXT.settingsPage.systemFacts.version)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "People and keys" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Backups" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Trusted proxies" })).toBeNull();
@@ -293,13 +299,13 @@ describe("the settings page", () => {
       },
     });
     serve("admin", { [API_ROUTES.selfUpdate]: stopped("blocked") });
-    renderSettings("admin");
+    renderSettings("admin", "#system");
     await screen.findByText(/It stopped partway/);
     expect((screen.getByRole("button", { name: words.update }) as HTMLButtonElement).disabled).toBe(false);
     cleanup();
 
     serve("admin", { [API_ROUTES.selfUpdate]: stopped("updating") });
-    renderSettings("admin");
+    renderSettings("admin", "#system");
     await screen.findByText(/It stopped partway/);
     expect((screen.getByRole("button", { name: words.update }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -319,8 +325,8 @@ describe("the settings page", () => {
         },
       } satisfies SelfUpdateView,
     });
-    renderSettings("admin");
-    const card = (await screen.findByRole("heading", { name: words.title })).closest("section")!;
+    renderSettings("admin", "#system");
+    const card = await fold(words.title);
     expect(within(card).getByText(words.explanation(selfUpdate.reference))).toBeTruthy();
     // Started on that image 20 minutes ago, however it was updated.
     expect(within(card).getByText(words.runs("aaaaaaaaaaaa", "20 minutes ago"))).toBeTruthy();
@@ -336,8 +342,8 @@ describe("the settings page", () => {
     serve("admin", {
       [API_ROUTES.selfUpdate]: { ...selfUpdate, unavailable: SELF_UPDATE_TEXT.noSocket, runningImage: null },
     });
-    renderSettings("admin");
-    const card = (await screen.findByRole("heading", { name: words.title })).closest("section")!;
+    renderSettings("admin", "#system");
+    const card = await fold(words.title);
     expect(await within(card).findByText(SELF_UPDATE_TEXT.noSocket)).toBeTruthy();
     expect(within(card).queryByRole("button", { name: words.update })).toBeNull();
   });

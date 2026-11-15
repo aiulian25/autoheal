@@ -21,9 +21,8 @@ export const HOME_ASSISTANT_TEXT = {
     explanation: (name: string | null) =>
       `${calledFirst(name)} tells you what matters from what Autoheal finds, through Home Assistant, and can ask before Autoheal updates a container or a host, or restarts a host. Only what stays a problem is told or asked, at most ${JARVIS_LIMITS.perDay} a day unless it is urgent.`,
     needsHomeAssistant: "Connect Home Assistant first: the assistant lives there.",
-    connected: "Connected",
-    paused: "Paused",
-    notConnected: "Not connected",
+    // Where it stands, on the line its card folds to.
+    state: { connected: "connected", paused: "paused", notConnected: "not connected" },
     name: "Name",
     nameHint: "What you call it, shown only here. Leave it empty for “the assistant”.",
     nameRefused: "Only letters, digits, spaces, ' and - can be used.",

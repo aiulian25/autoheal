@@ -246,6 +246,11 @@
   display: none;
 }
 
+/* Its head is drawn as its own row, with the group's count and actions: no chevron. */
+.update-group > summary::before {
+  content: none;
+}
+
 .update-group > summary strong {
   color: var(--text);
   font-weight: var(--weight-medium);

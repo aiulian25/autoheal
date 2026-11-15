@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { vi } from "vitest";
 import {
@@ -149,18 +149,23 @@ export function serve(role: "admin" | "viewer", extra: Record<string, unknown> =
   return fetch;
 }
 
-export function renderSettings(role: "admin" | "viewer") {
+// The page opened at one of its sections, as `#backups` names it; Connections without one.
+export function renderSettings(role: "admin" | "viewer", section = "") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(SESSION_QUERY_KEY, sessionFor(role));
   const router = createMemoryRouter([{ path: PATHS.settings, element: <SettingsPage /> }], {
-    initialEntries: [PATHS.settings],
+    initialEntries: [PATHS.settings + section],
   });
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
+  return router;
 }
+
+// A card folded to its line, found by its title.
+export const fold = (title: string) => screen.findByRole("group", { name: title }) as Promise<HTMLDetailsElement>;
 
 export const sent = (fetch: ReturnType<typeof serve>, method: string, path: string) =>
   fetch.mock.calls

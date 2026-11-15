@@ -169,7 +169,8 @@ it.runIf(process.env.README_SCREENSHOTS === "1")(
     await shot("host", `/hosts/${hostIds.atlas!}`);
     await shot("board", "/board");
     await shot("containers", "/containers");
-    await shot("settings", "/settings");
+    // Connections, with Ollama opened from its folded line.
+    await shot("settings", "/settings", "Ollama");
     await browser.close();
     await plane.app.close();
     await plane.runnerApp.close();
@@ -280,7 +281,8 @@ it.runIf(process.env.README_SCREENSHOTS === "1")(
     const page = await context.newPage();
     await page.goto(`${ORIGIN}/settings`);
     await page.waitForLoadState("networkidle");
-    const card = page.locator('section[aria-labelledby="jarvis"]');
+    const card = page.getByRole("group", { name: "Assistant", exact: true });
+    await card.locator(":scope > summary").click();
     await card.evaluate((element) => element.scrollIntoView({ block: "start" }));
     await page.waitForTimeout(800);
     await card.screenshot({ path: `${OUT}/assistant.png` });

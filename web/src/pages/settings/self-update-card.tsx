@@ -6,6 +6,7 @@ import { ErrorNotice } from "../../components/common.js";
 import { JOB_REFRESH_MILLISECONDS, TEXT } from "../../constants.js";
 import { shortImageId, timeAgo } from "../../format.js";
 import { selfUpdateQuery } from "../../queries.js";
+import { SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -13,6 +14,15 @@ const text = TEXT.settingsPage;
 function updating(view: SelfUpdateView | undefined): boolean {
   const last = view?.last ?? null;
   return last !== null && !SELF_UPDATE_FINAL.includes(last.status) && last.status !== SELF_UPDATE_STATUS.blocked;
+}
+
+// What it runs and when it last updated, on the card's folded line.
+function standing(view: SelfUpdateView): string {
+  const words = text.selfUpdate;
+  if (view.unavailable !== null) return words.notHere;
+  const runs = view.runningImage === null ? null : words.runsShort(shortImageId(view.runningImage));
+  const last = view.last === null ? null : words.lastShort(timeAgo(view.last.finishedAt ?? view.last.startedAt));
+  return [runs, last].filter((part) => part !== null).join(TEXT.separator);
 }
 
 /** Autoheal updating itself, on the machine it runs on: the image it would run, and how the last update went. */
@@ -33,8 +43,11 @@ export function SelfUpdateCard() {
   }
   const last = view.last;
   return (
-    <section className="card stack" aria-labelledby="self-update-title">
-      <h3 id="self-update-title">{words.title}</h3>
+    <SettingsFold
+      title={words.title}
+      state={standing(view)}
+      attention={view.recoveryBlocked !== null || updating(view)}
+    >
       {view.unavailable !== null && <p className="small muted">{view.unavailable}</p>}
       {view.recoveryBlocked !== null && (
         <p className="notice warning small" role="status">
@@ -72,6 +85,6 @@ export function SelfUpdateCard() {
           {last.message}
         </p>
       )}
-    </section>
+    </SettingsFold>
   );
 }

@@ -5,6 +5,7 @@ import { api } from "../../api-client.js";
 import { ErrorNotice, Loading } from "../../components/common.js";
 import { REFRESH_MILLISECONDS, TEXT } from "../../constants.js";
 import { bytes, timeAgo, wholeNumber } from "../../format.js";
+import { SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -13,10 +14,10 @@ const text = TEXT.settingsPage;
 const keptOf = (kept: number | null) =>
   kept === null ? text.data.keptWhole : text.data.window(Math.round(kept / MILLISECONDS_PER_DAY));
 
-// The database's size, then the last clean-up and how much it removed.
+// The database's size, then the last clean-up and how much it removed: the line its card folds to.
 function dataLine(view: DataView): string {
   const words = text.data;
-  const size = words.size(bytes(view.bytes));
+  const size = bytes(view.bytes);
   if (view.lastSweep === null) {
     return [size, words.notCleaned].join(TEXT.separator);
   }
@@ -37,13 +38,10 @@ export function DataCard() {
   const words = text.data;
   const view = data.data;
   return (
-    <>
-      <section className="card settings-card" aria-labelledby="data-title">
-        <h3 id="data-title">{words.title}</h3>
-        <p className="settings-card-text small">{words.explanation}</p>
-        {view === undefined ? <Loading /> : <p className="small muted">{dataLine(view)}</p>}
-        <ErrorNotice error={data.error} />
-      </section>
+    <SettingsFold title={words.title} state={view === undefined ? null : dataLine(view)}>
+      <p className="settings-card-text small">{words.explanation}</p>
+      {view === undefined && <Loading />}
+      <ErrorNotice error={data.error} />
       {view !== undefined && (
         <dl className="card system-grid" aria-label={words.title}>
           {view.kinds.map((kind) => (
@@ -54,6 +52,6 @@ export function DataCard() {
           ))}
         </dl>
       )}
-    </>
+    </SettingsFold>
   );
 }

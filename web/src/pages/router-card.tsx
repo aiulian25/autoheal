@@ -12,6 +12,7 @@ import { useAskInPlace } from "../components/ask-in-place.js";
 import { ErrorNotice } from "../components/common.js";
 import { TEXT } from "../constants.js";
 import { routerSettingsQuery } from "../queries.js";
+import { SettingsFold } from "./settings/settings-fold.js";
 
 const text = TEXT.network.connection;
 
@@ -219,16 +220,19 @@ export function RouterCard() {
     asking.confirm(text.removeConfirm, () => remove.mutate());
   };
   return (
-    <section className="card settings-card" aria-labelledby="router-title">
-      <header className="settings-card-head">
-        <h3 id="router-title">{text.title}</h3>
-        {view.configured && (
+    <SettingsFold
+      title={text.title}
+      state={view.configured ? view.url : text.notSetUp}
+      dashed={!view.configured}
+      badge={
+        view.configured && (
           <span className="badge good">
             <span className="status-dot" />
             {text.connected}
           </span>
-        )}
-      </header>
+        )
+      }
+    >
       <p className="settings-card-text">{text.explanation}</p>
       {view.configured && !changing && (
         <p className="small">
@@ -255,6 +259,6 @@ export function RouterCard() {
       {view.configured && !changing && <ContractForm view={view} onSaved={refresh} />}
       {asking.question}
       <ErrorNotice error={settings.error ?? remove.error} />
-    </section>
+    </SettingsFold>
   );
 }

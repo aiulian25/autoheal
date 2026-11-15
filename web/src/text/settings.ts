@@ -119,6 +119,7 @@ export const SETTINGS_TEXT = {
     remove: "Remove rule",
     add: "Add routing rule",
     save: "Save routing",
+    count: (count: number) => (count === 1 ? "1 rule" : `${count} rules`),
     invalid:
       "Choose at least one severity, different quiet start/end times and an escalation channel when escalation is " +
       "enabled.",
@@ -167,6 +168,12 @@ export const SETTINGS_TEXT = {
       "network.trusted_proxies": "trusted proxies",
     },
     title: "Settings",
+    // What a card folded to its line says of itself.
+    fold: {
+      none: "none yet",
+      plainHttp: "plain http",
+      fromEnvironment: "from the .env",
+    },
     nav: {
       label: "Settings sections",
       connections: "Connections",
@@ -244,6 +251,7 @@ export const SETTINGS_TEXT = {
       contextHint: "How much of a report it reads at once; within what the model reads.",
       save: "Save",
       checking: "Asking that Ollama…",
+      moreServers: (count: number) => (count === 1 ? "1 more server" : `${count} more servers`),
     },
     homeAssistant: {
       explanation: "Autoheal reads it, never changes it, and turns unavailable devices and integrations into tasks.",
@@ -263,7 +271,6 @@ export const SETTINGS_TEXT = {
     data: {
       title: "Data",
       explanation: "Each day Autoheal removes finished records older than their window. The audit log is kept whole.",
-      size: (size: string) => `The database holds ${size}`,
       cleaned: "cleaned up",
       removed: (count: string) => `${count} removed`,
       notCleaned: "not cleaned up since the dashboard started",
@@ -289,9 +296,15 @@ export const SETTINGS_TEXT = {
       from: "From",
       to: "To",
       securityFixes: "Install security fixes on their own, unless a rule holds them",
+      hours: (from: string, to: string) => `${from} to ${to}`,
+      securityOnTheirOwn: "security fixes on their own",
+      securityWaits: "security fixes wait",
     },
     always: {
       title: "Always running",
+      shortProblemChecks: (every: string) => `problem checks ${every}`,
+      shortImageChecks: (every: string) => `image checks ${every}`,
+      shortDatabaseBackup: (every: string) => `database backup ${every}`,
       problemChecks: "Problem checks",
       imageChecks: "Image update checks",
       liveStats: "Live stats kept",
@@ -345,9 +358,11 @@ export const SETTINGS_TEXT = {
         string
       >,
       create: "Create key",
+      count: (count: number) => (count === 1 ? "1 key" : `${count} keys`),
     },
     proxies: {
       title: "Trusted proxies",
+      count: (count: number) => (count === 1 ? "1 address" : `${count} addresses`),
       explanation:
         "A reverse proxy passes on whom each request is for. Autoheal takes that word only from the proxies listed here, and records the address it gives in sessions, the audit log and the sign-in limits.",
       direct: (peer: string) => `Your browser reached Autoheal directly, from ${peer}.`,
@@ -378,6 +393,9 @@ export const SETTINGS_TEXT = {
         since === null ? `Running image ${image}.` : `Running image ${image}, started ${since}.`,
       update: "Update Autoheal",
       last: "Last update",
+      notHere: "not available here",
+      runsShort: (image: string) => `runs ${image}`,
+      lastShort: (ago: string) => `last update ${ago}`,
     },
   },
   services: {

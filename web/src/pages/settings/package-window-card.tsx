@@ -5,6 +5,7 @@ import { ErrorNotice, Loading } from "../../components/common.js";
 import { TEXT } from "../../constants.js";
 import { hostUpdatesQuery } from "../../queries.js";
 import { refreshSettingsNotice } from "./refresh-settings-notice.js";
+import { SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -30,9 +31,15 @@ export function PackageWindowCard({ admin }: { admin: boolean }) {
     },
   });
   const current = settings.data;
+  const state =
+    current === undefined
+      ? null
+      : [
+          text.window.hours(current.windowStart, current.windowEnd),
+          current.securityInWindow ? text.window.securityOnTheirOwn : text.window.securityWaits,
+        ].join(TEXT.separator);
   return (
-    <section className="card settings-card" aria-labelledby="window-title">
-      <h3 id="window-title">{text.window.title}</h3>
+    <SettingsFold title={text.window.title} state={state}>
       <p className="settings-card-text small">{text.window.explanation}</p>
       {current === undefined && <Loading />}
       {current !== undefined && (
@@ -79,6 +86,6 @@ export function PackageWindowCard({ admin }: { admin: boolean }) {
       )}
       {save.isSuccess && <span className="small saved-note">{TEXT.hostControl.saved}</span>}
       <ErrorNotice error={save.error ?? settings.error} />
-    </section>
+    </SettingsFold>
   );
 }

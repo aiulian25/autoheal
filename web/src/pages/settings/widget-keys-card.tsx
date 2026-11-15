@@ -7,6 +7,7 @@ import { api } from "../../api-client.js";
 import { ErrorNotice, PlainText } from "../../components/common.js";
 import { TEXT } from "../../constants.js";
 import { timeAgo } from "../../format.js";
+import { countState, SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -38,11 +39,8 @@ export function WidgetKeysCard({ publicBaseUrl }: { publicBaseUrl: string }) {
     asking.confirm(TEXT.widgetKeys.revokeConfirm(key.name), () => revoke.mutate(key.id));
   };
   return (
-    <section className="card keys-card" aria-labelledby="keys-title">
-      <div className="keys-head">
-        <h3 id="keys-title">{text.keys.title}</h3>
-        <p className="small muted">{text.keys.explanation}</p>
-      </div>
+    <SettingsFold title={text.keys.title} state={countState(keys.data, text.keys.count)} kind="keys-card">
+      <p className="keys-head small muted">{text.keys.explanation}</p>
       {created !== undefined && (
         <div className="notice warning stack keys-created" role="status">
           <strong>{TEXT.widgetKeys.created(created.key.name)}</strong>
@@ -62,7 +60,7 @@ export function WidgetKeysCard({ publicBaseUrl }: { publicBaseUrl: string }) {
       )}
       {keys.data?.map((key) => (
         <div key={key.id} className="key-row">
-          <span className="mono">{key.name}</span>
+          <span className="mono key-name">{key.name}</span>
           <span className="small muted">
             {text.keys.shortScopes[key.scope]}
             {TEXT.separator}
@@ -93,6 +91,6 @@ export function WidgetKeysCard({ publicBaseUrl }: { publicBaseUrl: string }) {
       </form>
       {asking.question}
       <ErrorNotice error={keys.error ?? create.error ?? revoke.error} />
-    </section>
+    </SettingsFold>
   );
 }

@@ -259,9 +259,25 @@ it("puts a pinned overview card first after a reload, with the rest in their ord
   expect(third!.className).toContain("stats-history");
 });
 
+it("leaves what was hidden on another host's page out of this one's, as it was when one choice held for all", async () => {
+  const hidden = JSON.stringify({ pinned: [], hidden: [HOST_CARDS.updates, HOST_CARDS.control] });
+  window.localStorage.setItem(`${CARD_STORAGE_KEY_PREFIX}${CARD_PAGES.host}-another-host`, hidden);
+  window.localStorage.setItem(`${CARD_STORAGE_KEY_PREFIX}${CARD_PAGES.host}`, hidden);
+  show();
+  const tabs = await screen.findByRole("navigation", { name: TEXT.hosts.tabs.label });
+  expect(within(tabs).getByRole("link", { name: TEXT.hosts.tabs.updates })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: TEXT.arrange.show(TEXT.hostControl.title(host.label)) })).toBeNull();
+  // Arranging says the choice is for this host alone.
+  fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.start }));
+  expect(screen.getByText(TEXT.arrange.hostHint(host.label))).toBeTruthy();
+});
+
 it("shows a hidden card a link leads to, and the system card while the host's clock pauses its recovery", async () => {
   const hidden = [HOST_CARDS.updates, HOST_CARDS.system, HOST_CARDS.control];
-  window.localStorage.setItem(`${CARD_STORAGE_KEY_PREFIX}${CARD_PAGES.host}`, JSON.stringify({ pinned: [], hidden }));
+  window.localStorage.setItem(
+    `${CARD_STORAGE_KEY_PREFIX}${CARD_PAGES.host}-${host.id}`,
+    JSON.stringify({ pinned: [], hidden }),
+  );
   show(packageView, `#${HOST_SECTIONS.updates}`, { ...host, health: hostHealthWithout, clockSkewSeconds: -754 });
   expect(await screen.findByText(TEXT.hostSystem.title)).toBeTruthy();
   expect(document.getElementById(HOST_SECTIONS.updates)).not.toBeNull();

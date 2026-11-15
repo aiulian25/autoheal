@@ -15,15 +15,17 @@ export interface PlacedCard {
 
 export const NO_ARRANGEMENT: CardArrangement = { pinned: [], hidden: [] };
 
-const keyOf = (page: CardPage) => `${CARD_STORAGE_KEY_PREFIX}${page}`;
+// A page drawn for one host keeps each host's arrangement apart; a page of its own keeps one.
+const keyOf = (page: CardPage, owner?: string) =>
+  owner === undefined ? `${CARD_STORAGE_KEY_PREFIX}${page}` : `${CARD_STORAGE_KEY_PREFIX}${page}-${owner}`;
 
 const idsIn = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
 
 /** The page's arrangement as this browser keeps it; none when it keeps none, keeps something else, or storage is off. */
-export function storedArrangement(page: CardPage): CardArrangement {
+export function storedArrangement(page: CardPage, owner?: string): CardArrangement {
   try {
-    const stored: unknown = JSON.parse(window.localStorage.getItem(keyOf(page)) ?? "null");
+    const stored: unknown = JSON.parse(window.localStorage.getItem(keyOf(page, owner)) ?? "null");
     if (typeof stored !== "object" || stored === null) {
       return NO_ARRANGEMENT;
     }
@@ -35,13 +37,13 @@ export function storedArrangement(page: CardPage): CardArrangement {
 }
 
 /** Keeps it for the next visit, and nothing at all once nothing is pinned or hidden. */
-export function keepArrangement(page: CardPage, arrangement: CardArrangement) {
+export function keepArrangement(page: CardPage, arrangement: CardArrangement, owner?: string) {
   const nothingChosen = arrangement.pinned.length === 0 && arrangement.hidden.length === 0;
   try {
     if (nothingChosen) {
-      window.localStorage.removeItem(keyOf(page));
+      window.localStorage.removeItem(keyOf(page, owner));
     } else {
-      window.localStorage.setItem(keyOf(page), JSON.stringify(arrangement));
+      window.localStorage.setItem(keyOf(page, owner), JSON.stringify(arrangement));
     }
   } catch {
     // Storage can be off (a private window): the arrangement then holds until the page reloads.

@@ -24,6 +24,8 @@ export const COMMON_TEXT = {
     start: "Arrange cards",
     done: "Done arranging",
     hint: "Pinned cards come first in their part of the page; hidden ones wait on this line. Only this browser keeps your choice.",
+    hostHint: (host: string) =>
+      `Pinned cards come first in their part of the page; hidden ones wait on this line. Only this browser keeps your choice, and only for ${host}.`,
     hidden: "Hidden cards:",
     show: (card: string) => `Show ${card}`,
     pin: "Pin to top",

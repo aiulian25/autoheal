@@ -8,6 +8,7 @@ import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
 import { TEXT } from "../constants.js";
 import { hostsQuery, registryCredentialsQuery } from "../queries.js";
+import { countState, SettingsFold } from "../pages/settings/settings-fold.js";
 
 const text = TEXT.registries;
 
@@ -94,11 +95,8 @@ export function RegistryCredentialsCard() {
   const list = credentials.data ?? [];
   const fleet = (hosts.data ?? []).filter(({ label }) => label !== "");
   return (
-    <section className="card stack" aria-labelledby="registries-title">
-      <div>
-        <h3 id="registries-title">{text.title}</h3>
-        <p className="small muted">{text.explanation}</p>
-      </div>
+    <SettingsFold title={text.title} state={countState(credentials.data, text.count)}>
+      <p className="small muted">{text.explanation}</p>
       {credentials.data === undefined && (credentials.error ? <ErrorNotice error={credentials.error} /> : <Loading />)}
       {credentials.data !== undefined && list.length === 0 && <p className="muted">{text.none}</p>}
       {list.map((credential) => (
@@ -205,6 +203,6 @@ export function RegistryCredentialsCard() {
           {text.add}
         </button>
       </form>
-    </section>
+    </SettingsFold>
   );
 }

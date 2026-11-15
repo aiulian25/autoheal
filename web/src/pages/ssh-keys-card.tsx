@@ -8,6 +8,7 @@ import { ErrorNotice } from "../components/common.js";
 import { TEXT } from "../constants.js";
 import { sshKeysQuery } from "../queries.js";
 import { KeySetup } from "./ssh-setup.js";
+import { countState, SettingsFold } from "./settings/settings-fold.js";
 
 const text = TEXT.ssh.keys;
 const add = TEXT.ssh.add;
@@ -54,16 +55,17 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
     asking.confirm(text.removeConfirm(key.name), () => remove.mutate(key.id));
   };
   const list = keys.data ?? [];
+  const unused = list.filter((key) => key.hosts.length === 0).length;
+  const state = [countState(keys.data, text.count), unused === 0 ? null : text.unused(unused)]
+    .filter((part) => part !== null)
+    .join(TEXT.separator);
   return (
-    <section className="card keys-card" aria-labelledby="ssh-keys-title">
-      <div className="keys-head">
-        <h3 id="ssh-keys-title">{text.title}</h3>
-        <p className="small muted">{text.explanation}</p>
-      </div>
-      {keys.data !== undefined && list.length === 0 && <p className="muted">{text.none}</p>}
+    <SettingsFold title={text.title} state={state} kind="keys-card">
+      <p className="keys-head small muted">{text.explanation}</p>
+      {keys.data !== undefined && list.length === 0 && <p className="keys-head muted">{text.none}</p>}
       {list.map((key) => (
         <div key={key.id} className="key-row">
-          <span>{key.name}</span>
+          <span className="key-name">{key.name}</span>
           <span className="small muted">
             <span className="mono">{key.fingerprint}</span>
             {TEXT.separator}
@@ -76,7 +78,7 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
         </div>
       ))}
       {make.data !== undefined && (
-        <div className="notice warning stack" role="status">
+        <div className="notice warning stack keys-created" role="status">
           <strong>{text.madeNotice(make.data.key.name)}</strong>
           <KeySetup
             publicLine={make.data.key.publicLine}
@@ -86,7 +88,7 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
           />
         </div>
       )}
-      <form className="step-form" onSubmit={submitAdd} aria-label={text.add}>
+      <form className="step-form key-form" onSubmit={submitAdd} aria-label={text.add}>
         <h4>{text.add}</h4>
         <label>
           {add.keyName}
@@ -135,6 +137,6 @@ export function SshKeysCard({ dashboardAddress }: { dashboardAddress: string }) 
       </form>
       {asking.question}
       <ErrorNotice error={keys.error ?? addKey.error ?? make.error ?? remove.error} />
-    </section>
+    </SettingsFold>
   );
 }

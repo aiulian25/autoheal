@@ -41,14 +41,19 @@ export interface PageArrangement {
   setArranging: (arranging: boolean) => void;
 }
 
-export function usePageArrangement(page: CardPage): PageArrangement {
-  const [arrangement, setArrangement] = useState(() => storedArrangement(page));
+/**
+ * A host's page arranges that host's cards alone. The page stays drawn from one host to the next, so another host's
+ * arrangement is read as its page opens.
+ */
+export function usePageArrangement(page: CardPage, owner?: string): PageArrangement {
+  const [kept, setKept] = useState(() => ({ owner, arrangement: storedArrangement(page, owner) }));
   const [arranging, setArranging] = useState(false);
+  if (kept.owner !== owner) setKept({ owner, arrangement: storedArrangement(page, owner) });
   const change = (next: CardArrangement) => {
-    setArrangement(next);
-    keepArrangement(page, next);
+    setKept({ owner, arrangement: next });
+    keepArrangement(page, next, owner);
   };
-  return { arrangement, change, arranging, setArranging };
+  return { arrangement: kept.arrangement, change, arranging, setArranging };
 }
 
 const text = TEXT.arrange;
@@ -117,13 +122,24 @@ export function CardGroup({ cards, page }: { cards: readonly ArrangedCard[]; pag
   );
 }
 
-/** At a page's foot: its hidden cards, each one to show again, and the switch that shows every card's controls. */
-export function ArrangeLine({ cards, page }: { cards: readonly ArrangedCard[]; page: PageArrangement }) {
+/**
+ * At a page's foot: its hidden cards, each one to show again, and the switch that shows every card's controls. A host's
+ * page says whose cards they are.
+ */
+export function ArrangeLine({
+  cards,
+  page,
+  hint = text.hint,
+}: {
+  cards: readonly ArrangedCard[];
+  page: PageArrangement;
+  hint?: string;
+}) {
   const { arrangement, change, arranging, setArranging } = page;
   const hiddenCards = cards.filter(isMovable).filter((card) => card.pressing !== true && isHidden(arrangement, card));
   return (
     <div className={arranging ? "arrange-line arranging" : "arrange-line"}>
-      {arranging && <span className="arrange-hint">{text.hint}</span>}
+      {arranging && <span className="arrange-hint">{hint}</span>}
       {hiddenCards.length > 0 && (
         <span className="arrange-hidden">
           {text.hidden}

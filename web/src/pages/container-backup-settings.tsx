@@ -5,6 +5,7 @@ import { backupSettingsSchema, type BackupSettings } from "../../../src/shared/c
 import { api } from "../api-client.js";
 import { ErrorNotice } from "../components/common.js";
 import { TEXT } from "../constants.js";
+import { SettingsFold } from "./settings/settings-fold.js";
 
 const text = TEXT.containerBackup.settings;
 const QUERY_KEY = ["container-backup-settings"];
@@ -33,27 +34,30 @@ export function ContainerBackupSettings() {
     setProblem(!parsed.success);
     if (parsed.success) save.mutate(parsed.data);
   };
+  const { directory, copyDirectory } = settings.data;
+  const copyLine = copyDirectory === null ? text.noSecondCopy : text.secondCopy(copyDirectory);
   return (
-    <form className="card settings-form" onSubmit={submit}>
-      <strong>{text.title}</strong>
-      <span className="small muted">{text.explanation}</span>
-      <label>
-        {text.directory}
-        <input name="directory" className="mono" required defaultValue={settings.data.directory} />
-      </label>
-      <label>
-        {text.copy}
-        <span className="hint">{text.copyHint}</span>
-        <input name="copy" className="mono" defaultValue={settings.data.copyDirectory ?? ""} />
-      </label>
-      {problem && <p className="notice warning small">{text.badFolder}</p>}
-      <div className="row">
-        <button type="submit" disabled={save.isPending}>
-          {text.save}
-        </button>
-        {save.isSuccess && !problem && <span className="small text-good">{text.saved}</span>}
-      </div>
-      <ErrorNotice error={save.error} />
-    </form>
+    <SettingsFold title={text.title} state={[directory, copyLine].join(TEXT.separator)}>
+      <form className="settings-form" onSubmit={submit}>
+        <span className="small muted">{text.explanation}</span>
+        <label>
+          {text.directory}
+          <input name="directory" className="mono" required defaultValue={directory} />
+        </label>
+        <label>
+          {text.copy}
+          <span className="hint">{text.copyHint}</span>
+          <input name="copy" className="mono" defaultValue={copyDirectory ?? ""} />
+        </label>
+        {problem && <p className="notice warning small">{text.badFolder}</p>}
+        <div className="row">
+          <button type="submit" disabled={save.isPending}>
+            {text.save}
+          </button>
+          {save.isSuccess && !problem && <span className="small text-good">{text.saved}</span>}
+        </div>
+        <ErrorNotice error={save.error} />
+      </form>
+    </SettingsFold>
   );
 }

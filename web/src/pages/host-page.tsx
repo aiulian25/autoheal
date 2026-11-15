@@ -324,7 +324,7 @@ export function HostPage() {
   const [containersAsked, setContainersAsked] = useState(0);
   const hosts = useQuery(hostsQuery);
   const containers = useQuery({ ...hostContainersQuery(hostId), enabled: hostId !== "" });
-  const page = usePageArrangement(CARD_PAGES.host);
+  const page = usePageArrangement(CARD_PAGES.host, hostId);
   const linkedTo = useLocation().hash.slice(1);
   // A link from Attention or a task to one section lands on it once the host is drawn.
   useScrollToHash(hosts.data !== undefined);
@@ -448,7 +448,7 @@ export function HostPage() {
         {admin && enrolled && isRunnerHost(host) && host.lastHeartbeatAt !== null && <JoinCodeCard host={host} />}
         {admin && enrolled && <RevokeHost host={host} />}
       </div>
-      <ArrangeLine cards={arrangeable} page={page} />
+      <ArrangeLine cards={arrangeable} page={page} hint={TEXT.arrange.hostHint(host.label)} />
     </div>
   );
 }

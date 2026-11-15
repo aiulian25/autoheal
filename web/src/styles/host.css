@@ -315,11 +315,12 @@ label.choice-option {
   margin-top: 40px;
 }
 
-.host-more h2 {
+/* Its sections' and cards' headings; a fold's title keeps the size every fold's has. */
+.host-more h2:not(summary > h2) {
   font-size: var(--text-heading);
 }
 
-.host-more .card h2 {
+.host-more .card h2:not(summary > h2) {
   font-size: var(--text-large);
 }
 

@@ -10,6 +10,7 @@ import { Icon } from "../../components/icons.js";
 import { TEXT } from "../../constants.js";
 import { ollamaQuery, ollamaServersQuery, ollamaSettingsQuery } from "../../queries.js";
 import { refreshSettingsNotice } from "./refresh-settings-notice.js";
+import { SettingsFold } from "./settings-fold.js";
 
 const text = TEXT.settingsPage;
 
@@ -73,17 +74,29 @@ export function OllamaCard({ admin }: { admin: boolean }) {
   const confirmUseEnvironment = () => {
     asking.confirm(text.ollama.useEnvironmentConfirm, () => useEnvironment.mutate());
   };
+  const extraServers = servers.data?.extras.length ?? 0;
+  const state = [
+    view?.model ?? null,
+    extraServers === 0 ? null : text.ollama.moreServers(extraServers),
+    view?.plainHttp === true ? text.fold.plainHttp : null,
+  ]
+    .filter((part) => part !== null)
+    .join(TEXT.separator);
+  const needsLook = status !== undefined && (!answering || status.modelPresent === false);
   return (
-    <section className="card settings-card" aria-labelledby="ollama-title">
-      <header className="settings-card-head">
-        <h3 id="ollama-title">{TEXT.ollama.title}</h3>
-        {status !== undefined && (
+    <SettingsFold
+      title={TEXT.ollama.title}
+      state={state}
+      attention={needsLook}
+      badge={
+        status !== undefined && (
           <span className={answering ? "badge good" : "badge danger"}>
             <span className="status-dot" />
             {answering ? TEXT.ollama.reachable : TEXT.ollama.unreachable}
           </span>
-        )}
-      </header>
+        )
+      }
+    >
       {view === undefined && settings.error === null && <Loading />}
       {view !== undefined && (
         <dl className="settings-facts">
@@ -167,6 +180,6 @@ export function OllamaCard({ admin }: { admin: boolean }) {
       {view !== undefined && !changing && <OllamaServers admin={admin} defaults={view} />}
       {asking.question}
       <ErrorNotice error={ollama.error ?? settings.error ?? useEnvironment.error} />
-    </section>
+    </SettingsFold>
   );
 }

@@ -101,9 +101,9 @@ tr.selected td {
   gap: var(--space-2);
 }
 
-/* A section that folds away: its heading stays on the disclosure's line. */
-/* A section that folds: a chevron before its title, pointing down while it is open. */
-details.fold > summary {
+/* Anything that folds away, everywhere: a chevron before its title, pointing down while it is open. Its heading stays
+   on the disclosure's line. */
+details > summary {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -111,11 +111,11 @@ details.fold > summary {
   cursor: pointer;
 }
 
-details.fold > summary::-webkit-details-marker {
+details > summary::-webkit-details-marker {
   display: none;
 }
 
-details.fold > summary::before {
+details > summary::before {
   content: "";
   flex: none;
   width: var(--button-icon-size);
@@ -124,12 +124,14 @@ details.fold > summary::before {
   rotate: -90deg;
 }
 
-details.fold[open] > summary::before {
+details[open] > summary::before {
   rotate: 0deg;
 }
 
-details.fold > summary h2 {
-  font-size: var(--text-heading);
+/* A fold's title looks the same whether or not it is also a heading. */
+details > summary h2 {
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 /* The host's stats history: a bar under its dials. */
@@ -139,11 +141,6 @@ details.stats-history {
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-large);
   background: var(--surface);
-}
-
-details.stats-history > summary h2 {
-  font-size: var(--text-body);
-  font-weight: 500;
 }
 
 details.fold > * + * {

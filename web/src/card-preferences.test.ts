@@ -56,6 +56,14 @@ describe("a page's cards as a person arranged them", () => {
     expect(window.localStorage.getItem(KEY)).toBeNull();
   });
 
+  it("keeps each host's arrangement apart from every other host's", () => {
+    keepArrangement(CARD_PAGES.host, hiddenAway(NO_ARRANGEMENT, "history"), "h1");
+    expect(storedArrangement(CARD_PAGES.host, "h1")).toEqual({ pinned: [], hidden: ["history"] });
+    expect(storedArrangement(CARD_PAGES.host, "h2")).toEqual(NO_ARRANGEMENT);
+    keepArrangement(CARD_PAGES.host, NO_ARRANGEMENT, "h1");
+    expect(window.localStorage.getItem(`${KEY}-h1`)).toBeNull();
+  });
+
   it("reads anything else kept under its key as nothing arranged, and what it can of a list", () => {
     for (const stored of ["not json", "null", "7", '"system"', "[]"]) {
       window.localStorage.setItem(KEY, stored);
