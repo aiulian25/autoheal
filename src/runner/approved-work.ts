@@ -4,6 +4,7 @@ import {
   RUNNER_MESSAGES,
   IMAGE_REMOVING_ACTIONS,
   OUTCOMES,
+  OUTCOME_TEXT_LIMIT,
   RUNNER_JOB_CONCURRENCY,
   VERDICT_SKIPPED,
 } from "../shared/constants.js";
@@ -46,6 +47,13 @@ export interface ApprovedWorkDependencies {
  * Approval is not a bypass: the container is looked at again, and the menu, protected list,
  * restart budget and dry-run still apply here.
  */
+// A job that stopped on an error ends as failed, saying why: never left for the control plane to give up on.
+const stoppedOn = (error: unknown): JobResult => ({
+  succeeded: false,
+  outcome: describeError(error).slice(0, OUTCOME_TEXT_LIMIT),
+  output: null,
+});
+
 export class ApprovedWork {
   private busy = false;
   private stopping = false;
@@ -231,7 +239,7 @@ export class ApprovedWork {
             outcome: "Automatic work paused: maintenance policy is active or unavailable.",
             output: null,
           }
-        : await this.dependencies.jobs.run(job);
+        : await this.dependencies.jobs.run(job).catch(stoppedOn);
     await this.results.complete({ kind: "job", id: job.id, result });
     log(RUNNER_MESSAGES.jobDone(job.action, job.containerName, job.requestedBy, result.outcome));
     await this.reportPending();

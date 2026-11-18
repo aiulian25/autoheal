@@ -34,8 +34,10 @@ import {
   type HostPackageManager,
   type HostPackagesSetting,
   type HostPackageVerb,
+  RESTART_POLICY_NONE,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
+import { restartPolicyOf } from "./incident-report.js";
 import type { HostJob, JobResult } from "../shared/protocol.js";
 import { redactSecrets } from "../shared/redaction.js";
 import type { DockerClient } from "./docker-client.js";
@@ -68,6 +70,7 @@ export interface HostPackageJobsDependencies {
     hostRoot: string;
     selfContainerName: string;
     hostDbusDirectory: string;
+    protectedContainers: ReadonlySet<string>;
   };
   // The newest part of a run's log while it runs, for the dashboard; one that does not arrive is no loss.
   progress?: (jobId: string, output: string) => Promise<unknown>;
@@ -331,6 +334,28 @@ export class HostPackageJobs {
     return missing();
   }
 
+  /**
+   * What ran before the run and is still down once Docker's restart policies had their chance: Docker restarting under
+   * an update of Docker stops every container, and a policy on failure brings back none that stopped cleanly. Started
+   * again, as the host was; never one set never to restart, a protected one, or the runner itself.
+   */
+  private async startAgain(names: readonly string[]): Promise<string[]> {
+    const { docker, settings } = this.dependencies;
+    if (docker === undefined) return [];
+    const startedAgain: string[] = [];
+    for (const name of names) {
+      if (name === settings.selfContainerName || settings.protectedContainers.has(name)) continue;
+      const details = await docker.inspect(name).catch(() => null);
+      if (details === null || restartPolicyOf(details) === RESTART_POLICY_NONE) continue;
+      const startedNow = await docker.start(name).then(
+        () => true,
+        () => false,
+      );
+      if (startedNow) startedAgain.push(name);
+    }
+    return startedAgain;
+  }
+
   /** The newest part of the log, sent on whenever it grew; returns what was last sent. */
   private async sendProgress(jobId: string, logPath: string, sent: string): Promise<string> {
     const { progress } = this.dependencies;
@@ -407,8 +432,11 @@ export class HostPackageJobs {
         .catch(wentAway(null))) ?? "";
     const output = redactSecrets(log, []).slice(-JOB_OUTPUT_CHARACTERS) || null;
     const missing = watching ? await this.notBack(before) : [];
+    const startedAgain = await this.startAgain(missing);
+    const stillDown = missing.filter((name) => !startedAgain.includes(name));
     const suffix =
-      (missing.length > 0 ? HOST_PACKAGE_OUTCOMES.notBack(missing) : "") +
+      (startedAgain.length > 0 ? HOST_PACKAGE_OUTCOMES.startedAgain(startedAgain) : "") +
+      (stillDown.length > 0 ? HOST_PACKAGE_OUTCOMES.notBack(stillDown) : "") +
       (resumed ? HOST_PACKAGE_OUTCOMES.resumed : "");
     if (status === null) {
       return { succeeded: false, outcome: HOST_PACKAGE_OUTCOMES.noResult(this.now() - started) + suffix, output };

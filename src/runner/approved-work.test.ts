@@ -138,6 +138,23 @@ describe("ApprovedWork", () => {
     ]);
   });
 
+  it("reports a job that stopped on an error as failed, saying why, never leaving it unanswered", async () => {
+    const job: Job = {
+      id: "j1",
+      containerName: "tika",
+      action: "start",
+      requestedBy: "admin",
+      expiresAt: Date.now() + 60_000,
+    };
+    const refusal = "Refused: the runner could not save its safety state here.";
+    const work = approvedWorkFor([], [job], [], undefined, async () => {
+      throw new Error(refusal);
+    });
+    await work.runOnce();
+    await work.settled();
+    expect(jobResults).toEqual([["j1", { succeeded: false, outcome: refusal, output: null }]]);
+  });
+
   it("runs three containers' actions at once, each container's in order, and reports each once", async () => {
     const asked = (id: string, containerName: string, action: "stop" | "remove" | "restart"): Job => ({
       id,

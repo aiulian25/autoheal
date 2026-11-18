@@ -71,6 +71,8 @@ interface Scenario {
   running: string[];
   // Containers running once the run ended.
   runningAfter?: string[];
+  // Each container's restart policy, as Docker keeps it: on-failure where not named.
+  restartPolicies?: Record<string, string>;
   journal?: ConstructorParameters<typeof HostPackageJobs>[0]["journal"];
   // How the host's files are read; its folder under the test's root unless given.
   files?: HostFiles;
@@ -84,6 +86,8 @@ describe("package jobs on the runner's host", () => {
   let guard: RemedyGuard;
   let heldWhileRunning: boolean[];
   let progress: [string, string][];
+  // Containers started, the run's own helper aside.
+  let started: string[];
 
   beforeEach(() => {
     hostRoot = mkdtempSync(join(tmpdir(), "autoheal-host-jobs-"));
@@ -93,6 +97,7 @@ describe("package jobs on the runner's host", () => {
     guard = new RemedyGuard(new Set());
     heldWhileRunning = [];
     progress = [];
+    started = [];
   });
 
   afterEach(() => rmSync(hostRoot, { recursive: true, force: true }));
@@ -130,12 +135,15 @@ describe("package jobs on the runner's host", () => {
             Image: OWN_IMAGE,
             State: { Running: false },
             Config: {},
+            HostConfig: { RestartPolicy: { Name: scenario.restartPolicies?.[name] ?? "on-failure" } },
           }) as unknown as ContainerDetails,
         create: async (name: string, specification: Record<string, unknown>) => {
           created.push({ name, specification });
           return "helper-id";
         },
-        start: async () => undefined,
+        start: async (name: string) => {
+          if (!created.some((helper) => helper.name === name)) started.push(name);
+        },
         logs: async () => scenario.helperSays ?? "",
         remove: async (name: string) => {
           removed.push(name);
@@ -156,6 +164,7 @@ describe("package jobs on the runner's host", () => {
         hostRoot,
         selfContainerName: "autoheal",
         hostDbusDirectory: "/run/dbus",
+        protectedContainers: new Set(["npm"]),
       },
       now: () => clock,
       // Each wait moves the clock on; the first one is when the unit ends.
@@ -347,7 +356,7 @@ describe("package jobs on the runner's host", () => {
     });
   });
 
-  it("upgrades the named packages with healing standing aside, and names what did not come back", async () => {
+  it("upgrades the named packages with healing standing aside, and starts again what it stopped", async () => {
     supportedHost();
     const scenario = {
       helperSays: '{"outcome":"started"}',
@@ -359,9 +368,30 @@ describe("package jobs on the runner's host", () => {
     const result = await jobsFor(scenario).run(job({ action: "upgrade_packages", packages: ["openssl"] }));
 
     expect(created[0]?.specification).toMatchObject({ Cmd: ["host-helper", "apt", "upgrade", JOB, "openssl"] });
-    expect(result).toMatchObject({ succeeded: true, outcome: "Upgraded openssl. Not running again yet: tika." });
+    // Docker restarted under an update stops what it runs, and a restart policy on failure brings none of it back.
+    expect(result).toMatchObject({ succeeded: true, outcome: "Upgraded openssl. Started again: tika." });
+    expect(started).toEqual(["tika"]);
     expect(heldWhileRunning[0]).toBe(true);
     expect(guard.isHeld("tika")).toBe(false);
+  });
+
+  it("leaves where they are one set never to restart, a protected one and the runner, and names them", async () => {
+    supportedHost();
+    const scenario = {
+      helperSays: '{"outcome":"started"}',
+      unit: { verb: "upgrade", log: "Setting up docker-ce (5:29.1.0-1) ...\n", status: "success exited 0" },
+      running: ["autoheal", "backup-once", "npm", "tika"],
+      runningAfter: [],
+      restartPolicies: { "backup-once": "no" },
+    };
+
+    const result = await jobsFor(scenario).run(job({ action: "upgrade_packages", packages: ["docker-ce"] }));
+
+    expect(result).toMatchObject({
+      succeeded: true,
+      outcome: "Upgraded docker-ce. Started again: tika. Not running again yet: autoheal, backup-once, npm.",
+    });
+    expect(started).toEqual(["tika"]);
   });
 
   it("asks for a record bound to the host's boot for a reboot, and for none for an upgrade", async () => {

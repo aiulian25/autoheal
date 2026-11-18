@@ -171,8 +171,7 @@ export class GuardState {
   /** Persist before a caller may actuate a restart or acknowledge a managed change/event. */
   async flush() {
     while (this.writing !== null) await this.writing;
-    if (this.failure !== null)
-      throw new Error("Runner safety state could not be persisted; automatic recovery is blocked.");
+    if (this.failure !== null) throw new Error(RUNNER_MESSAGES.guardNotSaved);
   }
 
   changed() {
@@ -198,7 +197,7 @@ export class GuardState {
           return;
         }
         this.failure = RECOVERY_HOLD.saveFailed;
-        log("Runner safety state persistence failed; recovery is blocked until the saved state is reviewed.");
+        log(RUNNER_MESSAGES.guardSaveFailed);
       })
       .finally(() => {
         this.writing = null;
@@ -207,7 +206,28 @@ export class GuardState {
   }
 
   expire() {
+    if (this.failure !== null) {
+      this.retry();
+      return;
+    }
     if (this.prune()) this.changed();
+  }
+
+  // Held, it tries again at each look. What it knows is still whole in memory, so once a save works nothing was lost and
+  // it lets go; a restart would read an older snapshot instead. One still too full to save stays held as full.
+  private retry() {
+    if (this.writing !== null) return;
+    this.writing = this.save()
+      .then(() => {
+        this.failure = null;
+        log(RUNNER_MESSAGES.guardSavedAgain);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof GuardStateFull) this.failure = RECOVERY_HOLD.stateFull;
+      })
+      .finally(() => {
+        this.writing = null;
+      });
   }
 
   private prune(): boolean {
@@ -260,16 +280,21 @@ export class GuardState {
     const text = JSON.stringify(record);
     if (Buffer.byteLength(text) > MAX_BYTES) throw new GuardStateFull();
     const name = `${PREFIX}${record.revision}`;
+    // Each try takes the next name, used up even when the try fails: one a failed try made is never written over, as
+    // Docker keeps a volume's first labels, and it goes with the older snapshots once a save is checked.
+    this.revision = record.revision;
+    this.names.push(name);
     await this.store.createVolume(name, { [LABEL]: "1", [RECORD]: text });
-    const published = (await this.store.volumes(LABEL)).find((volume) => volume.Name === name);
+    const listed = await this.store.volumes(LABEL);
+    const published = listed.find((volume) => volume.Name === name);
     if (published?.Labels?.[LABEL] !== "1" || published.Labels[RECORD] !== text) {
       throw new Error("Guard state publication could not be verified.");
     }
-    this.revision = record.revision;
-    // Publish first; only then remove older snapshots. One Docker will not remove now (another container mounted
-    // every volume for a moment) is tried again at the next save: the newest record is read first anyway.
+    // Publish first; only then remove older snapshots still on the engine. One Docker will not remove now (another
+    // container mounted every volume for a moment) is tried again at the next save: the newest record is read first anyway.
+    const onEngine = new Set(listed.map((volume) => volume.Name));
     const kept: string[] = [];
-    for (const previous of this.names) {
+    for (const previous of this.names.filter((other) => other !== name && onEngine.has(other))) {
       await this.store.removeVolume(previous).catch(() => kept.push(previous));
     }
     this.names = [name, ...kept];

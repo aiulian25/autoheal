@@ -289,12 +289,26 @@ describe("detectors", () => {
     expect(printed.mock.calls.filter(([line]) => String(line).endsWith(lost))).toHaveLength(4);
   });
 
-  it("opens a high task while a runner's recovery hold waits for a fix, and none for the hour after a new install", async () => {
+  it("opens a high task while a runner's recovery hold stays, none for one it lifts itself, nor after a new install", async () => {
     await report([running], { recoveryHold: { reason: "no_saved_state", until: controlPlane.clock.now + MINUTE } });
     await detector.run();
     expect(await tasks()).toEqual([]);
 
-    await report([running], { recoveryHold: { reason: "save_failed", until: null } });
+    // Docker restarting under it, as an update of Docker does: held while it saves again, gone a minute later.
+    const held = { recoveryHold: { reason: "save_failed" as const, until: null } };
+    await report([running], held);
+    await detector.run();
+    controlPlane.clock.now += MINUTE;
+    await report([running]);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+
+    // One that stays is news.
+    await report([running], held);
+    await detector.run();
+    expect(await tasks()).toEqual([]);
+    controlPlane.clock.now += DETECTOR_GRACE_MILLISECONDS.recoveryHeld;
+    await report([running], held);
     await detector.run();
     expect(await tasks()).toMatchObject([
       {
@@ -1127,9 +1141,14 @@ describe("detectors", () => {
       remoteDigest: `sha256:${"b".repeat(64)}`,
       newerTag: "2.14",
     };
-    await report([containerSnapshot({ name: "paperless", update: newer })], {
-      recoveryHold: { reason: "save_failed", until: null },
-    });
+    const reported = () =>
+      report([containerSnapshot({ name: "paperless", update: newer })], {
+        recoveryHold: { reason: "save_failed", until: null },
+      });
+    await reported();
+    await detector.run();
+    controlPlane.clock.now += DETECTOR_GRACE_MILLISECONDS.recoveryHeld;
+    await reported();
     await detector.run();
     expect((await tasks()).map((task) => task.title).toSorted()).toEqual([
       "2.14 is out for paperless on Alder",

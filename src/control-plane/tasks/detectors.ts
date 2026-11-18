@@ -333,7 +333,8 @@ function hosts(inputs: DetectorInputs): Detection {
     const heldKey = keyOf(DETECTOR_KEYS.recoveryHeld, online.id);
     judged.add(heldKey);
     const hold = online.recoveryHold ?? null;
-    // The hour after a new install ends by itself; a hold that waits for the runner to be fixed is a task.
+    // The hour after a new install ends by itself, and so does a save Docker refused while restarting: one that stays is
+    // a task.
     if (hold !== null && hold.reason !== RECOVERY_HOLD.noSavedState) {
       problems.push(
         finding(inputs, {
@@ -341,6 +342,7 @@ function hosts(inputs: DetectorInputs): Detection {
           title: TASK_TEXT.recoveryHeld(online.label),
           description: TASK_TEXT.recoveryHeldDetails[hold.reason],
           priority: TASK_PRIORITY.high,
+          graceMilliseconds: DETECTOR_GRACE_MILLISECONDS.recoveryHeld,
           hostId: online.id,
           resource: { kind: TASK_RESOURCE.host, id: online.id, label: online.label },
         }),

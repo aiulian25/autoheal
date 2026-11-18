@@ -592,6 +592,13 @@ export const CONTROL_PLANE_CALLS = {
 export const CONTAINER_ACCESS_RETRY_MILLISECONDS = 5 * 1000;
 
 export const RUNNER_MESSAGES = {
+  // Its safety state, which it saves before it changes anything: refused while it cannot, a person's work too. It tries
+  // again at each look, so a Docker restarting under it holds it for a minute, not until the runner restarts.
+  guardNotSaved:
+    "Refused: the runner could not save its safety state here (Docker may be restarting), so it changes nothing until it can. It tries again by itself.",
+  guardSaveFailed:
+    "Runner safety state could not be saved; automatic recovery is held, and the save is tried again at each look.",
+  guardSavedAgain: "Runner safety state saved again: automatic recovery goes on.",
   // A host without Docker: its system is watched, there are no containers to look after.
   systemOnly: (host: string) => `${host}: no Docker there, so its system alone is watched`,
   systemOnlyFailed: (host: string, problem: string) => `${host}: its system could not be reported: ${problem}`,
@@ -1716,6 +1723,9 @@ export const DETECTOR_GRACE_MILLISECONDS = {
   dockerLost: 5 * 60 * 1000,
   // A clock that time sync sets right moments after a boot is no news.
   clockOff: 2 * 60 * 1000,
+  // Docker restarting under a runner, as an update of Docker does, holds its recovery until its next save works, a
+  // minute or so: only a hold that stays is news.
+  recoveryHeld: 5 * 60 * 1000,
   driveHeat: 10 * 60 * 1000,
 } as const;
 export const DETECTOR_THRESHOLDS = {
@@ -1873,9 +1883,9 @@ export const TASK_TEXT = {
   recoveryHeld: (host: string) => `Automatic recovery is held on ${host}`,
   recoveryHeldDetails: {
     [RECOVERY_HOLD.saveFailed]:
-      "Its runner could not save its safety state (the autoheal-guard volumes in Docker), so it restarts nothing on its own; failures still come to you. Check the autoheal container's log and the host's Docker volumes, then restart the runner.",
+      "Its runner could not save its safety state (the autoheal-guard volumes in its Docker), so it changes nothing on its own, and what you ask there is refused too. It tries again every half minute and lets go by itself once Docker answers. If this stays, Docker on that host is not answering: check that it runs.",
     [RECOVERY_HOLD.stateFull]:
-      "Its runner's safety state is full, so it restarts nothing on its own; failures still come to you. Check the autoheal container's log for what keeps failing, then restart the runner.",
+      "Its runner's safety state is full, so it restarts nothing on its own; failures still come to you. It lets go by itself as older entries expire. If this stays, see what keeps failing on that host.",
   },
   disk: (host: string, path: string, percent: number) => `${path} on ${host} is ${percent}% full`,
   diskImages: (freeBytes: number, reclaimable: string, projectedPercent: number) =>
@@ -4908,6 +4918,7 @@ export const HOST_PACKAGE_OUTCOMES = {
   noResult: (waitedMilliseconds: number) =>
     `No result after ${Math.round(waitedMilliseconds * MINUTES_PER_MILLISECOND)} minutes; see /var/log/autoheal on the host.`,
   notBack: (names: readonly string[]) => ` Not running again yet: ${listed(names)}.`,
+  startedAgain: (names: readonly string[]) => ` Started again: ${listed(names)}.`,
   resumed: " The runner restarted while it ran.",
 } as const;
 export const HOST_HELPER_OUTCOMES = Object.values(HOST_HELPER_OUTCOME);

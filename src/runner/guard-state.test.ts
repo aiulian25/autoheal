@@ -150,7 +150,7 @@ describe("persistent runner safety state", () => {
     };
     const guard = new RemedyGuard(new Set(), undefined, null, state);
     expect(guard.takeRestart("app")).toBe(true);
-    await expect(guard.persisted()).rejects.toThrow("could not be persisted");
+    await expect(guard.persisted()).rejects.toThrow("could not save its safety state");
     expect(guard.takeRestart("app")).toBe(false);
     expect(guard.claim("other")).toBe(false);
     expect(guard.restartsUsed()).toEqual({ app: 1 });
@@ -219,17 +219,64 @@ describe("persistent runner safety state", () => {
     }
     expect(f.guard.stateBlocked()).toBe(true);
     expect(f.volumes.size).toBeLessThanOrEqual(32);
-    // Whatever held them gone, a restart reads every snapshot left and clears the old ones.
+    // Whatever held them gone, its next look clears the old ones and lets go, with no restart.
     f.store.removeVolume = remove;
-    f.restart();
-    expect((await f.reload()).stateBlocked()).toBe(false);
+    f.guard.restartsUsed();
+    await f.guard.persisted();
+    expect(f.guard.stateBlocked()).toBe(false);
     expect(f.volumes.size).toBe(1);
+    expect((await f.reload()).stateBlocked()).toBe(false);
+  });
+
+  it("tries again at each look while held, as when Docker restarts under it, and lets go once a save works", async () => {
+    const f = await initialized();
+    const create = f.store.createVolume;
+    f.store.createVolume = async () => {
+      throw new Error("Cannot connect to the Docker daemon");
+    };
+    expect(f.guard.takeRestart("app")).toBe(true);
+    await expect(f.guard.persisted()).rejects.toThrow("could not save its safety state");
+    expect(f.guard.recoveryHold()).toEqual({ reason: "save_failed", until: null });
+    // Still down at its next look: still held, and nothing claimed meanwhile.
+    f.guard.restartsUsed();
+    await expect(f.guard.persisted()).rejects.toThrow("could not save its safety state");
+    expect(f.guard.claim("other")).toBe(false);
+
+    // Docker back: the next look saves what it knew all along, and recovery goes on.
+    f.store.createVolume = create;
+    f.guard.restartsUsed();
+    await f.guard.persisted();
+    expect(f.guard.recoveryHold()).toBeNull();
+    expect(f.guard.claim("other")).toBe(true);
+    await f.guard.persisted();
+    expect((await f.reload()).restartsUsed()).toEqual({ app: 1 });
+  });
+
+  it("never stalls on a snapshot a failed save made but could not check", async () => {
+    const f = await initialized();
+    const list = f.store.volumes;
+    let answering = false;
+    f.store.volumes = async (label) => {
+      if (!answering) throw new Error("Cannot connect to the Docker daemon");
+      return list(label);
+    };
+    f.guard.noteKill("app");
+    await expect(f.guard.persisted()).rejects.toThrow("could not save its safety state");
+    expect(f.volumes.size).toBe(2);
+
+    answering = true;
+    f.guard.restartsUsed();
+    await f.guard.persisted();
+    expect(f.guard.recoveryHold()).toBeNull();
+    // The one it made unchecked goes with the old one: never written over, and never in the way.
+    expect(f.volumes.size).toBe(1);
+    expect((await f.reload()).stateBlocked()).toBe(false);
   });
   it("does not discard the previous snapshot or permit recovery on an unverified write", async () => {
     const f = await initialized();
     f.store.createVolume = async () => {};
     expect(f.guard.takeRestart("app")).toBe(true);
-    await expect(f.guard.persisted()).rejects.toThrow("could not be persisted");
+    await expect(f.guard.persisted()).rejects.toThrow("could not save its safety state");
     expect(f.guard.takeRestart("app")).toBe(false);
     expect(f.volumes.size).toBe(1);
   });
@@ -290,14 +337,14 @@ describe("persistent runner safety state", () => {
         await f.guard.persisted();
         return result;
       }),
-    ).rejects.toThrow("could not be persisted");
+    ).rejects.toThrow("could not save its safety state");
     expect(calls).toBe(0);
     expect(await journal.pending()).toMatchObject([{ operation: "healing:restart", target: "app", phase: "admitted" }]);
   });
   it("fails closed at the live-entry bound instead of dropping active safety records", async () => {
     const f = await initialized();
     for (let index = 0; index <= 4096; index++) f.guard.noteKill(`synthetic-${index}`);
-    await expect(f.guard.persisted()).rejects.toThrow("could not be persisted");
+    await expect(f.guard.persisted()).rejects.toThrow("could not save its safety state");
     expect(f.guard.takeRestart("app")).toBe(false);
     expect(f.guard.recoveryHold()).toEqual({ reason: "state_full", until: null });
     expect(f.volumes.size).toBe(1);
@@ -318,7 +365,7 @@ describe("persistent runner safety state", () => {
       throw new Error("no space");
     };
     guard.noteKill("app");
-    await expect(guard.persisted()).rejects.toThrow("could not be persisted");
+    await expect(guard.persisted()).rejects.toThrow("could not save its safety state");
     expect(guard.recoveryHold()).toEqual({ reason: "save_failed", until: null });
   });
   it("ignores nameless event targets without poisoning the persisted state", async () => {
