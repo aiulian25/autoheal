@@ -1,6 +1,7 @@
 import {
   HOST_KIND,
   HOST_PACKAGES,
+  OLD_CONTAINER_SUFFIX,
   type HostPackagesSetting,
   SSH_STATE,
   type SshState,
@@ -77,9 +78,7 @@ export const CONNECT_TEXT = {
       rootRemoveConfirm: "Remove the saved password? Autoheal can no longer run root commands on this machine.",
       interruptedTitle: "What holds its runner back",
       interruptedExplanation:
-        "Its runner will not start over these: each was interrupted part-way, and nothing on the machine says how it ended. Look at the machine first: an upgrade cut short can leave its package manager half done. Clearing them undoes nothing and runs nothing again.",
-      interruptedClear: "I have looked: clear it and start",
-      interruptedConfirm: "Clear these records and start the runner? Nothing is undone or run again.",
+        "Its runner will not start over these: each was interrupted part-way, and nothing on the machine says how it ended. Look at what each was changing first. Clearing them undoes nothing and runs nothing again.",
       systemOnly:
         "No Docker here: Autoheal watches this machine's system. Its containers show by themselves if Docker is installed.",
       settingsTitle: "Settings",
@@ -128,6 +127,8 @@ export const CONNECT_TEXT = {
       [SSH_STATE.closed]: "not connected",
     } satisfies Record<SshState, string>,
     since: (state: string, ago: string) => `${state} since ${ago}`,
+    // Connected, and its runner turned away by what was interrupted part-way: what, and the way past it, follow.
+    heldBack: "its runner is held back",
     keys: {
       title: "SSH keys",
       explanation: "The keys Autoheal signs in to SSH hosts with, sealed with the backup passphrase.",
@@ -142,6 +143,17 @@ export const CONNECT_TEXT = {
       count: (count: number) => (count === 1 ? "1 key" : `${count} keys`),
       unused: (count: number) => `${count} used by no host`,
     },
+  },
+  // What holds a host's runner back, wherever the host shows: what to look at for each, and the way past it.
+  heldBack: {
+    advice: {
+      replaced: (name: string) =>
+        `Check ${name} runs, on the image you meant: its earlier copy may still wait as ${name}${OLD_CONTAINER_SUFFIX}.`,
+      packages: "Check its package manager finished: an upgrade cut short can leave it half done.",
+      other: "Check what it was changing on the machine.",
+    },
+    clear: "I have looked: clear it and start",
+    confirm: "Clear these records and start the runner? Nothing is undone or run again.",
   },
   // The dashed tile at the end of the host grid, and the dialog it opens to connect a new host.
   connectHost: {

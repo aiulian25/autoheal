@@ -32,6 +32,7 @@ import {
   METRICS_INTERVAL_MILLISECONDS,
   NOTIFY_TEXT,
   TASK_SNOOZE,
+  TASK_TEXT,
 } from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
@@ -258,7 +259,11 @@ describe("detectors", () => {
     later(HOST_SILENT_AFTER_MILLISECONDS + 1);
     await detector.run();
     const [silent] = await tasks();
-    expect(silent).toMatchObject({ title: "The runner on Alder stopped reporting", priority: "high" });
+    expect(silent).toMatchObject({
+      title: "The runner on Alder stopped reporting",
+      priority: "high",
+      runnerSilent: true,
+    });
 
     await report([running]);
     await detector.run();
@@ -1236,5 +1241,56 @@ describe("detectors", () => {
     expect(linked.activity.filter(({ kind }) => kind === "incident_linked").map(({ data }) => data)).toEqual([
       { incidentId: second },
     ]);
+  });
+});
+
+describe("a host whose runner something interrupted part-way holds back", () => {
+  const now = Date.UTC(2026, 9, 4, 9, 0);
+  const tagChange = { operation: "job:j1:change_tag", target: "gitea", step: 7, at: Date.UTC(2026, 9, 4, 6, 20) };
+  const rowan = (sshState: string) =>
+    ({
+      id: "h1",
+      label: "Rowan",
+      kind: "ssh",
+      state: "silent",
+      lastHeartbeatAt: now - 30 * MINUTE,
+      ssh: {
+        state: sshState,
+        since: now - MINUTE,
+        reason: "1 unfinished operation needs clearing",
+        interrupted: [tagChange],
+      },
+    }) as unknown as HostView;
+  const silentTask = async (host: HostView) => {
+    const { detect } = await import("./detectors.js");
+    const inputs = {
+      now,
+      hosts: [host],
+      containers: [],
+      history: () => [],
+      homeAssistant: null,
+      ollama: { reachable: true, checkedAt: now },
+      ollamaExtras: [],
+      owner: null,
+      packagePlan: () => null,
+      unusedImages: () => [],
+      imageCleanup: () => null,
+    } as unknown as Parameters<typeof detect>[0];
+    const key = [DETECTOR_KEYS.hostSilent, host.id].join(DETECTOR_KEY_SEPARATOR);
+    return detect(inputs).problems.find((problem) => problem.key === key);
+  };
+
+  it("says so in the task its silence opens, naming what holds it, so one card and one alert tell the whole story", async () => {
+    const task = await silentTask(rowan("connected"));
+    expect(task?.title).toBe(TASK_TEXT.runnerHeldBack("Rowan"));
+    expect(task?.description).toContain("change_tag on gitea (step 7, 2026-10-04 06:20)");
+    expect(task?.priority).toBe("high");
+  });
+
+  it("is only silent while it cannot be reached, as nothing can be cleared from here then", async () => {
+    const task = await silentTask(rowan("unreachable"));
+    expect(task?.title).toBe(TASK_TEXT.hostSilent("Rowan"));
+    // It has no runner container to check: its runner runs inside Autoheal, and its page says how its session goes.
+    expect(task?.description).toBe(TASK_TEXT.hostSilentOverSshDetails(30));
   });
 });

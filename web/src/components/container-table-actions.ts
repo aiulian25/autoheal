@@ -77,7 +77,7 @@ export function useContainerActions({
       else operatorAction.mutate({ action, target });
     }
   };
-  // A stop or a removal asks once first where this browser chose that, for one row or the ticked ones alike.
+  // A removal asks once first, and a stop where this browser chose that, for one row or the ticked ones alike.
   const ask: Ask = (action, targets) => {
     const question = askFirstQuestion(
       action,

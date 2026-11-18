@@ -1,8 +1,18 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES, apiPath, type IncidentSummaryView, type JobView } from "../../../src/shared/api.js";
+import {
+  API_ROUTES,
+  apiPath,
+  type HostView,
+  type IncidentSummaryView,
+  type JobView,
+  type TaskSummaryView,
+} from "../../../src/shared/api.js";
+import { TASK_TEXT } from "../../../src/shared/constants.js";
 import { TEXT } from "../constants.js";
 import {
+  alder,
+  diskNearlyFull,
   waitingImage,
   QUANTUM,
   board,
@@ -250,6 +260,61 @@ describe("updates on the attention page", () => {
     for (const action of ["Restart it", "Leave it stopped", "Stop watching this container", "Snooze a day", "Done"]) {
       expect(screen.queryByRole("button", { name: action })).toBeNull();
     }
+  });
+});
+
+describe("a host whose runner is held back, on the attention page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const tagChange = { operation: "job:j1:change_tag", target: "gitea", step: 7, at: Date.UTC(2026, 9, 4, 6, 20) };
+  const heldBack = {
+    ...alder,
+    kind: "ssh",
+    state: "silent",
+    ssh: { state: "connected", since: Date.now(), reason: "1 unfinished operation", interrupted: [tagChange] },
+  } as HostView;
+  const silent: TaskSummaryView = {
+    ...diskNearlyFull,
+    id: "task-silent",
+    title: TASK_TEXT.runnerHeldBack("Alder"),
+    runnerSilent: true,
+    resource: { kind: "host", id: "h1", label: "Alder" },
+  };
+  // Another problem on the same host: what holds its runner back is told once, on the card its silence opened.
+  const shown = {
+    ...board,
+    needsYou: [
+      { kind: "task" as const, task: silent },
+      { kind: "task" as const, task: diskNearlyFull },
+    ],
+  };
+  const clear = apiPath(API_ROUTES.sshHostInterrupted, { hostId: "h1" });
+
+  it("says so on its card and its host's, names what holds it, and lets an admin clear it right there", async () => {
+    const fetch = serve("admin", shown, undefined, undefined, { [API_ROUTES.hosts]: [heldBack] });
+    renderAttention("admin");
+
+    const card = (await screen.findByText(TASK_TEXT.runnerHeldBack("Alder"))).closest("article")!;
+    expect(within(card).getByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toBeTruthy();
+    expect(screen.getAllByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toHaveLength(1);
+    expect(screen.getByRole("link", { name: new RegExp(TEXT.hosts.heldBack) })).toBeTruthy();
+    fireEvent.click(within(card).getByRole("button", { name: TEXT.heldBack.clear }));
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([url, init]) => url === clear && init?.method === "DELETE")).toBe(true),
+    );
+  });
+
+  it("shows a viewer what holds it, with no way to clear it", async () => {
+    serve("viewer", shown, undefined, undefined, { [API_ROUTES.hosts]: [heldBack] });
+    renderAttention("viewer");
+
+    const card = (await screen.findByText(TASK_TEXT.runnerHeldBack("Alder"))).closest("article")!;
+    expect(within(card).getByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: TEXT.heldBack.clear })).toBeNull();
   });
 });
 

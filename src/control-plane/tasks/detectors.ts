@@ -1,6 +1,7 @@
 import {
   hasNewerVersion,
   hasUpdate,
+  heldBackBy,
   updateVersions,
   updatesWithoutAsking,
   type AssigneeChoice,
@@ -23,6 +24,7 @@ import {
   DETECTOR_THRESHOLDS,
   HOME_ASSISTANT_UPDATES_RESOURCE,
   HOST_HEALTH_UNREAD_TASK_AFTER_MILLISECONDS,
+  HOST_KIND,
   HOST_STATE,
   IMAGE_REFERENCE,
   POWER_PHASE,
@@ -32,6 +34,7 @@ import {
   MILLISECONDS_PER_MINUTE,
   PERCENT,
   RECOVERY_HOLD,
+  RUNNER_MESSAGES,
   SAFETY_PROBLEMS,
   TASK_LABEL,
   TASK_PRIORITY,
@@ -100,6 +103,8 @@ const AUTOHEAL_ASSIGNEE: AssigneeChoice = { kind: "agent", id: AGENT_AUTOHEAL };
 /** The key of the task a container's new image opens: the one an update closes. */
 export const updateTaskKey = (hostId: string, containerName: string) =>
   keyOf(DETECTOR_KEYS.update, hostId, containerName);
+/** The key of the task a host's runner opens by falling silent. */
+export const hostSilentTaskKey = (hostId: string) => keyOf(DETECTOR_KEYS.hostSilent, hostId);
 /** The key of the task a newer version opens; its last part is that version's tag. */
 export const newerVersionTaskKey = (hostId: string, containerName: string, tag: string) =>
   keyOf(DETECTOR_KEYS.newerVersion, hostId, containerName, tag);
@@ -243,12 +248,27 @@ function sustained(
   return covered && recent.length > 0 ? recent.every(holds) : null;
 }
 
+// Held back by what was interrupted part-way, it says so and by what, for only a person's look lets it start. A host
+// reached over SSH has no runner container to check: its runner runs inside Autoheal.
+function silenceText(host: HostView, minutes: number): { title: string; description: string } {
+  const heldBack = heldBackBy(host);
+  if (heldBack.length > 0) {
+    return {
+      title: TASK_TEXT.runnerHeldBack(host.label),
+      description: TASK_TEXT.runnerHeldBackDetails(host.label, heldBack.map(RUNNER_MESSAGES.recoverySaid)),
+    };
+  }
+  const overSsh = host.kind === HOST_KIND.ssh;
+  const description = overSsh ? TASK_TEXT.hostSilentOverSshDetails(minutes) : TASK_TEXT.hostSilentDetails(minutes);
+  return { title: TASK_TEXT.hostSilent(host.label), description };
+}
+
 function hosts(inputs: DetectorInputs): Detection {
   const problems: DetectedProblem[] = [];
   const judged = new Set<string>();
   const host = (hostId: string) => ({ hostId, resource: null });
   for (const candidate of inputs.hosts.filter((entry) => entry.state !== HOST_STATE.neverSeen)) {
-    const key = keyOf(DETECTOR_KEYS.hostSilent, candidate.id);
+    const key = hostSilentTaskKey(candidate.id);
     judged.add(key);
     // Rebooting or shut down as a person asked: it is quiet on purpose, and its page says so.
     const poweredOff = candidate.power !== undefined && candidate.power.phase !== POWER_PHASE.failed;
@@ -257,8 +277,7 @@ function hosts(inputs: DetectorInputs): Detection {
       problems.push(
         finding(inputs, {
           key,
-          title: TASK_TEXT.hostSilent(candidate.label),
-          description: TASK_TEXT.hostSilentDetails(minutes),
+          ...silenceText(candidate, minutes),
           priority: TASK_PRIORITY.high,
           ...host(candidate.id),
           resource: { kind: TASK_RESOURCE.host, id: candidate.id, label: candidate.label },

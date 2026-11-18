@@ -75,6 +75,7 @@ const update: TaskSummaryView = {
   checkedOut: true,
   advice: null,
   heldBecause: null,
+  runnerSilent: false,
   snoozedUntil: null,
   incidentId: null,
   createdAt: now - 60_000,

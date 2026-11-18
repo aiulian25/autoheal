@@ -13,6 +13,7 @@ import {
   CONTAINER_STATE_RUNNING,
   IGNORE_EVERY_VERSION,
   RESTART_CHOICE,
+  SSH_STATE,
   TASK_LABEL,
   TASK_RESOURCE,
   UPDATE_CHOICE,
@@ -164,7 +165,7 @@ export const API_ROUTES = {
   sshHostSettings: "/api/hosts/:hostId/ssh/settings",
   // The password Autoheal runs root commands with on the host, saved or removed; never read back.
   sshHostRoot: "/api/hosts/:hostId/ssh/root",
-  // What holds the host's runner back from starting, listed (GET), and cleared once a person has looked (DELETE).
+  // What holds the host's runner back from starting, cleared once a person has looked (DELETE).
   sshHostInterrupted: "/api/hosts/:hostId/ssh/interrupted",
   // A runner host reached over SSH from now on, as the same host: dialled first, then confirmed as a new one is.
   sshHostSwitch: "/api/hosts/:hostId/ssh/switch",
@@ -722,11 +723,21 @@ export interface ContainerUpdateView {
   ignored?: string | null;
 }
 
+/** An operation a runner's journal holds as interrupted part-way: what it was, on what, how far it got, and when. */
+export interface InterruptedOperationView {
+  operation: string;
+  target: string;
+  step: number;
+  at: number;
+}
+
 /** An SSH host's session: where it is, since when, and why when it is not connected. */
 export interface SshConnectionView {
   state: SshState;
   since: number;
   reason: string | null;
+  // What turned its runner away at its last start, for a person to look at and clear; empty once nothing does.
+  interrupted: InterruptedOperationView[];
 }
 
 /** A reboot or a shutdown, as the dashboard follows it. */
@@ -1076,6 +1087,13 @@ export interface AgentDispatchView {
  */
 export const isStoppable = ({ state }: Pick<ContainerView, "state">) =>
   state === CONTAINER_STATE_RUNNING || state === CONTAINER_STATE_RESTARTING;
+
+/**
+ * What holds a host's runner back from starting, while its session is up to clear it: interrupted operations, each for
+ * a person to look at first. None while it runs, and none while the host cannot be reached, as nothing is cleared then.
+ */
+export const heldBackBy = (host: HostView): readonly InterruptedOperationView[] =>
+  host.ssh?.state === SSH_STATE.connected ? host.ssh.interrupted : [];
 
 /** A newer image waits behind its tag, and its label lets someone update it. */
 export const hasUpdate = (container: ContainerView) =>
@@ -1661,6 +1679,8 @@ export interface TaskSummaryView {
   assistant?: TaskAssistantView | null;
   // On an update: why its last try failed, where a short line can say, until it is tried again. Null otherwise.
   heldBecause: HeldReason | null;
+  // Opened by its host's runner falling silent: where that runner is held back, its card says by what, and clears it.
+  runnerSilent: boolean;
   // Put off by a person until then: it waits among what was noticed. Null when it is not, or no longer.
   snoozedUntil: number | null;
   // The incident that opened it, or the newest one that joined it.

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ShutdownJournal } from "./shutdown-journal.js";
+import { RecoveryNeeded, ShutdownJournal } from "./shutdown-journal.js";
 import type { DockerVolume } from "./docker-client.js";
 import { HOST_RUN_FOLLOW_WINDOW_MILLISECONDS, RUNNER_MESSAGES } from "../shared/constants.js";
 const barrier = () => {
@@ -82,9 +82,11 @@ describe("shutdown write-ahead records", () => {
         throw new Error("interrupted");
       }),
     ).rejects.toThrow();
-    await expect(new ShutdownJournal(storage).assertClean()).rejects.toThrow(
-      "needs clearing before this runner can start",
-    );
+    const refusal = await new ShutdownJournal(storage).assertClean().catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(RecoveryNeeded);
+    expect((refusal as RecoveryNeeded).message).toContain("needs clearing before this runner can start");
+    // What a person is shown to look at, record by record, rather than read out of the sentence.
+    expect((refusal as RecoveryNeeded).records).toMatchObject([{ operation: "job:restore", target: "app", step: 0 }]);
     await storage.createVolume("bad", { "autoheal.shutdown.journal": "1", "autoheal.shutdown.record": "{}" });
     await expect(journal.pending()).rejects.toThrow();
   });

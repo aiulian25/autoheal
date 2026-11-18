@@ -141,6 +141,24 @@ it("stops a container Docker keeps starting again where it would start a stopped
   expect([names.stop, names.restart, names.remove].map(offered)).toEqual([true, true, true]);
   expect([names.start, names.pause, names.unpause].map(offered)).toEqual([false, false, false]);
 });
+it("asks before removing it, wherever this browser is set to ask or not, and removes it only on yes", async () => {
+  const actionPath = apiPath(API_ROUTES.containerActions, { hostId: HOST, containerName: container.name });
+  const answer = (said: string) =>
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Remove database? Volumes are kept." })).getByRole("button", {
+        name: said,
+      }),
+    );
+  const state = show({ revision: 0, grants: [] }, true, { ...container, state: "exited" });
+  const removed = expect.objectContaining({ method: "POST", body: JSON.stringify({ action: "remove" }) });
+
+  fireEvent.click(screen.getByRole("button", { name: TEXT.actions.names.remove }));
+  answer(TEXT.no);
+  expect(state.fetch).not.toHaveBeenCalledWith(actionPath, removed);
+  fireEvent.click(screen.getByRole("button", { name: TEXT.actions.names.remove }));
+  answer(TEXT.yes);
+  await waitFor(() => expect(state.fetch).toHaveBeenCalledWith(actionPath, removed));
+});
 it("asks once before a stop where this browser is set to, and sends it only on yes", async () => {
   const actionPath = apiPath(API_ROUTES.containerActions, { hostId: HOST, containerName: container.name });
   const answer = (said: string) =>

@@ -13,6 +13,7 @@ import {
 import { PERCENT, TASK_RESOURCE, TASK_STATUS } from "../../../../src/shared/constants.js";
 import { api } from "../../api-client.js";
 import { hostLink, taskPlaceLink } from "../../host-links.js";
+import { HeldBack } from "../../components/held-back.js";
 import { SnoozeChoices } from "../../components/snooze-choices.js";
 import { Bar, ErrorNotice } from "../../components/common.js";
 import { DISK_FULL_DANGER_PERCENT, PATHS, TEXT } from "../../constants.js";
@@ -79,6 +80,7 @@ export function FixCard({
           admin={admin}
         />
       )}
+      {task.runnerSilent && host !== undefined && <HeldBack host={host} admin={admin} />}
       <div className="card-actions">
         {task.hostId !== null && task.hostLabel !== null ? (
           <Link className="button" to={taskPlaceLink(task) ?? hostLink(task.hostId)}>

@@ -377,6 +377,8 @@ describe("a host's containers and what each does", () => {
     const button = (name: string) => within(parked).getByRole("button", { name }) as HTMLButtonElement;
     expect(button("Start BentoPDF-autoheal-old").disabled).toBe(false);
     fireEvent.click(button("Remove BentoPDF-autoheal-old"));
+    const question = screen.getByRole("group", { name: "Remove BentoPDF-autoheal-old? Volumes are kept." });
+    fireEvent.click(within(question).getByRole("button", { name: TEXT.yes }));
     const actions = apiPath(API_ROUTES.containerActions, { hostId: "h1", containerName: "BentoPDF-autoheal-old" });
     await sent(fetch, actions, "POST", { action: "remove" });
   });

@@ -83,10 +83,12 @@ describe("a host's containers and what each does", () => {
     fireEvent.click(within(atticRow).getByRole("button", { name: "Restart attic" }));
     await waitFor(() => expect(within(bar).getByText(hint)).toBeTruthy());
 
-    // The running one too: its runner stops it first.
+    // The running one too: its runner stops it first. A removal is asked about once, for all of them.
     fireEvent.click(screen.getByRole("checkbox", { name: "Tick attic" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Tick nightly" }));
     fireEvent.click(within(bar).getByRole("button", { name: "Remove 2" }));
+    const question = screen.getByRole("group", { name: "Remove attic and nightly? Volumes are kept." });
+    fireEvent.click(within(question).getByRole("button", { name: TEXT.yes }));
     await sent(fetch, actionPath("attic"), "POST", { action: "remove" });
     await sent(fetch, actionPath("nightly"), "POST", { action: "remove" });
 
@@ -173,6 +175,39 @@ describe("a host's containers and what each does", () => {
     } finally {
       window.localStorage.removeItem(ASK_FIRST_STORAGE_KEY);
     }
+  });
+  it("asks before every removal, from a row or for the ticked ones, while a stop still goes on one click", async () => {
+    const nightly = container({ name: "nightly", composeProject: null, state: "exited", health: "none" });
+    const actionPath = (containerName: string) => apiPath(API_ROUTES.containerActions, { hostId: "h1", containerName });
+    const fetch = serve({ [API_ROUTES.containers]: [...CONTAINERS, nightly] });
+    const answer = (question: string, said: string) =>
+      fireEvent.click(within(screen.getByRole("group", { name: question })).getByRole("button", { name: said }));
+    const removed = expect.objectContaining({ method: "POST", body: JSON.stringify({ action: "remove" }) });
+    show(<HostContainers host={alder(false)} admin />);
+    const attic = (await screen.findByRole("button", { name: "attic" })).closest("tr")!;
+
+    // Not set to ask in this browser: a removal asks all the same, and a no sends nothing.
+    fireEvent.click(within(attic).getByRole("button", { name: "Remove attic" }));
+    answer("Remove attic? Volumes are kept.", TEXT.no);
+    expect(fetch).not.toHaveBeenCalledWith(actionPath("attic"), removed);
+    fireEvent.click(within(attic).getByRole("button", { name: "Remove attic" }));
+    answer("Remove attic? Volumes are kept.", TEXT.yes);
+    await sent(fetch, actionPath("attic"), "POST", { action: "remove" });
+
+    const stop = within(attic).getByRole("button", { name: "Stop attic" }) as HTMLButtonElement;
+    await waitFor(() => expect(stop.disabled).toBe(false));
+    fireEvent.click(stop);
+    expect(screen.queryByRole("group", { name: /^Stop/ })).toBeNull();
+    await sent(fetch, actionPath("attic"), "POST", { action: "stop" });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Tick nightly" }));
+    const bar = screen.getByRole("group", { name: "Act on the ticked containers" });
+    const removeTicked = within(bar).getByRole("button", { name: "Remove 1" }) as HTMLButtonElement;
+    await waitFor(() => expect(removeTicked.disabled).toBe(false));
+    fireEvent.click(removeTicked);
+    expect(fetch).not.toHaveBeenCalledWith(actionPath("nightly"), removed);
+    answer("Remove nightly? Volumes are kept.", TEXT.yes);
+    await sent(fetch, actionPath("nightly"), "POST", { action: "remove" });
   });
   it("opens a shell under a row at once, where the host allows one", async () => {
     serve({ [API_ROUTES.containers]: CONTAINERS });

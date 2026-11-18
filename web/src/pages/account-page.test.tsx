@@ -137,12 +137,12 @@ describe("your account", () => {
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
   });
 
-  it("asks before stop and remove only once chosen here, and keeps that choice in this browser", async () => {
+  it("asks before a stop only once chosen here, and keeps that choice in this browser", async () => {
     serve();
     renderAccount();
     const askFirst = async () =>
       within(await screen.findByRole("region", { name: "Container actions" })).getByRole("checkbox", {
-        name: /Ask before stop and remove/,
+        name: /Ask before stopping/,
       }) as HTMLInputElement;
     expect((await askFirst()).checked).toBe(false);
     expect(window.localStorage.getItem(ASK_FIRST_STORAGE_KEY)).toBeNull();

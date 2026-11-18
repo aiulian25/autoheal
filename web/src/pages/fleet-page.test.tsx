@@ -95,6 +95,7 @@ const task = (id: string, overrides: Partial<TaskSummaryView> = {}): TaskSummary
   checkedOut: false,
   advice: null,
   heldBecause: null,
+  runnerSilent: false,
   snoozedUntil: null,
   incidentId: null,
   createdAt: Date.now(),
@@ -339,6 +340,42 @@ describe("the fleet page", () => {
     expect(within(rowan).getByText(TEXT.hosts.recoveryHeld).className).toBe("badge danger");
     const mini = screen.getByRole("article", { name: "Mini" });
     expect(within(mini).queryByText(TEXT.hosts.recoveryHeld)).toBeNull();
+  });
+
+  it("says a host's runner is held back instead of silent, what holds it, and lets an admin clear it right there", async () => {
+    const tagChange = {
+      operation: "job:j1:change_tag",
+      target: "gitea",
+      step: 7,
+      at: Date.UTC(2026, 9, 4, 6, 20),
+    };
+    const fetch = serve({
+      [API_ROUTES.hosts]: [
+        host({
+          id: "h2",
+          label: "Rowan",
+          kind: "ssh",
+          state: "silent",
+          recoveryHold: { reason: "save_failed", until: null },
+          ssh: { state: "connected", since: Date.now(), reason: "1 unfinished operation", interrupted: [tagChange] },
+        }),
+      ],
+      [API_ROUTES.board]: board,
+    });
+    renderFleet();
+
+    const rowan = await screen.findByRole("article", { name: "Rowan" });
+    expect(within(rowan).getByText(TEXT.hosts.heldBack).className).toBe("badge danger");
+    // What its last report said of its recovery is not true of a runner that does not run.
+    expect(within(rowan).queryByText(TEXT.hosts.recoveryHeld)).toBeNull();
+    expect(within(rowan).getByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toBeTruthy();
+    expect(within(rowan).getByText(TEXT.heldBack.advice.replaced("gitea"))).toBeTruthy();
+    fireEvent.click(within(rowan).getByRole("button", { name: TEXT.heldBack.clear }));
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
+    const clear = apiPath(API_ROUTES.sshHostInterrupted, { hostId: "h2" });
+    await waitFor(() =>
+      expect(fetch.mock.calls.some(([url, init]) => url === clear && init?.method === "DELETE")).toBe(true),
+    );
   });
 
   it("counts the containers stopped without a problem, and leads to them", async () => {

@@ -169,8 +169,8 @@ export function ContainerActions({
     if (action === JOB_ACTION.update || action === JOB_ACTION.rollBack) setReviewing(action);
     else run.mutate({ action });
   };
-  // Rolling back puts the container's data back as it was, and what changed since is lost: asked first. A stop or a
-  // removal asks first where this browser chose that.
+  // Rolling back puts the container's data back as it was, and what changed since is lost: asked first. So is a
+  // removal, and a stop where this browser chose that.
   const ask = (action: ContainerAction) => {
     const question =
       action === JOB_ACTION.rollBack

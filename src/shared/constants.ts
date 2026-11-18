@@ -1856,6 +1856,13 @@ export const TASK_TEXT = {
   hostSilent: (host: string) => `The runner on ${host} stopped reporting`,
   hostSilentDetails: (minutes: number) =>
     `No heartbeat for ${minutes} minutes. Healing on that host may be down; check its autoheal container.`,
+  hostSilentOverSshDetails: (minutes: number) =>
+    `No heartbeat for ${minutes} minutes. Healing on that host may be down; its page says how Autoheal's SSH session ` +
+    "to it goes, and why its runner does not report.",
+  runnerHeldBack: (host: string) => `The runner on ${host} is held back: it needs a look`,
+  runnerHeldBackDetails: (host: string, operations: readonly string[]) =>
+    `It will not start until a person looks at what was interrupted part-way, then clears it on ${host}'s page: ` +
+    `${operations.join("; ")}. Clearing undoes nothing and runs nothing again.`,
   healingPaused: (host: string) => `Healing is paused on ${host}`,
   dockerLost: (host: string) => `Docker can no longer be reached on ${host}: its containers are not watched`,
   systemUnread: (host: string) => `Autoheal cannot read ${host}'s system`,
@@ -2883,6 +2890,19 @@ export const KEPT_ASIDE_RUNNING_ACTIONS: ReadonlySet<string> = new Set([
   JOB_ACTION.restart,
   JOB_ACTION.unpause,
 ]);
+// The jobs that put a new container in the old one's place, the old one kept aside meanwhile.
+export const REPLACING_JOB_ACTIONS: ReadonlySet<string> = new Set([
+  JOB_ACTION.update,
+  JOB_ACTION.rollBack,
+  JOB_ACTION.edit,
+  JOB_ACTION.recreate,
+  JOB_ACTION.changeTag,
+]);
+// How a runner's journal names what it was doing: a job by its id and action, or a run of the host's packages.
+export const JOURNAL_OPERATION = {
+  job: /^job:[^:]+:(.+)$/,
+  hostPackages: /^host:/,
+} as const;
 // After an update the image the container ran before stays under its tag plus this: going back by
 // hand is one line in a compose file. Only the last one is kept.
 export const KEPT_IMAGE_TAG_SUFFIX = "-autoheal-previous";

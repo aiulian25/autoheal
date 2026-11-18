@@ -656,11 +656,15 @@ test.describe("Autoheal, end to end on the real image", () => {
       await bar.getByRole("button", { name: "Stop 1" }).click();
       await expect(bar).toContainText("Stop: 1 of 1 done.", { timeout: SLOW });
       expect(docker("inspect", "-f", "{{.State.Running}}", running)).toBe("false");
-      // Running again, it is removed with the stopped one all the same, stopped first; nothing of them is left.
+      // Running again, it is removed with the stopped one all the same, stopped first, once asked; nothing is left.
       docker("start", running);
       const remove = bar.getByRole("button", { name: "Remove 2" });
       await expect(remove).toBeVisible({ timeout: SLOW });
       await remove.click();
+      await admin
+        .getByRole("group", { name: /^Remove .+\? Volumes are kept\.$/ })
+        .getByRole("button", { name: "Yes" })
+        .click();
       await expect(bar).toContainText("Remove: 2 of 2 done.", { timeout: SLOW });
       expect(docker("ps", "-aq", "--filter", `name=^${BULK_PREFIX}`)).toBe("");
     });

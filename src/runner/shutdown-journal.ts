@@ -32,6 +32,16 @@ const isHandedOver = (record: ShutdownRecord) => record.phase === "delegated" &&
 type Store = Pick<DockerClient, "volumes" | "createVolume" | "removeVolume"> & Partial<Pick<DockerClient, "remove">>;
 const UNTOUCHED_OPERATION = /^job:[^:]+:(start|stop|restart|pause|unpause|update)$/;
 
+/** What turns a runner away as it starts: operations interrupted part-way, each one for a person to look at first. */
+export class RecoveryNeeded extends Error {
+  constructor(
+    readonly records: readonly ShutdownRecord[],
+    wayOut: string,
+  ) {
+    super(RUNNER_MESSAGES.recoveryNeeded(records, wayOut));
+  }
+}
+
 const mutations = new Set([
   "restart",
   "start",
@@ -130,7 +140,7 @@ export class ShutdownJournal {
   // A hand-over is judged once its runs are read, in reconcileHostRuns: one whose run can still be read is followed.
   async assertClean() {
     const pending = (await this.blocking()).filter((record) => !isHandedOver(record));
-    if (pending.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(pending, this.wayOut));
+    if (pending.length) throw new RecoveryNeeded(pending, this.wayOut);
   }
 
   /**
@@ -196,7 +206,7 @@ export class ShutdownJournal {
     const runOf = (record: ShutdownRecord) =>
       runs.find((entry) => `host:${entry.jobId}` === record.operation && entry.jobId === record.reference);
     const lost = handedOver.filter((record) => runOf(record) === undefined && this.beyondFollowing(record));
-    if (lost.length) throw new Error(RUNNER_MESSAGES.recoveryNeeded(lost, this.wayOut));
+    if (lost.length) throw new RecoveryNeeded(lost, this.wayOut);
     for (const record of handedOver) {
       const run = runOf(record);
       // Its files may be out of reach for now, as over a session short of channels: the next start looks again.

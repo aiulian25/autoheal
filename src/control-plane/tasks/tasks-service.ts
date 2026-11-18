@@ -60,6 +60,7 @@ import { hosts, jobs, taskActivity, taskBlockers, taskComments, tasks, users } f
 import { DomainError } from "../domain-error.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import { jobViews } from "../jobs/job-views.js";
+import { hostSilentTaskKey } from "./detectors.js";
 
 export type TaskRow = typeof tasks.$inferSelect;
 
@@ -885,6 +886,7 @@ export class TasksService {
       advice: advice.get(task.id) ?? null,
       assistant: assistant.get(task.id) ?? null,
       heldBecause: heldBecause.get(task.id) ?? null,
+      runnerSilent: task.hostId !== null && task.detectorKey === hostSilentTaskKey(task.hostId),
       snoozedUntil: task.snoozedUntil !== null && task.snoozedUntil > now ? task.snoozedUntil : null,
       incidentId: task.incidentId,
       createdAt: task.createdAt,

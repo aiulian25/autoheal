@@ -8,6 +8,7 @@ import {
   API_ROUTES,
   apiPath,
   hasUpdate,
+  heldBackBy,
   type BoardView,
   type ContainerView,
   type HostMetricsView,
@@ -25,6 +26,7 @@ import { api } from "../api-client.js";
 import { whatNeedsYou } from "../board.js";
 import { GaugeFigure, type Gauge } from "../components/charts.js";
 import { ErrorNotice, Loading, PageHeader } from "../components/common.js";
+import { HeldBack } from "../components/held-back.js";
 import { Icon } from "../components/icons.js";
 import { PATHS, TEXT, type Tone } from "../constants.js";
 import { bytesOf, celsius, linkSpeed, percentOf, shortSystemName, shortTimeAgo, timeOfDay } from "../format.js";
@@ -62,7 +64,14 @@ const STATE_TONE: Record<HostState, string> = {
 export const healingPaused = (host: HostView) =>
   host.state === HOST_STATE.online && host.docker !== false && !host.eventStreamConnected;
 
-export const hostStateText = (host: HostView) => (healingPaused(host) ? TEXT.hosts.healingPaused : wordsOf(host.state));
+const heldBack = (host: HostView) => heldBackBy(host).length > 0;
+
+export function hostStateText(host: HostView): string {
+  if (heldBack(host)) {
+    return TEXT.hosts.heldBack;
+  }
+  return healingPaused(host) ? TEXT.hosts.healingPaused : wordsOf(host.state);
+}
 
 export function StateBadge({ host }: { host: HostView }) {
   // Being rebooted or shut down, it says so: rebooting, offline, starting, shut down.
@@ -75,7 +84,8 @@ export function StateBadge({ host }: { host: HostView }) {
       </span>
     );
   }
-  const tone = healingPaused(host) ? "danger" : STATE_TONE[host.state];
+  const needsPerson = heldBack(host) || healingPaused(host);
+  const tone = needsPerson ? "danger" : STATE_TONE[host.state];
   return (
     <span className={`badge ${tone}`}>
       <span className="status-dot" />
@@ -87,7 +97,8 @@ export function StateBadge({ host }: { host: HostView }) {
 /** Its runner restarts nothing on its own just now: for the hour after a new install, or until someone fixes it. */
 export function RecoveryHoldBadge({ host }: { host: HostView }) {
   const hold = host.recoveryHold ?? null;
-  if (hold === null) {
+  // A runner that does not report holds nothing that can be told: its last report's hold is no longer true.
+  if (hold === null || host.state !== HOST_STATE.online) {
     return null;
   }
   const text = hold.until === null ? TEXT.hosts.recoveryHeld : TEXT.hosts.recoveryHeldUntil(timeOfDay(hold.until));
@@ -194,7 +205,7 @@ function aboutHost(host: HostView): string {
     .join(TEXT.separator);
 }
 
-function HostCard({ host, facts }: { host: HostView; facts: HostFacts }) {
+function HostCard({ host, facts, admin }: { host: HostView; facts: HostFacts; admin: boolean }) {
   const titleId = useId();
   return (
     <article className="card host-card" aria-labelledby={titleId}>
@@ -205,6 +216,7 @@ function HostCard({ host, facts }: { host: HostView; facts: HostFacts }) {
         <MaintenanceBadge hostId={host.id} />
       </header>
       <p className="host-card-about">{aboutHost(host)}</p>
+      <HeldBack host={host} admin={admin} />
       {host.metrics === null ? (
         <p className="host-card-empty muted">{TEXT.hosts.noStats}</p>
       ) : (
@@ -323,7 +335,7 @@ export function FleetPage() {
       {(hosts.data.length > 0 || home !== null || admin) && (
         <div className="host-grid">
           {hosts.data.map((host) => (
-            <HostCard key={host.id} host={host} facts={factsOf(host, list, board.data)} />
+            <HostCard key={host.id} host={host} facts={factsOf(host, list, board.data)} admin={admin} />
           ))}
           {home !== null && <HomeAssistantFleetCard home={home} />}
           {admin && <ConnectHostTile hosts={hosts.data} />}

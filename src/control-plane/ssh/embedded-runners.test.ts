@@ -94,12 +94,12 @@ describe("an SSH host's runner inside the control plane", () => {
     );
     expect(view).toMatchObject({
       kind: HOST_KIND.ssh,
-      ssh: { state: SSH_STATE.connected, reason: null },
+      ssh: { state: SSH_STATE.connected, reason: null, interrupted: [] },
       eventStreamConnected: true,
       containerCount: 2,
       runningCount: 2,
     });
-    expect(Object.keys(view.ssh!)).toEqual(["state", "since", "reason"]);
+    expect(Object.keys(view.ssh!)).toEqual(["state", "since", "reason", "interrupted"]);
     // The host's own stats, read over its session: none of this machine's.
     expect(view.health).toMatchObject({
       loadAverage: [1.25, 0.75, 0.5],
@@ -504,16 +504,17 @@ describe("a package run an SSH host's runner can no longer follow", () => {
     await admin.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "alex's own" });
     const blocked = await until(host, (view) => view.ssh?.reason?.includes("needs clearing") === true);
     expect(blocked.ssh?.reason).toContain(RUNNER_MESSAGES.clearOnHostPage);
+    // Every page that shows the host can say what holds it back, without reaching into the host for it.
+    expect(blocked.ssh?.interrupted).toEqual([{ operation: "host:job-5", target: "", step: 1, at: 1 }]);
 
     const interrupted = apiPath(API_ROUTES.sshHostInterrupted, { hostId });
-    const listed = (await admin.get(interrupted)).json<string[]>();
-    expect(listed).toEqual(["host:job-5 (step 1, 1970-01-01 00:00)"]);
     const cleared = await admin.delete(interrupted);
     expect(cleared.statusCode, cleared.body).toBe(200);
-    expect(cleared.json()).toEqual(listed);
+    expect(cleared.json()).toEqual(["host:job-5 (step 1, 1970-01-01 00:00)"]);
     expect(engine.volumes.has(name)).toBe(false);
     const started = await until(host, (view) => view.ssh?.reason === null && view.lastHeartbeatAt !== null);
     expect(started.containerCount).toBe(2);
+    expect(started.ssh?.interrupted).toEqual([]);
     const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
     expect(audit).toContain("host.ssh_interrupted_cleared");
     expect(audit).toContain("host:job-5");

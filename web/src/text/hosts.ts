@@ -221,6 +221,8 @@ export const HOSTS_TEXT = {
     lastReport: "Last report",
     dryRun: "Dry run",
     healingPaused: "healing paused",
+    // Where it would say silent: something interrupted part-way keeps its runner from starting until a person looks.
+    heldBack: "held back",
     recoveryHeld: "recovery held",
     recoveryHeldUntil: (time: string) => `recovery held until ${time}`,
     recoveryHeldWhy: {

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { HostHealthView, HostMetricsView, HostView } from "../../../src/shared/api.js";
+import { heldBackBy, type HostHealthView, type HostMetricsView, type HostView } from "../../../src/shared/api.js";
 import {
   HOST_KIND,
   HOST_SECTIONS,
@@ -197,7 +197,9 @@ export function sshConnectionText(host: HostView): string {
     return TEXT.ssh.states[SSH_STATE.closed];
   }
   const since = TEXT.ssh.since(TEXT.ssh.states[ssh.state], timeAgo(ssh.since));
-  return ssh.reason === null ? since : `${since}${TEXT.separator}${ssh.reason}`;
+  // Held back, its records and the way past them are listed where it shows: said once there, not in full here too.
+  const reason = heldBackBy(host).length > 0 ? TEXT.ssh.heldBack : ssh.reason;
+  return reason === null ? since : `${since}${TEXT.separator}${reason}`;
 }
 
 // How the control plane reaches the host: over SSH, from inside its own container, or through the host's runner.

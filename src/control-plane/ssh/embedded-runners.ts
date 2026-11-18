@@ -1,7 +1,7 @@
 import type { ControlPlaneSettings } from "../../config/runner-config.js";
 import { createRuntime, startRunner, type RunnerPorts } from "../../runner/application.js";
 import { DockerClient } from "../../runner/docker-client.js";
-import { ShutdownJournal } from "../../runner/shutdown-journal.js";
+import { RecoveryNeeded, ShutdownJournal, type ShutdownRecord } from "../../runner/shutdown-journal.js";
 import {
   AUDIT_ACTIONS,
   RUNNER_MESSAGES,
@@ -24,11 +24,18 @@ import { SshDockerConnection } from "./ssh-docker-connection.js";
 import { SshHostFiles, sshHostCommand, shellQuoted } from "./ssh-host-files.js";
 import { sshPackageUnits } from "./ssh-package-units.js";
 import { sshRunnerConfig } from "./ssh-runner-config.js";
-import type { SshConnectionView } from "../../shared/api.js";
+import type { InterruptedOperationView, SshConnectionView } from "../../shared/api.js";
 import { SshSession } from "./ssh-session.js";
 import { runnerContainerRunning } from "../hosts/runner-container.js";
 
 type StopRunner = () => Promise<void>;
+
+const interruptedView = ({ operation, target, step, at }: ShutdownRecord): InterruptedOperationView => ({
+  operation,
+  target,
+  step,
+  at,
+});
 
 /**
  * Whether the host's user may use its Docker now: the check a host is added with. A check that got no answer (turned
@@ -56,6 +63,8 @@ interface EmbeddedRunner {
   runner: Promise<StopRunner | null> | null;
   // What went wrong last, logged once rather than at every try.
   problem: string | null;
+  // What turned its runner away at its last start, for a person to look at and clear; empty once nothing does.
+  interrupted: InterruptedOperationView[];
   // Whether its runner looks after Docker too, or the system alone; null until one has started.
   withDocker: boolean | null;
 }
@@ -116,6 +125,7 @@ export class EmbeddedRunners {
       session: null,
       runner: null,
       problem: null,
+      interrupted: [],
       withDocker: null,
     };
     this.runners.set(hostId, embedded);
@@ -174,7 +184,12 @@ export class EmbeddedRunners {
     const view = embedded?.session?.state();
     return view === undefined
       ? null
-      : { state: view.state, since: view.since, reason: view.reason ?? embedded?.problem ?? null };
+      : {
+          state: view.state,
+          since: view.since,
+          reason: view.reason ?? embedded?.problem ?? null,
+          interrupted: embedded?.interrupted ?? [],
+        };
   }
 
   /** How the password makes root on the host, over its live session; null when it makes neither sudo nor su work. */
@@ -189,12 +204,6 @@ export class EmbeddedRunners {
   /** Its session dialled again at the shortest pause until then: it is being rebooted or shut down. */
   redialSoon(hostId: string, until: number) {
     this.runners.get(hostId)?.session?.redialSoon(until);
-  }
-
-  /** What holds the host's runner back, in the words its log uses; nothing while it may start by itself. */
-  async interruptedOf(hostId: string): Promise<string[]> {
-    const records = await this.journalOf(hostId).blocking();
-    return records.map((record) => RUNNER_MESSAGES.recoverySaid(record));
   }
 
   /**
@@ -277,6 +286,7 @@ export class EmbeddedRunners {
       .then(
         (stop) => {
           embedded.problem = null;
+          embedded.interrupted = [];
           return stop;
         },
         (error: unknown) => {
@@ -284,6 +294,7 @@ export class EmbeddedRunners {
           const problem = describeError(error);
           if (problem !== embedded.problem) log(SSH_TEXT.runnerFailed(hostId, problem));
           embedded.problem = problem;
+          embedded.interrupted = error instanceof RecoveryNeeded ? error.records.map(interruptedView) : [];
           embedded.runner = null;
           return null;
         },

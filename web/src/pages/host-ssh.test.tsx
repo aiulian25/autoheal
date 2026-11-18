@@ -95,29 +95,30 @@ describe("an SSH host's own card", () => {
 
   describe("what an interrupted package run left", () => {
     const interrupted = apiPath(API_ROUTES.sshHostInterrupted, { hostId: HOST_ID });
-    const left = "host:job-5 (step 1, 2026-11-15 08:00)";
-    const connected = (reason: string | null) =>
-      ({ ...host, ssh: { state: "connected", since: Date.now(), reason } }) as HostView;
+    const upgrade = { operation: "host:job-5", target: "", step: 1, at: Date.UTC(2026, 10, 15, 8, 0) };
+    const refusal = "1 unfinished operation needs clearing before this runner can start: host:job-5";
+    const connected = (reason: string | null, records: (typeof upgrade)[]) =>
+      ({ ...host, ssh: { state: "connected", since: Date.now(), reason, interrupted: records } }) as HostView;
     const asked = (fetch: ReturnType<typeof show>, method: string) =>
       fetch.mock.calls.some(([url, options]) => url === interrupted && (options?.method ?? "GET") === method);
 
-    it("is listed where its runner will not start, and cleared only once a person says they looked", async () => {
-      const fetch = show(details(), connected("1 unfinished operation needs clearing before this runner can start"), {
-        [`GET ${interrupted}`]: [left],
-        [`DELETE ${interrupted}`]: [left],
-      });
-      expect(await screen.findByText(left)).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: text.interruptedClear }));
+    it("is listed where its runner will not start, with what to look at, and cleared once a person says they looked", async () => {
+      const fetch = show(details(), connected(refusal, [upgrade]), { [`DELETE ${interrupted}`]: [] });
+      expect(await screen.findByText("host:job-5 (step 1, 2026-11-15 08:00)")).toBeTruthy();
+      expect(screen.getByText(TEXT.heldBack.advice.packages)).toBeTruthy();
+      // Said once, in the list: the connection line only says that its runner is held back.
+      expect(screen.queryByText(new RegExp(refusal))).toBeNull();
+      expect(screen.getByText(new RegExp(TEXT.ssh.heldBack))).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: TEXT.heldBack.clear }));
       expect(asked(fetch, "DELETE")).toBe(false);
       fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
       await waitFor(() => expect(asked(fetch, "DELETE")).toBe(true));
     });
 
-    it("is not asked about while its runner runs", async () => {
-      const fetch = show(details(), connected(null), { [`GET ${interrupted}`]: [left] });
+    it("is not shown while its runner runs", async () => {
+      show(details(), connected(null, []));
       await screen.findByText(text.title);
-      expect(asked(fetch, "GET")).toBe(false);
-      expect(screen.queryByRole("button", { name: text.interruptedClear })).toBeNull();
+      expect(screen.queryByRole("button", { name: TEXT.heldBack.clear })).toBeNull();
     });
   });
 
