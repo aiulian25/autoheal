@@ -824,8 +824,39 @@ describe("ContainerJobs", () => {
     expect((await jobs.run(job({ containerName: "paperless-autoheal-old", action: "update" }))).outcome).toBe(
       "Refused: paperless-autoheal-old is what an update of paperless kept aside. Roll paperless back to it, or remove it.",
     );
-    expect((await jobs.run(job({ containerName: "paperless-autoheal-old", action: "start" }))).succeeded).toBe(false);
     expect(calls).toEqual([]);
+  });
+
+  it("lets a person start, stop or remove a copy an update kept aside, but never run it beside its successor", async () => {
+    const { jobs, calls, dependencies } = jobsWith();
+    const old = (action: ContainerJob["action"]) => jobs.run(job({ containerName: "paperless-autoheal-old", action }));
+    // Its successor stopped, or gone: the copy is the person's to start, stop and remove.
+    expect((await old("start")).succeeded).toBe(true);
+    expect((await old("stop")).succeeded).toBe(true);
+    expect((await old("remove")).succeeded).toBe(true);
+    expect(calls.filter((call) => call.endsWith("paperless-autoheal-old") && !call.startsWith("held"))).toEqual([
+      "start paperless-autoheal-old",
+      "released paperless-autoheal-old",
+      "stop paperless-autoheal-old",
+      "released paperless-autoheal-old",
+      "removed paperless-autoheal-old",
+      "released paperless-autoheal-old",
+    ]);
+
+    // With its successor running, both would run on the same data: refused, saying what to do first.
+    const inspect = dependencies.docker.inspect;
+    dependencies.docker.inspect = async (name) => {
+      const found = await inspect(name);
+      return found === null ? null : { ...found, State: { ...found.State, Running: name === "paperless" } };
+    };
+    calls.length = 0;
+    for (const action of ["start", "restart", "unpause"] as const) {
+      expect((await old(action)).outcome).toBe(
+        JOB_OUTCOMES.refusedBesideSuccessor("paperless-autoheal-old", "paperless"),
+      );
+    }
+    expect(calls).toEqual([]);
+    expect((await old("remove")).succeeded).toBe(true);
   });
 
   it("only says what it would do in dry-run, and nothing for a container that is gone", async () => {

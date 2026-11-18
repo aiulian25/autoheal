@@ -2315,6 +2315,8 @@ const sharing = (containers: readonly string[]) =>
 // volume with its image's files as it makes a container, so the old one waits for a person.
 const BACK_STOPPED =
   "The old container is back, stopped: Docker made the new one from another image with its volumes attached, and with no copy of its data kept, an empty volume may now hold that image's files. Look at its volumes before starting it.";
+// What an update with automatic undo needs, said when one is refused before anything stopped.
+const KEEPS_DATA_FIRST = "an automatic update keeps its data first";
 // What a container action did, in words for the task and the person who asked.
 export const JOB_OUTCOMES = {
   // A host job an earlier runner took and never finished, with no run on the host left to follow: after a reboot, or
@@ -2330,6 +2332,8 @@ export const JOB_OUTCOMES = {
   refusedProtected: (name: string) => `Refused: ${name} is protected on this host.`,
   refusedParkedItself: (name: string, updated: string) =>
     `Refused: ${name} is what an update of ${updated} kept aside. Roll ${updated} back to it, or remove it.`,
+  refusedBesideSuccessor: (name: string, updated: string) =>
+    `Refused: ${updated} is running, and ${name}, which its update kept aside, uses the same data. Stop ${updated} first.`,
   refusedSelf: "Refused: the runner does not act on its own container.",
   refusedUpdatesOff: (name: string) => `Refused: ${name} is labelled ${UPDATE_LABEL}=${UPDATE_POLICY.off}.`,
   refusedPinned: (name: string) => `${name} runs an image without a tag to follow, so there is nothing to update.`,
@@ -2407,7 +2411,10 @@ export const JOB_OUTCOMES = {
   // A container job for a host Autoheal reaches over SSH without Docker: there is no container to act on.
   noDockerHere: "Refused: there is no Docker on this host, so it has no containers to act on.",
   refusedWithoutCheckpoint: (name: string, reason: string) =>
-    `Did not update ${name}: an automatic update keeps its data first, and ${reason}. Nothing was stopped; an update by hand may go ahead without keeping it.`,
+    `Did not update ${name}: ${KEEPS_DATA_FIRST}, and ${reason}. Nothing was stopped; an update by hand may go ahead without keeping it.`,
+  // The host has not the image that copies it, and could not get it: why, and what to do, told whole.
+  refusedWithoutHelper: (name: string, missing: string) =>
+    `Did not update ${name}: ${KEEPS_DATA_FIRST}, and ${missing}`,
   rollbackRefused: (name: string, reason: string) =>
     `Refused to roll back ${name}: ${reason}. The current and parked containers are unchanged; recover its data manually before downgrading.`,
   checkpointOff: "checkpoints are off on this host",
@@ -2424,6 +2431,15 @@ export const JOB_OUTCOMES = {
   permissionRevoked: "Requesting account no longer has permission for this action.",
   permissionRevokedBeforeDelivery: "Permission revoked before delivery.",
 } as const;
+// Why an update waits for a person, where a short line can say it: one that keeps its data first could not.
+export const HELD_REASON = { dataNotKept: "data_not_kept" } as const;
+export const HELD_REASONS = Object.values(HELD_REASON);
+export type HeldReason = (typeof HELD_REASON)[keyof typeof HELD_REASON];
+// The words a runner's outcome holds for it: refused before anything stopped, or put back after the copy failed.
+const DATA_NOT_KEPT_WORDS = [KEEPS_DATA_FIRST, JOB_OUTCOMES.checkpointRequired] as const;
+/** Why an update that failed waits for a person, read from its runner's outcome; null where only all of it can say. */
+export const heldReasonOf = (outcome: string | null): HeldReason | null =>
+  DATA_NOT_KEPT_WORDS.some((words) => outcome?.includes(words) === true) ? HELD_REASON.dataNotKept : null;
 // What an edit did: the container recreated with the settings a person changed.
 export const EDIT_OUTCOMES = {
   changed: (name: string) => `Changed the settings of ${name}, and it is running.`,
@@ -2833,15 +2849,30 @@ export const IMAGE_ID_PREFIX = "sha256:";
 export const SHORT_IMAGE_ID_LENGTH = 12;
 // The old container waits under this name until the new one proves itself.
 export const OLD_CONTAINER_SUFFIX = "-autoheal-old";
-/** The old container an update keeps aside: only rolling back, or a person, may touch it. */
+/** The old container an update keeps aside: Autoheal never touches it on its own, but rolling back or a person may. */
 export const isParkedContainer = (name: string) => name.endsWith(OLD_CONTAINER_SUFFIX);
 /**
  * Any copy an update keeps aside for going back: a container update's, or Autoheal's own (the control plane's or a
- * sidecar runner's), which its helper removes once the new one has held. The dashboard offers nothing on either.
+ * sidecar runner's), which its helper removes once the new one has held.
  */
 export const isKeptAsideCopy = (name: string) => isParkedContainer(name) || name.endsWith(SELF_UPDATE.previousSuffix);
 /** The container whose update kept this one aside. */
 export const updatedNameOf = (parked: string) => parked.slice(0, -OLD_CONTAINER_SUFFIX.length);
+// What a person may do with the old container an update kept aside: it is theirs to start, stop or remove, never
+// held. Started, it never runs beside its successor, as both would use the same data.
+export const KEPT_ASIDE_ACTIONS: ReadonlySet<string> = new Set([
+  JOB_ACTION.start,
+  JOB_ACTION.stop,
+  JOB_ACTION.restart,
+  JOB_ACTION.pause,
+  JOB_ACTION.unpause,
+  JOB_ACTION.remove,
+]);
+export const KEPT_ASIDE_RUNNING_ACTIONS: ReadonlySet<string> = new Set([
+  JOB_ACTION.start,
+  JOB_ACTION.restart,
+  JOB_ACTION.unpause,
+]);
 // After an update the image the container ran before stays under its tag plus this: going back by
 // hand is one line in a compose file. Only the last one is kept.
 export const KEPT_IMAGE_TAG_SUFFIX = "-autoheal-previous";
@@ -4743,11 +4774,74 @@ export const VOLUME_COPY_MESSAGES = {
   noReport: "the copy said nothing of how it went",
   incomplete: "a complete, matching data checkpoint is missing or invalid",
   metadataUnavailable: "the required hard-link/ACL/xattr copy capability is unavailable",
-  metadataCopyFailed: "metadata-preserving copy or verification failed; checkpoint data is not verified",
   specialFile: "checkpoint fidelity does not support sockets, pipes, devices or symbolic-link mount roots",
   externalLinks: "a hard-link group extends outside one checkpoint mount",
   entryLimit: "checkpoint metadata exceeds the supported entry limit",
   targetGone: (target: string) => `the container no longer mounts ${target}`,
+  // What went wrong, in fixed words only: what rsync prints can name private files, so none of it is passed on.
+  failed: (step: string, how: string, errors: readonly string[]) =>
+    errors.length === 0 ? `${step} failed: ${how}` : `${step} failed: ${how}, its errors saying ${errors.join(", ")}`,
+  differs: (differences: readonly string[]) => `the copy did not match its data: ${differences.join("; ")}`,
+} as const;
+// Which of rsync's two runs went wrong: the copy itself, or the dry run that checks it.
+export const COPY_STEP = { copy: "the copy", check: "the check after the copy" } as const;
+// How rsync stopped, by the exit codes its manual explains.
+const RSYNC_EXIT_WORDS: Partial<Record<number, string>> = {
+  3: "a folder could not be opened",
+  11: "a file could not be read or written",
+  12: "it broke off part way",
+  22: "it ran out of memory",
+  23: "some files or their attributes could not be copied",
+  24: "files vanished while it copied",
+  30: "it stalled",
+};
+// Only the kernel ends the copy so while its helper lives on: for want of memory.
+const OUT_OF_MEMORY_SIGNAL = "SIGKILL";
+// Node's word for a run that printed more than it may, and was stopped for it.
+export const COPY_OUTPUT_LIMIT_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+export const COPY_TROUBLE = {
+  exited: (code: number) => `${RSYNC_EXIT_WORDS[code] ?? "rsync stopped"} (rsync code ${code})`,
+  killed: (signal: string) =>
+    signal === OUT_OF_MEMORY_SIGNAL
+      ? `it was killed by ${signal}, as running out of memory does`
+      : `it was killed by ${signal}`,
+  tookTooLong: "it did not finish in time",
+  saidTooMuch: `it printed more than ${CHECKPOINT.copyOutputBytes / BYTES_PER_KIBIBYTE} KB`,
+  warned: "it printed warnings",
+  didNotRun: "it could not run",
+} as const;
+// The error numbers rsync ends its lines with, in the C library's words for them.
+export const COPY_ERRORS: Partial<Record<number, string>> = {
+  1: "operation not permitted",
+  2: "no such file or directory",
+  5: "input/output error",
+  13: "permission denied",
+  22: "invalid argument",
+  28: "no space left on device",
+  30: "read-only file system",
+  32: "broken pipe",
+  61: "no data available",
+  95: "operation not supported",
+  122: "disk quota exceeded",
+};
+// What each place after the first two of an itemized change says differs, as "--out-format=%i" prints it.
+export const COPY_ATTRIBUTES = [
+  "contents",
+  "size",
+  "modification time",
+  "permissions",
+  "owner",
+  "group",
+  "access time",
+  "ACLs",
+  "extended attributes",
+] as const;
+const countedEntries = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+export const COPY_DIFFERENCES = {
+  differ: (count: number, attributes: readonly string[]) =>
+    `${countedEntries(count, "entry differs", "entries differ")}${attributes.length === 0 ? "" : ` in ${attributes.join(", ")}`}`,
+  missing: (count: number) => `${countedEntries(count, "entry is", "entries are")} missing from the copy`,
+  extra: (count: number) => `${countedEntries(count, "entry is", "entries are")} only in the copy`,
 } as const;
 // Following a run: how often its status file is looked for, and how long past its own timeout. While
 // it runs, the newest part of its log goes to the dashboard as it grows.

@@ -27,6 +27,7 @@ import {
   UpdateLine,
   AdviceBadge,
   AssistantBadge,
+  HeldBadge,
   NewerRows,
   PackageRows,
   footNote,
@@ -100,6 +101,7 @@ function UpdateGroup({
               <MaintenanceBadge hostId={group.host.id} containerName={name ?? undefined} />
               <AdviceBadge advice={task.advice} />
               <AssistantBadge assistant={task.assistant} />
+              <HeldBadge because={task.heldBecause} />
               <Link className="small update-review" to={taskPlaceLink(task) ?? hostLink(group.host.id)}>
                 {TEXT.attention.review}
               </Link>

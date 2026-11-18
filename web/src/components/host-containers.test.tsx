@@ -352,9 +352,9 @@ describe("a host's containers and what each does", () => {
     });
     await sent(fetch, TICKS, "PUT", { names: ["attic"], update: "never" });
   });
-  it("shows the old container an update keeps aside with nothing to choose", async () => {
+  it("shows the old container an update keeps aside with nothing to choose, but a person's to start or remove", async () => {
     const available = { status: "available" as const, checkedAt: 1, remote: null, reason: null };
-    serve({
+    const fetch = serve({
       [API_ROUTES.containers]: [
         container({ name: "BentoPDF", composeProject: "bentopdf", update: { ...available, policy: "ask" } }),
         container({
@@ -373,6 +373,12 @@ describe("a host's containers and what each does", () => {
     expect(within(parked).getByText("Kept aside by an update, for rolling back")).toBeTruthy();
     expect(within(parked).getByText("updates off")).toBeTruthy();
     expect(within(parked).queryByRole("combobox")).toBeNull();
+    // Never held: a person may start it again, or remove it, from its own row.
+    const button = (name: string) => within(parked).getByRole("button", { name }) as HTMLButtonElement;
+    expect(button("Start BentoPDF-autoheal-old").disabled).toBe(false);
+    fireEvent.click(button("Remove BentoPDF-autoheal-old"));
+    const actions = apiPath(API_ROUTES.containerActions, { hostId: "h1", containerName: "BentoPDF-autoheal-old" });
+    await sent(fetch, actions, "POST", { action: "remove" });
   });
   it("says how many of its hourly restarts Autoheal used on a container, and warns when none are left", async () => {
     serve({ [API_ROUTES.containers]: CONTAINERS });

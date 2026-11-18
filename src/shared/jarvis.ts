@@ -291,6 +291,7 @@ export function jarvisVersionQuestion(facts: JarvisVersionFacts, lastAsking: boo
 
 const is = (count: number) => (count === 1 ? "is" : "are");
 const was = (count: number) => (count === 1 ? "was" : "were");
+const its = (count: number) => (count === 1 ? "its" : "their");
 const words = (say: string, text: string) => ({ say, text });
 
 /** What Autoheal says back to an answer, in fixed words and its form of address: at once, never counted. */
@@ -369,12 +370,15 @@ export type JarvisReplies = ReturnType<typeof jarvisReplies>;
 export interface JarvisOutcome {
   updated: readonly string[];
   notUpdated: readonly string[];
+  // Not updated, as each one's data had to be copied first and could not be.
+  dataNotKept: readonly string[];
   notDone: readonly string[];
 }
 
 const OUTCOME_PARTS = [
   ["updated", (count: number) => `${is(count)} updated`],
   ["notUpdated", (count: number) => `${was(count)} not updated: the dashboard says why`],
+  ["dataNotKept", (count: number) => `${was(count)} not updated: ${its(count)} data could not be copied first`],
   ["notDone", (count: number) => `${is(count)} not done yet`],
 ] as const;
 

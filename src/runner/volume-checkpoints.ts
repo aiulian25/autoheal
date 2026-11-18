@@ -154,6 +154,11 @@ export class VolumeCheckpoints {
     this.sleep = dependencies.sleep ?? wait;
   }
 
+  /** The helper's image, fetched where the host lacks it: an update asks before it stops anything, as a pull takes time. */
+  async fetchHelperImage(): Promise<void> {
+    await this.dependencies.helperImage();
+  }
+
   /**
    * Copies a stopped container's data aside. A completion manifest is published only after every copy succeeds.
    * The caller decides whether incomplete coverage may proceed (never for automatic undo).

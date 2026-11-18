@@ -33,6 +33,8 @@ import {
   UPDATE_PHASE,
   NETWORK_MODE_CONTAINER_PREFIX,
   isParkedContainer,
+  KEPT_ASIDE_ACTIONS,
+  KEPT_ASIDE_RUNNING_ACTIONS,
   updatedNameOf,
   NETWORK_OUTCOMES,
   VOLUME_OUTCOMES,
@@ -478,9 +480,9 @@ export class ContainerJobs {
     if (settings.protectedContainers.has(name)) {
       return asJobResult({ succeeded: false, outcome: JOB_OUTCOMES.refusedProtected(name) });
     }
-    // Rolling back puts it back; anything else would lose the copy kept for that, or run it beside its successor.
-    if (isParkedContainer(name)) {
-      return asJobResult({ succeeded: false, outcome: JOB_OUTCOMES.refusedParkedItself(name, updatedNameOf(name)) });
+    const keptAside = isParkedContainer(name) ? await this.keptAsideRefusal(name, action) : null;
+    if (keptAside !== null) {
+      return asJobResult({ succeeded: false, outcome: keptAside });
     }
     let queued = false;
     const progress = new UpdateReport(
@@ -616,6 +618,16 @@ export class ContainerJobs {
         }
       },
     );
+  }
+
+  // The old container an update kept aside is a person's to start, stop or remove; only rolling its successor back
+  // changes it otherwise. Started, it would run beside a successor that runs, on the same data: refused until that stops.
+  private async keptAsideRefusal(name: string, action: ChangingAction): Promise<string | null> {
+    const successor = updatedNameOf(name);
+    if (!KEPT_ASIDE_ACTIONS.has(action)) return JOB_OUTCOMES.refusedParkedItself(name, successor);
+    if (!KEPT_ASIDE_RUNNING_ACTIONS.has(action)) return null;
+    const running = (await this.dependencies.docker.inspect(successor))?.State.Running === true;
+    return running ? JOB_OUTCOMES.refusedBesideSuccessor(name, successor) : null;
   }
 
   private async affected(name: string, action: ChangingAction) {

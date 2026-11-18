@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { API_ERRORS, type ApiErrorCode } from "../../shared/api.js";
+import { HELD_REASON, HELD_REASONS } from "../../shared/constants.js";
 import {
   JARVIS_ANSWER,
   JARVIS_ANSWER_HOW,
@@ -33,10 +34,11 @@ export const answerSchema = z.object({
   room: z.string().nullable(),
   by: z.string(),
   at: z.number(),
-  // How each update a yes started ended, by its task: true when it was updated.
-  outcomes: z.record(z.string(), z.boolean()),
+  // How each update a yes started ended, by its task: true when it was updated, false or why not when it was not.
+  outcomes: z.record(z.string(), z.union([z.boolean(), z.enum(HELD_REASONS)])),
 });
 export type AssistantAnswer = z.infer<typeof answerSchema>;
+export type UpdateEnd = AssistantAnswer["outcomes"][string];
 
 /** Whether a code that came back is this one, compared in constant time. */
 export function sameCode(kept: string | null, given: string): boolean {
@@ -51,16 +53,19 @@ export function refusalWords(code: ApiErrorCode, host: string, replies: JarvisRe
   return GONE.includes(code) ? replies.gone : replies.notHandedOver;
 }
 
-/** What came of a yes, update by update in the question's order: updated, not updated, or not done yet. */
+/** What came of a yes, update by update in the question's order: updated, not updated and why, or not done yet. */
 export function outcomeOf(
   names: readonly string[],
   taskIds: readonly string[],
-  outcomes: Readonly<Record<string, boolean>>,
+  outcomes: Readonly<Record<string, UpdateEnd>>,
 ): JarvisOutcome {
   const ended = taskIds.map((taskId, index) => ({ name: names[index]!, updated: outcomes[taskId] }));
+  const namesWhere = (end: UpdateEnd | undefined) =>
+    ended.filter(({ updated }) => updated === end).map(({ name }) => name);
   return {
-    updated: ended.filter(({ updated }) => updated === true).map(({ name }) => name),
-    notUpdated: ended.filter(({ updated }) => updated === false).map(({ name }) => name),
-    notDone: ended.filter(({ updated }) => updated === undefined).map(({ name }) => name),
+    updated: namesWhere(true),
+    notUpdated: namesWhere(false),
+    dataNotKept: namesWhere(HELD_REASON.dataNotKept),
+    notDone: namesWhere(undefined),
   };
 }

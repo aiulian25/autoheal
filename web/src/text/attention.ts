@@ -3,6 +3,7 @@ import {
   HANDLE_COOLDOWN_SECONDS,
   MAX_RESTARTS_PER_WINDOW,
   TASK_SNOOZE,
+  type HeldReason,
   type TaskActivityKind,
   type TaskSnooze,
   type TaskStatus,
@@ -94,7 +95,7 @@ export const ATTENTION_TEXT = {
       // Around the agent's name, which shows bold.
       tipBefore: "ProTip: Drag any update card directly onto the ",
       tipAgent: "Ollama Agent",
-      tipAfter: " card in the top right strip to run with LLM supervision.",
+      tipAfter: " card at the top right, in sight as you scroll, to run with LLM supervision.",
       dragActive: "Drag & drop active",
       ready: "Agent ready",
       working: "Agent working",
@@ -151,6 +152,7 @@ export const ATTENTION_TEXT = {
       UpdateAssessment,
       string
     >,
+    heldBecause: { data_not_kept: "Its data could not be copied first" } satisfies Record<HeldReason, string>,
     updateNow: (count: number) => `Update ${count} ${count === 1 ? "container" : "containers"} now`,
     oneAtATime: "One at a time. If one fails to come back healthy, the rest wait.",
     onItNow: "On it now",

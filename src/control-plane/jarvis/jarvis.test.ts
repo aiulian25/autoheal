@@ -24,6 +24,7 @@ import {
   HOST_SILENT_AFTER_MILLISECONDS,
   MILLISECONDS_PER_MINUTE,
   MILLISECONDS_PER_SECOND,
+  JOB_OUTCOMES,
   ROLE_VIEWER,
   SETTING_KEYS,
 } from "../../shared/constants.js";
@@ -739,25 +740,56 @@ describe("Jarvis", () => {
         expect(told()[0]!.code).toBeUndefined();
       });
 
-      it("drops a question once a newer image is out, and asks about that one with a new code", async () => {
+      it("keeps the same question once a newer image is out: its id, code, asks and wait, about the newer one", async () => {
         const secret = await asking("Cedar", [updated("whoami", "a")]);
         await later([updated("whoami", "a")], JARVIS_LIMITS.settleMilliseconds);
         const [first] = told();
         await confirmsAs(secret, first!.id);
-        await later([updated("whoami", "b")], 1);
-        expect(told()).toHaveLength(2);
-        const second = told()[1]!;
-        expect(second).toMatchObject({ tier: "ask", names: ["whoami"] });
-        expect(second.id).not.toBe(first!.id);
-        expect(second.code).not.toBe(first!.code);
-        // The same task: its key names no version, and only the image a yes would bring changed.
         const { database } = controlPlane.services.databaseHandle;
-        const membersOf = (id: string) =>
-          JSON.parse(database.select().from(jarvisItems).where(eq(jarvisItems.id, id)).get()!.membersJson!) as string[];
-        const [before] = membersOf(first!.id);
-        const [after] = membersOf(second.id);
+        const questions = () =>
+          database
+            .select()
+            .from(jarvisItems)
+            .all()
+            .filter(({ membersJson }) => membersJson !== null);
+        const [heard] = questions();
+        await later([updated("whoami", "b")], 1);
+        // Nothing new is asked: it only ever offered to update the container, and still does, now to the newer image.
+        expect(told()).toHaveLength(1);
+        const [now] = questions();
+        expect(questions()).toHaveLength(1);
+        expect(now).toMatchObject({
+          id: first!.id,
+          status: "asked",
+          asks: heard!.asks,
+          nextAskAt: heard!.nextAskAt,
+          codeSealed: heard!.codeSealed,
+        });
+        const [before] = JSON.parse(heard!.membersJson!) as string[];
+        const [after] = JSON.parse(now!.membersJson!) as string[];
         expect(after!.split("@")[0]).toBe(before!.split("@")[0]);
         expect([before, after].map((member) => member!.split("@")[1])).toEqual([digest("a"), digest("b")]);
+      });
+
+      it("asks it again only once its wait is over, whatever images came, and none brings it back once retired", async () => {
+        // Each a digit of a digest: a new image every time.
+        const images = [..."bcdef0123456789"];
+        const newer = () => [updated("whoami", images.shift()!)];
+        const secret = await asking("Maple", [updated("whoami", "a")]);
+        await later([updated("whoami", "a")], JARVIS_LIMITS.settleMilliseconds);
+        for (let asked = 1; asked <= JARVIS_LIMITS.asksAtMost; asked += 1) {
+          expect(told()).toHaveLength(asked);
+          await confirmsAs(secret, told().at(-1)!.id);
+          // A newer image half way through its wait asks nothing; the wait's end asks once, about the newest.
+          await later(newer(), JARVIS_LIMITS.repeatMilliseconds / 2);
+          expect(told()).toHaveLength(asked);
+          await later(newer(), JARVIS_LIMITS.repeatMilliseconds / 2);
+        }
+        // Asked as often as it may be, and retired: the next images ask nothing.
+        await later(newer(), JARVIS_LIMITS.repeatMilliseconds);
+        await later(newer(), JARVIS_LIMITS.repeatMilliseconds);
+        expect(told()).toHaveLength(JARVIS_LIMITS.asksAtMost);
+        expect(new Set(told().map(({ id, code }) => `${id} ${code}`)).size).toBe(1);
       });
 
       it("asks three times at most, a day apart and with the same code, and says so the last time", async () => {
@@ -868,6 +900,25 @@ describe("Jarvis", () => {
           expect(await takeWork()).toEqual([]);
         });
 
+        it("says a yes's update was not made because its data could not be copied first", async () => {
+          const { code } = await askedAbout("Spruce");
+          read(`autoheal yes ${code} ${seconds()} voice Living Room`);
+          await vi.waitFor(() => expect(replies()).toHaveLength(1));
+          const [job] = await vi.waitFor(async () => {
+            const jobs = await takeWork();
+            expect(jobs).toHaveLength(1);
+            return jobs;
+          });
+          const outcome = `Could not update whoami (${JOB_OUTCOMES.checkpointRequired}.${JOB_OUTCOMES.checkpointSkipped("the copy failed: it printed warnings")}). The old container is back as it was.`;
+          const result = { succeeded: false, outcome, output: null };
+          expect((await runner("POST", apiPath(RUNNER_ROUTES.jobResult, { jobId: job!.id }), result)).statusCode).toBe(
+            204,
+          );
+          await vi.waitFor(() => expect(replies()).toHaveLength(2));
+          expect(replies()[1]!.say).toBe("whoami on Spruce was not updated: its data could not be copied first.");
+          expect((await taskOf("whoami", "Spruce")).heldBecause).toBe("data_not_kept");
+        });
+
         it("keeps a no: nothing is said, nothing changes, and it is not asked again for that image", async () => {
           const { whoami, code } = await askedAbout("Birch");
           read(`autoheal no ${code} ${seconds()} phone`);
@@ -895,47 +946,51 @@ describe("Jarvis", () => {
           expect((await taskOf("whoami", "Cedar")).assignee).toMatchObject({ kind: "user" });
         });
 
-        it("leaves a yes once a newer image is out, says so, and asks about the newer one", async () => {
-          const { question, code } = await askedAbout("Dogwood");
+        it("takes a yes to the newest image once a newer one is out: it only ever offered to update the container", async () => {
+          const { code } = await askedAbout("Dogwood");
           await report([updated("whoami", "b")], false);
           read(`autoheal yes ${code} ${seconds()} voice`);
           await vi.waitFor(() => expect(replies()).toHaveLength(1));
-          expect(replies()[0]!.say).toBe("A newer version came out since I asked, so I left it. I will ask again.");
-          await later([updated("whoami", "b")], 1);
-          const asked = told().filter(({ tier }) => tier === "ask");
-          expect(asked).toHaveLength(2);
-          expect(asked[1]!.id).not.toBe(question.id);
-          // Answered again on the old one: that question is over.
-          read(`autoheal yes ${code} ${seconds() + 1} voice`);
-          await vi.waitFor(() => expect(replies()).toHaveLength(2));
-          expect(replies()[1]!.say).toBe("That question is no longer open.");
+          expect(replies()[0]!.say).toBe("Updating whoami on Dogwood now.");
+          const [job] = await vi.waitFor(async () => {
+            const jobs = await takeWork();
+            expect(jobs).toHaveLength(1);
+            return jobs;
+          });
+          expect(job).toMatchObject({ action: "update", containerName: "whoami", expectedDigest: digest("b") });
+        });
+
+        // The update gone as it was answered: done by hand, say. The yes is left, and said so once.
+        const current = (name: string) => ({
+          ...updated(name),
+          update: { status: "current" as const, checkedAt: 1, remoteDigest: null },
         });
 
         it("says nothing more to a yes it left, read again as a Home Assistant that restarted restores it", async () => {
           const { code } = await askedAbout("Elder");
-          await report([updated("whoami", "b")], false);
+          await report([current("whoami")], false);
           const second = seconds();
           read(`autoheal yes ${code} ${second} voice`);
           await vi.waitFor(() => expect(replies()).toHaveLength(1));
 
           read(`autoheal yes ${code} ${second} voice`);
-          await later([updated("whoami", "b")], 1);
+          await later([current("whoami")], 1);
 
           expect(replies()).toHaveLength(1);
         });
 
         it("says once that a question is over, however often the same answer to it is read again", async () => {
           const { code } = await askedAbout("Hawthorn");
-          await report([updated("whoami", "b")], false);
+          await report([current("whoami")], false);
           read(`autoheal yes ${code} ${seconds()} voice`);
           await vi.waitFor(() => expect(replies()).toHaveLength(1));
 
           const again = seconds() + 1;
           for (const _reconnect of [1, 2, 3]) read(`autoheal yes ${code} ${again} voice`);
-          await later([updated("whoami", "b")], 1);
+          await later([current("whoami")], 1);
 
           expect(replies().map(({ say }) => say)).toEqual([
-            "A newer version came out since I asked, so I left it. I will ask again.",
+            "That update is gone, so there is nothing to do.",
             "That question is no longer open.",
           ]);
           expect(await takeWork()).toEqual([]);
@@ -1266,6 +1321,36 @@ describe("Jarvis", () => {
           await confirmsAs(secret, question.id);
           return question;
         };
+
+        it("keeps a host's question while its updates change but not their count, and asks anew once it does", async () => {
+          capabilities = { host: hostHealth({ packages: PACKAGES }) };
+          const secret = await asking("Spruce", []);
+          const checked = async (upgradable: ReturnType<typeof pending>[]) => {
+            const agent = { kind: "agent", agent: "autoheal" } as const;
+            const check = controlPlane.services.hostPackages.request(agent, hostIdOf("Spruce"), "check_packages", []);
+            await takeWork();
+            const packages = { ...CHECK, upgradable };
+            await finish(check.id, { succeeded: true, outcome: "Checked.", output: null, packages });
+          };
+          const asked = () => told().filter(({ tier }) => tier === "ask");
+          await checked([pending("curl"), pending("openssl")]);
+          await controlPlane.services.detectorService.run();
+          await later([], JARVIS_LIMITS.settleMilliseconds);
+          const first = await heardLast(secret);
+          expect(first.say).toBe("Spruce has 2 updates waiting. Should I install them?");
+
+          // Other updates, as many: it still says what a yes would install, so it is the same question.
+          await checked([pending("curl"), pending("tzdata")]);
+          await later([], 1);
+          expect(asked()).toHaveLength(1);
+
+          // One more: it no longer says that, so it is asked anew.
+          await checked([pending("curl"), pending("tzdata"), pending("openssl")]);
+          await later([], 1);
+          expect(asked()).toHaveLength(2);
+          expect(asked()[1]!.id).not.toBe(first.id);
+          expect(asked()[1]!.say).toBe("Spruce has 3 updates waiting. Should I install them?");
+        });
 
         it("asks to install a host's updates, leaves Docker to the dashboard, and says what came of a yes", async () => {
           capabilities = { host: hostHealth({ packages: PACKAGES }) };

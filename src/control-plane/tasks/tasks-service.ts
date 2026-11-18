@@ -44,7 +44,9 @@ import {
   UPDATE_ASSESSMENTS,
   USER_STATUS_ACTIVE,
   WORKED_TASK_STATUSES,
+  heldReasonOf,
   type AgentKey,
+  type HeldReason,
   type TaskActivityKind,
   type TaskPriority,
   type TaskResourceKind,
@@ -120,6 +122,9 @@ const assistantSaid = z.object({
   how: z.enum(Object.values(JARVIS_ANSWER_HOW)).optional(),
 });
 const ASSISTANT_ACTIVITY = [TASK_ACTIVITY.assistantAsked, TASK_ACTIVITY.assistantAnswered];
+const jobEnded = z.object({ succeeded: z.boolean(), outcome: z.string().nullable() });
+// A try's end, and a task come back: what it waits for after that is a new update's, not the last try's.
+const HELD_ACTIVITY = [TASK_ACTIVITY.jobFinished, TASK_ACTIVITY.reopened];
 const activityView = (entry: typeof taskActivity.$inferSelect): TaskActivityView => ({
   id: entry.id,
   kind: entry.kind as TaskActivityKind,
@@ -857,6 +862,7 @@ export class TasksService {
       .all();
     const advice = this.adviceOf(rows.map(({ task }) => task.id));
     const assistant = this.assistantOf(rows.map(({ task }) => task.id));
+    const heldBecause = this.heldBecauseOf(rows.map(({ task }) => task.id));
     const now = this.clock();
     return rows.map(({ task, assigneeName, hostLabel }) => ({
       id: task.id,
@@ -878,6 +884,7 @@ export class TasksService {
       checkedOut: task.checkedOutBy !== null,
       advice: advice.get(task.id) ?? null,
       assistant: assistant.get(task.id) ?? null,
+      heldBecause: heldBecause.get(task.id) ?? null,
       snoozedUntil: task.snoozedUntil !== null && task.snoozedUntil > now ? task.snoozedUntil : null,
       incidentId: task.incidentId,
       createdAt: task.createdAt,
@@ -925,6 +932,30 @@ export class TasksService {
       latest.set(taskId, { answer: data?.answer ?? null, how: data?.how ?? null, at });
     }
     return latest;
+  }
+
+  // Why each of these tasks' last try failed, where a short line can say, until the next try or the task comes back.
+  private heldBecauseOf(taskIds: readonly string[]): Map<string, HeldReason> {
+    if (taskIds.length === 0) {
+      return new Map();
+    }
+    const reasons = new Map<string, HeldReason>();
+    const steps = this.database
+      .select({ taskId: taskActivity.taskId, kind: taskActivity.kind, dataJson: taskActivity.dataJson })
+      .from(taskActivity)
+      .where(and(inArray(taskActivity.taskId, [...taskIds]), inArray(taskActivity.kind, HELD_ACTIVITY)))
+      .orderBy(asc(taskActivity.id))
+      .all();
+    for (const { taskId, kind, dataJson } of steps) {
+      const ended = kind === TASK_ACTIVITY.jobFinished ? jobEnded.safeParse(JSON.parse(dataJson)).data : undefined;
+      const reason = ended?.succeeded === false ? heldReasonOf(ended.outcome) : null;
+      if (reason === null) {
+        reasons.delete(taskId);
+      } else {
+        reasons.set(taskId, reason);
+      }
+    }
+    return reasons;
   }
 
   private commentsOf(taskId: string): TaskCommentView[] {

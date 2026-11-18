@@ -100,6 +100,8 @@
   --key-name-share: 40%;
   --page-padding: 18px;
   --side-column-width: 384px;
+  /* The Ollama agent's card at the head of Attention's side column: as tall as two rows of host cards. */
+  --agent-card-min-height: 11rem;
   --drawer-width: 24rem;
   --board-column-minimum-width: 11rem;
   --touch-target: 2.75rem;

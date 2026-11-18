@@ -274,6 +274,97 @@ esac
     }
   });
 
+  // A stand-in rsync: it answers --version as rsync does, then runs `copying` for the copy and `checking` for the check.
+  function fakeCopier(name: string, copying: string, checking = "") {
+    const tool = at(name);
+    writeFileSync(
+      tool,
+      `#!/bin/sh
+case "$1" in
+--version) printf 'rsync  version 3.4.1\nCapabilities: ACLs xattrs hardlinks hardlink-symlinks symtimes atimes\n';;
+esac
+for word in "$@"; do [ "$word" = "--dry-run" ] && { ${checking || ":"}; exit 0; }; done
+[ "$1" = "--version" ] || { ${copying || ":"}; }
+`,
+    );
+    chmodSync(tool, 0o700);
+    return tool;
+  }
+
+  async function keptWith(tool: string) {
+    mkdirSync(at("from", "0"), { recursive: true });
+    mkdirSync(at("to", "0"), { recursive: true });
+    writeFileSync(at("from", "0", "state"), "old");
+    const result = await run(["keep", "10000"], undefined, tool);
+    expect(result.code).toBe(1);
+    expect(result.printed).not.toContain("private-file-secret");
+    return JSON.parse(result.printed).reason as string;
+  }
+
+  it("says how the copy stopped and what its errors were, in its own words, never in rsync's", async () => {
+    const failing = fakeCopier(
+      "fake-partial",
+      `printf 'rsync: [receiver] set_acl: sys_acl_set_file(private-file-secret, ACL_TYPE_ACCESS): Operation not supported (95)\\n' >&2
+printf 'rsync: [sender] send_files failed to open "/from/0/private-file-secret (28)": Permission denied (13)\\n' >&2
+printf 'rsync: [receiver] write failed on "/to/0/private-file-secret": Some made-up error (199)\\n' >&2
+printf 'rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338) [sender=3.4.1]\\n' >&2
+exit 23`,
+    );
+    expect(await keptWith(failing)).toBe(
+      "the copy failed: some files or their attributes could not be copied (rsync code 23), its errors saying operation not supported, permission denied",
+    );
+
+    expect(await keptWith(fakeCopier("fake-vanished", "exit 24"))).toBe(
+      "the copy failed: files vanished while it copied (rsync code 24)",
+    );
+    expect(await keptWith(fakeCopier("fake-odd-exit", "exit 99"))).toBe(
+      "the copy failed: rsync stopped (rsync code 99)",
+    );
+    expect(
+      await keptWith(
+        fakeCopier(
+          "fake-talkative",
+          "i=0; while [ $i -lt 1100 ]; do printf '%064d\\n' 0 >&2; i=$((i+1)); done; exit 23",
+        ),
+      ),
+    ).toBe("the copy failed: it printed more than 64 KB");
+    expect(await keptWith(fakeCopier("fake-killed", "kill -KILL $$"))).toBe(
+      "the copy failed: it was killed by SIGKILL, as running out of memory does",
+    );
+    expect(
+      await keptWith(fakeCopier("fake-warning", "printf 'private-file-secret: No space left on device (28)\\n' >&2")),
+    ).toBe("the copy failed: it printed warnings, its errors saying no space left on device");
+  });
+
+  it("names a real rsync's failure by its code and error, never by the file", async (context) => {
+    // Root reads any file, so this one is unreadable only to another user.
+    if (process.getuid?.() === 0) context.skip();
+    mkdirSync(at("from", "0"));
+    mkdirSync(at("to", "0"));
+    writeFileSync(at("from", "0", "private-file-secret"), "kept from everyone");
+    chmodSync(at("from", "0", "private-file-secret"), 0o000);
+    const result = await run(["keep", "10000"]);
+    expect(result.code).toBe(1);
+    expect(result.printed).not.toContain("private-file-secret");
+    expect(JSON.parse(result.printed).reason).toBe(
+      "the copy failed: some files or their attributes could not be copied (rsync code 23), its errors saying permission denied",
+    );
+  });
+
+  it("says what the check after the copy found still different, by kind and count, without a name", async () => {
+    const differing = fakeCopier(
+      "fake-differs",
+      "",
+      `printf '.f......u..\\n.d..t...u..\\n>f+++++++++\\n*deleting  \\n.f....og...\\nprivate-file-secret\\n'`,
+    );
+    expect(await keptWith(differing)).toBe(
+      "the copy did not match its data: 4 entries differ in modification time, owner, group, access time; 1 entry is missing from the copy; 1 entry is only in the copy",
+    );
+    expect(await keptWith(fakeCopier("fake-one-difference", "", "printf '.f.......a.\\n'"))).toBe(
+      "the copy did not match its data: 1 entry differs in ACLs",
+    );
+  });
+
   it("round-trips file/root xattrs and ACLs and removes metadata added by the replacement", async (context) => {
     mkdirSync(at("from", "0"));
     mkdirSync(at("to", "0"));

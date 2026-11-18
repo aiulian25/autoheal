@@ -15,6 +15,7 @@ import {
   TASK_RESOURCE,
   UPDATE_ASSESSMENT,
   UPDATE_RUN_STATUS,
+  type HeldReason,
   type UpdateAssessment,
 } from "../../../../src/shared/constants.js";
 import {
@@ -170,6 +171,14 @@ export function AssistantBadge({ assistant }: { assistant?: TaskAssistantView | 
   const said =
     assistant.answer === null ? words.asked : words.answered(assistant.answer, assistant.how, timeOfDay(assistant.at));
   return <span className="badge">{said}</span>;
+}
+
+/** Why an update that was tried waits for a person, where a short line can say: "Its data could not be copied first". */
+export function HeldBadge({ because }: { because: HeldReason | null }) {
+  if (because === null) {
+    return null;
+  }
+  return <span className="badge warning">{TEXT.attention.heldBecause[because]}</span>;
 }
 
 // Under the button: how a run goes, or how it would.

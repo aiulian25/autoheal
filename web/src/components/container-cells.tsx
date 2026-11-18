@@ -169,7 +169,12 @@ export function ImageCell({
   }
   const byAutoheal = APPLIED_BY_AUTOHEAL.has(container.byItself.update) && container.handsOff === null;
   if (byAutoheal && held !== undefined) {
-    return <Link to={apiPath(PATHS.task, { taskId: held.id })}>{text.held}</Link>;
+    return (
+      <>
+        <Link to={apiPath(PATHS.task, { taskId: held.id })}>{text.held}</Link>
+        <WhyHeld held={held} />
+      </>
+    );
   }
   if (byAutoheal) {
     return <span className="muted">{text.soon}</span>;
@@ -186,7 +191,25 @@ export function ImageCell({
       </>
     );
   }
-  return <a href={`#${HOST_SECTIONS.updates}`}>{label}</a>;
+  return (
+    <>
+      <a href={`#${HOST_SECTIONS.updates}`}>{label}</a>
+      <WhyHeld held={held} />
+    </>
+  );
+}
+// Under an update that was tried and waits for a person: why the try failed, where a short line can say.
+function WhyHeld({ held }: { held: TaskSummaryView | undefined }) {
+  const because = held?.heldBecause ?? null;
+  if (because === null) {
+    return null;
+  }
+  const words = TEXT.hostContainers.heldBecause[because];
+  return (
+    <div className="check-reason muted" title={words}>
+      {words}
+    </div>
+  );
 }
 // Protected or kept aside, nothing may be set: one line across both choices says why.
 const SPANNING_LOCKS: ReadonlySet<string> = new Set([CONTROL_LOCK.protected, CONTROL_LOCK.parked]);

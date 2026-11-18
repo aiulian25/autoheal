@@ -20,6 +20,7 @@ import {
   TASK_RESOURCE,
   UPDATE_CHOICE,
   USER_STATUS_ACTIVE,
+  heldReasonOf,
 } from "../../shared/constants.js";
 import {
   JARVIS_ADDRESS,
@@ -87,6 +88,7 @@ import {
   memberOf,
   NOT_KNOWN_YET,
   planJarvis,
+  questionOf,
   type JarvisCandidate,
   type JarvisPlanned,
   type JarvisQuestion,
@@ -99,6 +101,7 @@ import {
   refusalWords,
   sameCode,
   type AssistantAnswer,
+  type UpdateEnd,
 } from "./assistant-answers.js";
 import { ANSWER_BOX_DOMAIN, LINE_PREFIX, LINE_VERB, parseAssistantLine, type AssistantLine } from "./assistant-line.js";
 import { fleetSummary, hostSummary } from "./jarvis-summary.js";
@@ -110,6 +113,11 @@ const TEST_KIND = "test";
 const KEY_LABEL = "Assistant";
 const LIVE_STATUSES = [JARVIS_STATUS.waiting, JARVIS_STATUS.sent];
 const OPEN_STATUSES = [...LIVE_STATUSES, JARVIS_STATUS.asked];
+// A question that follows its update: open, or asked as often as it may be, so a newer image never brings it back.
+const FOLLOWED_STATUSES = [...OPEN_STATUSES, JARVIS_STATUS.retired];
+// What a question follows to a newer image or other updates: one that names the container or the host, never what a yes
+// would bring. A restart is asked for one boot; a newer version is a task of its own.
+const FOLLOWING_KINDS: readonly JarvisMessage["kind"][] = [JARVIS_KIND.containerUpdates, JARVIS_KIND.hostUpdates];
 
 const aliasesSchema = z.record(z.string(), z.array(z.string()));
 const storedSchema = z.object({
@@ -199,6 +207,17 @@ const notKnownYetOf = (candidates: readonly JarvisCandidate[]) =>
   new Set(
     candidates.flatMap(({ taskId, ask }) => (ask?.askable === true && ask.brings === NOT_KNOWN_YET ? [taskId] : [])),
   );
+
+// What a yes would take now: each update as it is, by its key and by its task, and those its host has not checked yet.
+function askableNow(candidates: readonly JarvisCandidate[]) {
+  const askable = candidates.filter(({ ask }) => ask?.askable === true);
+  return {
+    keys: new Set(askable.map(({ taskId, ask }) => memberKey(taskId, ask!.brings))),
+    byTask: new Map(askable.map((candidate) => [candidate.taskId, candidate])),
+    notKnownYet: notKnownYetOf(candidates),
+  };
+}
+type AskableNow = ReturnType<typeof askableNow>;
 
 // What a question is answered by, by name: its container, or its host for the host's updates.
 const namedIn = (message: JarvisMessage) =>
@@ -376,7 +395,7 @@ export class JarvisService {
       askVersions: asking.versions,
     } satisfies Stored);
     // A kind turned off takes its open questions with it now, not at the next look: a yes to one starts nothing.
-    this.dropWhatEnded(this.candidates());
+    this.followOrDrop(this.candidates());
     this.audit(actor, AUDIT_ACTIONS.integrationSaved);
   }
 
@@ -471,7 +490,9 @@ export class JarvisService {
     for (const question of this.itemsWith(JARVIS_STATUS.accepted)) {
       const answer = this.answerOf(question);
       if (answer === null || !this.startedBy(question, answer, job)) continue;
-      const outcomes = { ...answer.outcomes, [taskId]: succeeded };
+      // Updated, or not, and why where a short line can say.
+      const ended: UpdateEnd = succeeded ? true : (heldReasonOf(job.outcome) ?? false);
+      const outcomes = { ...answer.outcomes, [taskId]: ended };
       this.keepAnswer(question, { ...answer, outcomes });
       if (this.taskIdsOf(question).every((member) => member in outcomes)) this.tellOutcome(question, outcomes);
     }
@@ -549,7 +570,7 @@ export class JarvisService {
     try {
       this.forgetOld();
       const candidates = this.candidates();
-      this.dropWhatEnded(candidates);
+      this.followOrDrop(candidates);
       this.retireWhatWasAskedEnough();
       this.tellOverdueOutcomes();
       this.sendAgainWhatWasNotConfirmed();
@@ -705,33 +726,52 @@ export class JarvisService {
     return code === null ? null : { ...message, code };
   }
 
-  private dropWhatEnded(candidates: readonly JarvisCandidate[]) {
+  // A statement ends with the last of its tasks. A question follows its updates, and ends once one of them ended another
+  // way; one asked as often as it may be keeps its place, so that update is not asked about again.
+  private followOrDrop(candidates: readonly JarvisCandidate[]) {
     const open = new Set(candidates.map(({ taskId }) => taskId));
-    const askable = new Set(
-      candidates.flatMap(({ taskId, ask }) => (ask?.askable === true ? [memberKey(taskId, ask.brings)] : [])),
-    );
-    const notKnownYet = notKnownYetOf(candidates);
+    const now = askableNow(candidates);
     const database = this.databaseHandle.database;
-    for (const item of database.select().from(jarvisItems).where(inArray(jarvisItems.status, OPEN_STATUSES)).all()) {
-      if (!this.hasEnded(item, open, askable, notKnownYet)) continue;
+    for (const item of database
+      .select()
+      .from(jarvisItems)
+      .where(inArray(jarvisItems.status, FOLLOWED_STATUSES))
+      .all()) {
+      if (this.messageOf(item).tier === JARVIS_TIER.reply) continue;
+      const isQuestion = item.membersJson !== null;
+      const ended = isQuestion ? this.follow(item, now) === null : this.taskIdsOf(item).every((id) => !open.has(id));
+      if (!ended || item.status === JARVIS_STATUS.retired) continue;
       database.update(jarvisItems).set({ status: JARVIS_STATUS.dropped }).where(eq(jarvisItems.id, item.id)).run();
     }
   }
 
-  // A statement ends with the last of its tasks. A question ends as soon as one of its updates is no longer one a yes
-  // would take as it was asked: done another way, a newer image out, or not the hand-over's any more. One its host has
-  // not checked again since its runner started stands as it was asked.
-  private hasEnded(
-    item: Item,
-    open: ReadonlySet<string>,
-    askable: ReadonlySet<string>,
-    notKnownYet: ReadonlySet<string>,
-  ) {
-    if (this.messageOf(item).tier === JARVIS_TIER.reply) return false;
-    const members = this.membersOf(item);
-    const ended = (member: string) => !askable.has(member) && !notKnownYet.has(memberOf(member).taskId);
-    if (members !== null) return members.some(ended);
-    return this.taskIdsOf(item).every((taskId) => !open.has(taskId));
+  /**
+   * A question as its updates are now. Where only what a yes would bring moved on (a container's newer image, a host's
+   * other updates) and it would say the same words, it is the same question about that: its code, asks and wait kept, so
+   * the same container is not offered again with each image, and a yes takes the newest. Null once one of its updates
+   * ended another way, or moved on to words it never said. One its host has not checked again stands as it was asked.
+   */
+  private follow(item: Item, now: AskableNow): Item | null {
+    const members = (this.membersOf(item) ?? []).map(memberOf);
+    if (members.some(({ taskId }) => now.notKnownYet.has(taskId))) return item;
+    if (members.every(({ taskId, brings }) => now.keys.has(memberKey(taskId, brings)))) return item;
+    const message = this.messageOf(item);
+    if (!FOLLOWING_KINDS.includes(message.kind)) return null;
+    const current = members.flatMap(({ taskId }) => now.byTask.get(taskId) ?? []);
+    if (current.length < members.length) return null;
+    const planned = questionOf(current);
+    const names = this.namesOf(planned);
+    const lastAsking = item.asks + 1 >= JARVIS_LIMITS.asksAtMost;
+    const words = (said: Pick<JarvisMessage, "kind" | "host" | "names">) =>
+      this.wordsOf(said, JARVIS_TIER.ask, null, lastAsking, this.address()).say;
+    if (words({ ...message, names }) !== words(message)) return null;
+    const changes = {
+      membersJson: JSON.stringify(planned.members),
+      fingerprint: planned.fingerprint,
+      messageJson: JSON.stringify({ ...message, names }),
+    };
+    this.databaseHandle.database.update(jarvisItems).set(changes).where(eq(jarvisItems.id, item.id)).run();
+    return { ...item, ...changes };
   }
 
   // Asked as often as it may be, and its last wait is over: it is not asked again, and stays on the dashboard.
@@ -854,9 +894,11 @@ export class JarvisService {
   }
 
   // A yes: exactly the updates it was asked about, if they still are as asked and their host could do them now.
-  private takeYes(question: Item, line: Answer, connector: Actor, replies: JarvisReplies) {
-    const message = this.messageOf(question);
+  private takeYes(asked: Item, line: Answer, connector: Actor, replies: JarvisReplies) {
     const candidates = this.candidates();
+    // Its container's image moved on since it was last looked at: the yes is to the newest, as a look would make it.
+    const question = this.follow(asked, askableNow(candidates)) ?? asked;
+    const message = this.messageOf(question);
     const notKnownYet = notKnownYetOf(candidates);
     if (this.taskIdsOf(question).some((taskId) => notKnownYet.has(taskId))) {
       this.reply(question, replies.stillChecking(message.host));
@@ -1071,7 +1113,7 @@ export class JarvisService {
     );
   }
 
-  private tellOutcome(question: Item, outcomes: Readonly<Record<string, boolean>>) {
+  private tellOutcome(question: Item, outcomes: Readonly<Record<string, UpdateEnd>>) {
     this.reply(question, this.outcomeWords(this.messageOf(question), this.taskIdsOf(question), outcomes));
     this.databaseHandle.database
       .update(jarvisItems)
@@ -1084,11 +1126,12 @@ export class JarvisService {
   private outcomeWords(
     message: JarvisMessage,
     taskIds: readonly string[],
-    outcomes: Readonly<Record<string, boolean>>,
+    outcomes: Readonly<Record<string, UpdateEnd>>,
   ) {
     const { kind, host, names } = message;
     const address = this.address();
-    const ended: boolean | undefined = outcomes[taskIds[0]!];
+    const first = taskIds[0]!;
+    const ended = first in outcomes ? outcomes[first] === true : undefined;
     if (kind === JARVIS_KIND.reboot) return jarvisRestartOutcome(host, ended, address);
     if (kind === JARVIS_KIND.hostUpdates) return jarvisPackagesOutcome(host, ended, address);
     return jarvisOutcome(host, outcomeOf(names, taskIds, outcomes), address);

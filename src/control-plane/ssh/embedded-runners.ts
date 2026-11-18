@@ -64,7 +64,7 @@ export interface EmbeddedRunnersDependencies {
   hosts: Pick<SshHostsService, "activeHostIds" | "targetOf" | "runnerOf">;
   // The runner API on this machine, and its certificate's key.
   controlPlane: Omit<ControlPlaneSettings, "token">;
-  // The image the control plane runs: an SSH host's helpers run in it once it is on the host.
+  // The exact release the control plane runs: an SSH host's helpers run in it, pulled there when first needed.
   autohealImage: string;
   // Who cleared what held a host's runner back.
   audit: Pick<AuditLog, "recordUserAction">;

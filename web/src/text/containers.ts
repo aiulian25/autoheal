@@ -7,6 +7,7 @@ import {
   FILE_CONTENT_LIMIT_BYTES,
   HOST_TERMINAL,
   type HandsOff,
+  type HeldReason,
   type JobAction,
   MAX_RESTARTS_PER_WINDOW,
   MILLISECONDS_PER_MINUTE,
@@ -210,6 +211,8 @@ export const CONTAINERS_TEXT = {
     },
     soon: "updating shortly",
     held: "held for you",
+    // Under an update's line, why its last try failed, where a short line can say.
+    heldBecause: { data_not_kept: "its data could not be copied first" } satisfies Record<HeldReason, string>,
     updatesOff: "updates off",
     // Short enough for one line of the compact table; the lock beside each says it is fixed.
     locks: {

@@ -343,10 +343,13 @@ export function createControlPlaneServices(
   );
   // Where the runners in this process reach the runner API, and the key it shows them, which `keyChanged` replaces.
   const runnerApi = { url: runners.apiUrl ?? EMBEDDED_RUNNER_URL, pin: runners.pin };
+  // The exact release this control plane runs: a sidecar runner moves to it when a person asks, and an SSH host's
+  // helpers run it, pulled there with each new release, never an older one kept under a tag that moved on since.
+  const release = { image: `${splitTag(runners.image).name}:${APP_VERSION}`, version: RUNNING_VERSION };
   const embeddedRunners = new EmbeddedRunners({
     hosts: sshHostsService,
     controlPlane: runnerApi,
-    autohealImage: runners.image,
+    autohealImage: release.image,
     audit: auditLog,
   });
   const trustedProxies = tracked(new TrustedProxiesService(settingsStore, auditLog, trustedProxyAddresses));
@@ -797,8 +800,7 @@ export function createControlPlaneServices(
       return {
         publicBaseUrl,
         ollama: ollamaPool.settingsFor(hostId),
-        // The exact release this control plane runs, which a sidecar runner moves to when a person asks.
-        release: { image: `${splitTag(runners.image).name}:${APP_VERSION}`, version: RUNNING_VERSION },
+        release,
         ...(registries.length === 0 ? {} : { registries }),
         // A fleet asking proof of nobody is told nothing about it, as every control plane before it was.
         ...(trust.required.length === 0 && trust.publishers.length === 0 ? {} : { imageTrust: trust }),

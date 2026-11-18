@@ -17,7 +17,7 @@ import { ATTENTION_CARDS, CARD_PAGES, PATHS, TEXT } from "../constants.js";
 import { boardQuery, containersQuery, enrolledHostsQuery, ollamaServersQuery, overviewQuery } from "../queries.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { type HandOver, SectionLabel } from "./attention/attention-parts.js";
-import { StatusStrip } from "./attention/status-strip.js";
+import { OllamaCard, StatusStrip } from "./attention/status-strip.js";
 import { DecisionCard } from "./attention/decision-card.js";
 import { FixCard } from "./attention/fix-card.js";
 import { Updates } from "./attention/updates.js";
@@ -35,7 +35,7 @@ export function AttentionPage() {
   const handOver = useHandOver();
   // How many the agent took last, said until the next hand-over.
   const [handed, setHanded] = useState<number | null>(null);
-  // A hand-over on its way to the agent's card, which stays in sight meanwhile.
+  // A hand-over on its way to the agent's card. With two columns the card is always in sight; in one, only meanwhile.
   const [dragging, setDragging] = useState(false);
   const [draggingHosts, setDraggingHosts] = useState<readonly (string | null)[]>([]);
   const servers = useQuery(ollamaServersQuery);
@@ -146,14 +146,8 @@ export function AttentionPage() {
       <PageHeader title={text.title} lede={text.lede(needsYou.length)}>
         <Link to={PATHS.board}>{text.allItems(needsYou.length + autoheal.length + noticed.length)}</Link>
       </PageHeader>
-      <StatusStrip
-        hosts={hosts.data}
-        containers={containers.data ?? []}
-        onHandOver={admin ? give : undefined}
-        draggingHosts={draggingHosts}
-        working={autoheal.length > 0}
-      />
       <div className="attention-layout">
+        <StatusStrip hosts={hosts.data} containers={containers.data ?? []} agent={false} />
         <div className="attention-main">
           {handed !== null && (
             <p className="small text-good" role="status">
@@ -196,7 +190,15 @@ export function AttentionPage() {
           {needsYou.length === 0 && <p className="card muted">{text.nothingNeedsYou}</p>}
         </div>
         <aside className="attention-side">
-          <CardGroup cards={side} page={page} />
+          <OllamaCard
+            hosts={hosts.data}
+            onHandOver={admin ? give : undefined}
+            draggingHosts={draggingHosts}
+            working={autoheal.length > 0}
+          />
+          <div className="attention-side-cards">
+            <CardGroup cards={side} page={page} />
+          </div>
         </aside>
       </div>
       <ArrangeLine cards={[...updates, ...side]} page={page} />

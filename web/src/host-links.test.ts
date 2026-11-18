@@ -18,6 +18,7 @@ const task = (overrides: Partial<TaskSummaryView>): TaskSummaryView => ({
   occurrences: 1,
   checkedOut: false,
   advice: null,
+  heldBecause: null,
   snoozedUntil: null,
   incidentId: null,
   createdAt: 1,

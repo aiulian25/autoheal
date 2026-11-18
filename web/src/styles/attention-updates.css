@@ -57,21 +57,25 @@
   color: var(--danger);
 }
 
+/* In one column: the Ollama agent first, then the hosts, what needs you, and the side's own cards. With room for two,
+   the agent heads the side column in the hosts' corner, the column as tall as the page, so the agent stays in sight
+   however far down it goes: whatever is dragged can always reach it. */
 .attention-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 28px;
-  align-items: start;
 }
 
-@media (min-width: 64rem) {
-  .attention-layout {
-    grid-template-columns: minmax(0, 1fr) var(--side-column-width);
-  }
+.attention-side {
+  display: contents;
+}
+
+.attention-side > .agent-card {
+  order: -1;
 }
 
 .attention-main,
-.attention-side {
+.attention-side-cards {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -82,9 +86,52 @@
   gap: var(--cards-gap);
 }
 
-.attention-side {
+.attention-side-cards {
   --cards-gap: 14px;
   gap: var(--cards-gap);
+}
+
+/* In one column it stays in sight while a hand-over is dragged to it. */
+.attention.dragging .attention-side > .agent-card {
+  position: sticky;
+  top: var(--space-3);
+  z-index: 2;
+}
+
+@media (min-width: 64rem) {
+  .attention-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--side-column-width);
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "strip side"
+      "main side";
+    align-items: start;
+  }
+
+  .attention-layout > .status-strip {
+    grid-area: strip;
+  }
+
+  .attention-main {
+    grid-area: main;
+  }
+
+  .attention-side {
+    display: flex;
+    flex-direction: column;
+    grid-area: side;
+    align-self: stretch;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .attention-side > .agent-card {
+    position: sticky;
+    top: var(--space-3);
+    z-index: 2;
+    min-height: var(--agent-card-min-height);
+  }
 }
 
 .attention-section {

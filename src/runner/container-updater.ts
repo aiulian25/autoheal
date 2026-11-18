@@ -45,6 +45,7 @@ import { utcMinute } from "../shared/time-zones.js";
 import { deniedMountOf, withSettings } from "./container-settings.js";
 import { healthProbe, untilSettled } from "./settle-check.js";
 import type { PullLine } from "./update-progress.js";
+import { HelperImageMissing } from "./application-backups.js";
 import { dataMountsOf, unavailableCheckpoint, type VolumeCheckpoints } from "./volume-checkpoints.js";
 import type {
   ContainerConfig,
@@ -339,7 +340,10 @@ export class ContainerUpdater {
     private readonly docker: UpdaterDocker,
     private readonly wait: (milliseconds: number) => Promise<unknown> = sleep,
     private readonly clock: () => number = Date.now,
-    private readonly checkpoints: Pick<VolumeCheckpoints, "take" | "verify" | "restore" | "discard"> | null = null,
+    private readonly checkpoints: Pick<
+      VolumeCheckpoints,
+      "fetchHelperImage" | "take" | "verify" | "restore" | "discard"
+    > | null = null,
     private readonly journal = new OperationJournal(docker),
     // Why no data is kept where there are no checkpoints: a host whose helper image is not there yet says so.
     private readonly withoutCheckpoints: string = JOB_OUTCOMES.checkpointUnavailable,
@@ -465,8 +469,8 @@ export class ContainerUpdater {
         "The reviewed target image declares persistent volumes. Stateless rollout was refused before stopping the source.",
       );
     const specification = { ...recreateSpecification(details, configOf(oldImage), reference), image: newImage.Id };
-    const dataUnkept =
-      this.checkpoints === null && [details, ...dependents].some((member) => dataMountsOf(member).length > 0);
+    const keepsData = [details, ...dependents].some((member) => dataMountsOf(member).length > 0);
+    const dataUnkept = this.checkpoints === null && keepsData;
     // A person may go ahead though its data cannot be copied first; an automatic update may not, unless there is only
     // too much of it. Whether it is then undone is known only once the copy has been tried: nothing is put back over
     // data that was never kept.
@@ -488,6 +492,13 @@ export class ContainerUpdater {
     // With nowhere to keep its data, one that needs it kept is refused before anything stops, not after.
     if (mode.requireCheckpoint && dataUnkept) {
       return failed(JOB_OUTCOMES.refusedWithoutCheckpoint(name, this.withoutCheckpoints));
+    }
+    // The helper that copies the data is fetched while the app still runs: after a new release a host pulls it now,
+    // not while the app is down. A host that has it not and cannot get it refuses an update that must keep its data,
+    // before anything stops; any other failure is the copy's to report, as it always was.
+    const missing = keepsData ? await this.helperMissing() : null;
+    if (mode.requireCheckpoint && missing !== null) {
+      return failed(JOB_OUTCOMES.refusedWithoutHelper(name, missing));
     }
     const authorize = rollout
       ? async () => {
@@ -895,6 +906,16 @@ export class ContainerUpdater {
       }
     }
     return started;
+  }
+
+  // Why the host cannot have the helper's image, or null: it is there now, or what failed is the copy's to report.
+  private async helperMissing(): Promise<string | null> {
+    const fetching = this.checkpoints?.fetchHelperImage();
+    if (fetching === undefined) return null;
+    return fetching.then(
+      () => null,
+      (error: unknown) => (error instanceof HelperImageMissing ? error.message : null),
+    );
   }
 
   /** What stops an edit however it is carried out, through this class or through the container's Compose file. */

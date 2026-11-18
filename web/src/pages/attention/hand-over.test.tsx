@@ -61,6 +61,22 @@ describe("handing work to the Ollama agent", () => {
     expect(screen.getByText(`Yes, by voice, ${timeOfDay(at)}`)).toBeTruthy();
   });
 
+  it("shows in its row why an update that was tried waits for a person", async () => {
+    const at = Date.UTC(2026, 10, 10, 20, 6);
+    const tried = {
+      ...updateTask("quantum", "update"),
+      assistant: { answer: "yes" as const, how: "voice" as const, at },
+      heldBecause: "data_not_kept" as const,
+    };
+    const noticed = [tried, updateTask("radicale", null)].map((task) => ({ kind: "task" as const, task }));
+    serve("admin", { ...board, noticed }, { homeAssistant: null }, heldPackages);
+    renderAttention("admin");
+    const quantum = (await screen.findByText(`Yes, by voice, ${timeOfDay(at)}`)).closest("li")!;
+    expect(within(quantum).getByText("Ollama: safe to apply")).toBeTruthy();
+    expect(within(quantum).getByText("Its data could not be copied first")).toBeTruthy();
+    expect(screen.getAllByText("Its data could not be copied first")).toHaveLength(1);
+  });
+
   it("lists a newer version with the host's updates, and hands it to the agent with the rest", async () => {
     const pinnedApp = waitingImage("calibre", {
       image: "ghcr.io/linuxserver/calibre:9.17.0",
@@ -142,6 +158,17 @@ describe("handing work to the Ollama agent", () => {
       fireEvent.dragStart(quantum, { dataTransfer: dragged() });
       expect(await within(agent).findByText("Goes to the default server")).toBeTruthy();
     });
+  });
+
+  it("keeps the agent's card at the head of the side column, where it stays in sight, and the hosts in their strip", async () => {
+    serve("admin");
+    renderAttention("admin");
+    const agent = (await screen.findByText(TEXT.attention.agent.dropTarget)).closest("a")!;
+    const side = agent.closest(".attention-side");
+    expect(side?.firstElementChild).toBe(agent);
+    const strip = screen.getByRole("navigation", { name: TEXT.attention.services });
+    expect(strip.contains(agent)).toBe(false);
+    expect(strip.closest(".attention-layout")).toBe(side?.closest(".attention-layout"));
   });
 
   it("shows one server just as before", async () => {

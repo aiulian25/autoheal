@@ -5,7 +5,7 @@ import { outcomeOf, refusalWords, sameCode } from "./assistant-answers.js";
 describe("what a yes is told", () => {
   it("says what came of each update, the host named once", () => {
     const outcome = outcomeOf(["whoami", "gitea", "umami"], ["t1", "t2", "t3"], { t1: true, t2: false });
-    expect(outcome).toEqual({ updated: ["whoami"], notUpdated: ["gitea"], notDone: ["umami"] });
+    expect(outcome).toEqual({ updated: ["whoami"], notUpdated: ["gitea"], dataNotKept: [], notDone: ["umami"] });
     expect(jarvisOutcome("OrionBx3", outcome, "sir")).toEqual({
       say: "whoami on Orion B x three is updated, sir. gitea was not updated: the dashboard says why. umami is not done yet.",
       text: "OrionBx3: whoami is updated. gitea was not updated: the dashboard says why. umami is not done yet.",
@@ -13,6 +13,23 @@ describe("what a yes is told", () => {
     const both = outcomeOf(["a", "b"], ["t1", "t2"], { t1: true, t2: true });
     expect(jarvisOutcome("Alder", both, "sir").say).toBe("a and b on Alder are updated, sir.");
     expect(jarvisOutcome("Alder", both, null).say).toBe("a and b on Alder are updated.");
+  });
+
+  it("says when an update was not made because its data could not be copied first", () => {
+    const one = outcomeOf(["gitea"], ["t1"], { t1: "data_not_kept" });
+    expect(one).toEqual({ updated: [], notUpdated: [], dataNotKept: ["gitea"], notDone: [] });
+    expect(jarvisOutcome("Rowan", one, "sir")).toEqual({
+      say: "gitea on Rowan was not updated: its data could not be copied first, sir.",
+      text: "Rowan: gitea was not updated: its data could not be copied first.",
+    });
+    const mixed = outcomeOf(["whoami", "gitea", "umami"], ["t1", "t2", "t3"], {
+      t1: "data_not_kept",
+      t2: "data_not_kept",
+      t3: false,
+    });
+    expect(jarvisOutcome("Alder", mixed, null).say).toBe(
+      "umami on Alder was not updated: the dashboard says why. whoami and gitea were not updated: their data could not be copied first.",
+    );
   });
 
   it("says why a yes was not carried out, by the hand-over's refusal", () => {

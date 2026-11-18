@@ -40,10 +40,8 @@ export type HelperImage = () => Promise<string>;
 export class HelperImageMissing extends Error {}
 
 /**
- * Autoheal's image as the control plane names it, on a host with no Autoheal container of its own: pulled there the
- * first time a helper needs it, one pull at a time.
- * ponytail: once there it is kept as it is, so a host can run an older helper than the control plane; a helper
- * that answers in a way the runner does not read fails its copy, and the update waits. Pull again per release if that bites.
+ * Autoheal's image as the control plane names it, the exact release it runs, on a host with no Autoheal container of
+ * its own: pulled there the first time a helper needs it after each new release, one pull at a time.
  */
 export function imageOnHost(docker: Pick<DockerClient, "inspectImage" | "pull">, reference: string): HelperImage {
   let pulling: Promise<void> | null = null;

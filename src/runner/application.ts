@@ -446,7 +446,7 @@ export async function createRuntime(
     maintenanceProblem: null,
   };
   // Data is copied and backed up by helpers of Autoheal's image: this runner's own container's, or on an SSH host,
-  // which has none, the image the control plane names, pulled there the first time.
+  // which has none, the exact release the control plane names, pulled there the first time.
   const helperImage: HelperImage =
     ports.helperImageReference === null
       ? async () => {

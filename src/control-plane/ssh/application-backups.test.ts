@@ -8,9 +8,11 @@ import {
 } from "../../../test/support/embedded-ssh-host.js";
 import { API_ROUTES, apiPath, type HostView } from "../../shared/api.js";
 import type { ApplicationBackupRun } from "../../shared/application-backups.js";
+import { APP_VERSION } from "../../shared/constants.js";
 
-// The image the test control plane runs, as its AUTOHEAL_IMAGE names it.
-const AUTOHEAL_IMAGE = "autoheal:test";
+// An SSH host's helpers run the exact release of the image the test control plane's AUTOHEAL_IMAGE names
+// (autoheal:test): never an older one the host kept under a tag that moved on since.
+const AUTOHEAL_IMAGE = `autoheal:${APP_VERSION}`;
 const LOADED_IMAGE = `sha256:${"9".repeat(64)}`;
 const definition = {
   version: 1,

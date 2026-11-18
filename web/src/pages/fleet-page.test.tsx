@@ -94,6 +94,7 @@ const task = (id: string, overrides: Partial<TaskSummaryView> = {}): TaskSummary
   occurrences: 1,
   checkedOut: false,
   advice: null,
+  heldBecause: null,
   snoozedUntil: null,
   incidentId: null,
   createdAt: Date.now(),

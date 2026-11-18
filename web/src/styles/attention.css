@@ -55,19 +55,6 @@
   }
 }
 
-.attention .status-strip {
-  margin-bottom: 28px;
-}
-
-/* While a hand-over is dragged, the strip, the Ollama Agent with it, stays in sight however far down it began. */
-.attention.dragging .status-strip {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  padding-block: 10px;
-  background: var(--page);
-}
-
 .status-card {
   display: flex;
   flex-direction: column;

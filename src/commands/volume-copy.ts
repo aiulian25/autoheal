@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import {
   CHECKPOINT,
+  COPY_ATTRIBUTES,
+  COPY_DIFFERENCES,
+  COPY_ERRORS,
+  COPY_OUTPUT_LIMIT_CODE,
+  COPY_STEP,
+  COPY_TROUBLE,
   EXIT_FAILURE,
   EXIT_SUCCESS,
   EXIT_USAGE,
@@ -85,19 +91,73 @@ async function pairsOf(roots: CopyRoots): Promise<CopyRoots[]> {
   return sources.map((name) => ({ from: resolve(roots.from, name), to: resolve(roots.to, name) }));
 }
 
+// What Node says of a run that failed: its exit code, the signal that ended it, whether Node itself stopped it.
+interface CopierFailure {
+  code?: unknown;
+  signal?: unknown;
+  killed?: unknown;
+  stderr?: unknown;
+}
+
+function howItStopped({ code, signal, killed }: CopierFailure): string {
+  if (code === COPY_OUTPUT_LIMIT_CODE) return COPY_TROUBLE.saidTooMuch;
+  if (killed === true) return COPY_TROUBLE.tookTooLong;
+  if (typeof signal === "string") return COPY_TROUBLE.killed(signal);
+  if (typeof code === "number") return COPY_TROUBLE.exited(code);
+  return COPY_TROUBLE.didNotRun;
+}
+
+// rsync ends an error's line with the C library's words for it and their number, as ": Permission denied (13)".
+const ERROR_NUMBER_AT_END = /\((\d+)\)$/;
+
+// Only the numbers are read, and only known ones are told, each once: whatever else a line holds stays unsaid.
+function errorsIn(stderr: unknown): string[] {
+  if (typeof stderr !== "string") return [];
+  const named = stderr
+    .split("\n")
+    .map((line) => COPY_ERRORS[Number(ERROR_NUMBER_AT_END.exec(line.trim())?.[1])])
+    .filter((words) => words !== undefined);
+  return [...new Set(named)];
+}
+
 /** Never invoke a shell; output is bounded and never echoed because diagnostics can contain private filenames. */
-export async function runCopier(program: string, args: readonly string[]) {
-  try {
-    const result = await execute(program, [...args], {
-      timeout: CHECKPOINT.exitDeadlineMilliseconds,
-      maxBuffer: CHECKPOINT.copyOutputBytes,
-      env: { LC_ALL: "C", PATH: dirname(program), LD_LIBRARY_PATH: join(dirname(program), "lib") },
-    });
-    if (result.stderr !== "") throw new Error(VOLUME_COPY_MESSAGES.metadataCopyFailed);
-    return result.stdout;
-  } catch {
-    throw new Error(VOLUME_COPY_MESSAGES.metadataCopyFailed);
+export async function runCopier(program: string, args: readonly string[], step: string = COPY_STEP.copy) {
+  const result = await execute(program, [...args], {
+    timeout: CHECKPOINT.exitDeadlineMilliseconds,
+    maxBuffer: CHECKPOINT.copyOutputBytes,
+    env: { LC_ALL: "C", PATH: dirname(program), LD_LIBRARY_PATH: join(dirname(program), "lib") },
+  }).catch((thrown: unknown) => {
+    const failure = (thrown ?? {}) as CopierFailure;
+    throw new Error(VOLUME_COPY_MESSAGES.failed(step, howItStopped(failure), errorsIn(failure.stderr)));
+  });
+  if (result.stderr !== "") {
+    throw new Error(VOLUME_COPY_MESSAGES.failed(step, COPY_TROUBLE.warned, errorsIn(result.stderr)));
   }
+  return result.stdout;
+}
+
+// One entry's itemized change: its kind of change and of entry, then a place for each attribute. A dot is one that
+// matches, a letter one that differs, and pluses an entry the copy lacks; a deletion is an entry only the copy has.
+const ITEMIZED_CHANGE = /^[<>ch.][fdLDS](.{9})$/;
+const ITEMIZED_ATTRIBUTE_DIFFERS = /[a-zA-Z]/;
+const ITEMIZED_NEW = "+";
+const ITEMIZED_DELETION = "*";
+
+function differencesIn(itemized: string): string[] {
+  const lines = itemized.split("\n").filter((line) => line !== "");
+  const extra = lines.filter((line) => line.startsWith(ITEMIZED_DELETION));
+  const kept = lines.filter((line) => !line.startsWith(ITEMIZED_DELETION));
+  const attributesOf = (line: string) => ITEMIZED_CHANGE.exec(line)?.[1] ?? "";
+  const missing = kept.filter((line) => attributesOf(line).startsWith(ITEMIZED_NEW));
+  const changed = kept.filter((line) => !attributesOf(line).startsWith(ITEMIZED_NEW));
+  const attributes = COPY_ATTRIBUTES.filter((_, place) =>
+    changed.some((line) => ITEMIZED_ATTRIBUTE_DIFFERS.test(attributesOf(line).charAt(place))),
+  );
+  return [
+    changed.length > 0 ? COPY_DIFFERENCES.differ(changed.length, attributes) : null,
+    missing.length > 0 ? COPY_DIFFERENCES.missing(missing.length) : null,
+    extra.length > 0 ? COPY_DIFFERENCES.extra(extra.length) : null,
+  ].filter((difference) => difference !== null);
 }
 
 export async function requireCopier(program: string) {
@@ -144,14 +204,12 @@ async function copyAndVerify(
   const paths = ["--", directory ? `${pair.from}/` : pair.from, directory ? `${pair.to}/` : pair.to];
   await runCopier(program, [...args, ...paths]);
   // A zero exit status alone is not proof that ownership, hard links, ACLs and xattrs converged.
-  const differences = await runCopier(program, [
-    ...args,
-    "--dry-run",
-    "--itemize-changes",
-    "--out-format=%i",
-    ...paths,
-  ]);
-  if (differences !== "") throw new Error(VOLUME_COPY_MESSAGES.metadataCopyFailed);
+  const differences = await runCopier(
+    program,
+    [...args, "--dry-run", "--itemize-changes", "--out-format=%i", ...paths],
+    COPY_STEP.check,
+  );
+  if (differences !== "") throw new Error(VOLUME_COPY_MESSAGES.differs(differencesIn(differences)));
 }
 
 // A mount whose root is a folder or a file; anything else there holds no data of the app's.

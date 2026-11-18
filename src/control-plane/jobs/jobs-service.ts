@@ -24,6 +24,7 @@ import {
   AGENT_NAMES,
   AUDIT_ACTIONS,
   DIGEST_PATTERN,
+  HANDS_OFF,
   HOST_KIND,
   HOST_PACKAGE_ACTIONS,
   HOST_PACKAGE_ANSWER_MILLISECONDS,
@@ -45,6 +46,7 @@ import {
   JOB_OUTCOMES,
   JOB_REBOOTED,
   JOB_STATUS,
+  KEPT_ASIDE_ACTIONS,
   MILLISECONDS_PER_MINUTE,
   OPEN_TASK_STATUSES,
   REPORT_LIMITS,
@@ -161,7 +163,7 @@ export class JobsService {
         ? undefined
         : { ...details.removal, names: [...new Set(details.removal.names)].toSorted() };
     const networkJson = jsonOfNetwork(details.network ?? removal);
-    this.requireActionable(hostId, containerName, action, images);
+    this.requireActionable(hostId, containerName, action, images, author.kind === "user");
     // Without what it covers, its runner would have nothing to back up or put back: such a job never goes out.
     const backsUpOrRestores = action === JOB_ACTION.backupContainer || action === JOB_ACTION.restoreContainer;
     if (backsUpOrRestores && details.backup === undefined) throw new DomainError(API_ERRORS.invalidRequest);
@@ -697,7 +699,13 @@ export class JobsService {
     if (kind !== HOST_KIND.runner) throw new DomainError(API_ERRORS.runnerUpdateNotHere);
   }
 
-  private requireActionable(hostId: string, containerName: string, action: JobAction, images: readonly string[]) {
+  private requireActionable(
+    hostId: string,
+    containerName: string,
+    action: JobAction,
+    images: readonly string[],
+    byPerson: boolean,
+  ) {
     if (action === JOB_ACTION.updateRunner) {
       this.requireSidecar(hostId);
       return;
@@ -717,8 +725,10 @@ export class JobsService {
     if (container === undefined) {
       throw new DomainError(API_ERRORS.containerNotFound);
     }
-    // The runner would refuse it: say so now instead of sending it.
-    if (action !== JOB_ACTION.logs && container.handsOff !== null) {
+    // The runner would refuse it: say so now instead of sending it. The old container an update kept aside is a
+    // person's to start, stop or remove, though Autoheal keeps its own hands off it.
+    const keptAsideForPerson = byPerson && container.handsOff === HANDS_OFF.parked && KEPT_ASIDE_ACTIONS.has(action);
+    if (action !== JOB_ACTION.logs && container.handsOff !== null && !keptAsideForPerson) {
       throw new DomainError(API_ERRORS.handsOff);
     }
     if (action === JOB_ACTION.update && container.update.policy === UPDATE_POLICY.off) {

@@ -78,7 +78,8 @@ const GROUPED_BY_HOST = new Set<JarvisMessage["kind"]>([JARVIS_KIND.containerUpd
 // Never told: a newer version a yes could not move to is on the dashboard already.
 const ONLY_ASKED = new Set<JarvisMessage["kind"]>([JARVIS_KIND.newerVersion]);
 
-// Out now, or out before: none of its updates is asked about again, nor told, until a newer image changes it.
+// Out now, or out before: none of its updates is asked about again, nor told. One still open, or asked as often as it
+// may be, follows its update to a newer image; one answered is asked again about the newer one.
 const ASKED_BEFORE: readonly JarvisStatus[] = [
   JARVIS_STATUS.waiting,
   JARVIS_STATUS.sent,
@@ -195,7 +196,8 @@ function freshStatements(
     .sort(byRank(priorityOf));
 }
 
-function questionOf(members: readonly JarvisCandidate[], again?: string): JarvisPlanned {
+/** A question about these updates as they are now: its group, its fingerprint, and each one's key, a new one's or not. */
+export function questionOf(members: readonly JarvisCandidate[], again?: string): JarvisPlanned {
   const first = members[0]!;
   const groupKey = questionGroup(first);
   const keys = members.map((member) => keyOf(member)!);

@@ -103,12 +103,23 @@ describe("a host's containers and what each does", () => {
       occurrences: 1,
       checkedOut: false,
       advice: "hold",
+      heldBecause: null,
       snoozedUntil: null,
       incidentId: null,
       createdAt: 1,
       updatedAt: 1,
       lastSeenAt: 1,
       closedAt: null,
+    };
+    // Its last try failed, as its data could not be copied first.
+    const notCopied: TaskSummaryView = {
+      ...held,
+      id: "t60",
+      number: 60,
+      title: "Update gitea on Alder",
+      resource: { kind: "container", id: "gitea", label: "gitea" },
+      advice: "update",
+      heldBecause: "data_not_kept",
     };
     serve({
       [API_ROUTES.containers]: [
@@ -122,16 +133,69 @@ describe("a host's containers and what each does", () => {
           update: { ...available, policy: "always" },
           byItself: { restart: "repair", update: "always", ...NO_LOCKS },
         }),
+        container({
+          name: "gitea",
+          update: { ...available, policy: "always" },
+          byItself: { restart: "repair", update: "always", ...NO_LOCKS },
+        }),
       ],
-      [API_ROUTES.tasks]: [held],
+      [API_ROUTES.tasks]: [held, notCopied],
     });
     show(<HostContainers host={alder(false)} admin />);
 
     const radicale = (await screen.findByRole("button", { name: "radicale" })).closest("tr")!;
     const link = await within(radicale).findByRole("link", { name: "held for you" });
     expect(link.getAttribute("href")).toBe(apiPath(PATHS.task, { taskId: "t59" }));
+    expect(within(radicale).queryByText("its data could not be copied first")).toBeNull();
     const whoami = screen.getByRole("button", { name: "whoami" }).closest("tr")!;
     expect(within(whoami).getByText("updating shortly")).toBeTruthy();
+    const gitea = screen.getByRole("button", { name: "gitea" }).closest("tr")!;
+    expect(within(gitea).getByRole("link", { name: "held for you" }).getAttribute("href")).toBe(
+      apiPath(PATHS.task, { taskId: "t60" }),
+    );
+    expect(within(gitea).getByText("its data could not be copied first")).toBeTruthy();
+  });
+  it("says under a person's own update why the try it was handed over for failed", async () => {
+    const available = {
+      status: "available" as const,
+      checkedAt: 1,
+      policy: "ask" as const,
+      remote: null,
+      reason: null,
+    };
+    const tried: TaskSummaryView = {
+      id: "t61",
+      number: 61,
+      title: "Update notes on Alder",
+      status: "todo",
+      priority: "low",
+      source: "detector",
+      assignee: { kind: "user", id: "u1", name: "admin" },
+      labels: ["update"],
+      hostId: "h1",
+      hostLabel: "Alder",
+      resource: { kind: "container", id: "notes", label: "notes" },
+      parentId: null,
+      occurrences: 1,
+      checkedOut: false,
+      advice: null,
+      heldBecause: "data_not_kept",
+      snoozedUntil: null,
+      incidentId: null,
+      createdAt: 1,
+      updatedAt: 1,
+      lastSeenAt: 1,
+      closedAt: null,
+    };
+    serve({
+      [API_ROUTES.containers]: [container({ name: "notes", composeProject: null, update: available })],
+      [API_ROUTES.tasks]: [tried],
+    });
+    show(<HostContainers host={alder(false)} admin />);
+
+    const notes = (await screen.findByRole("button", { name: "notes" })).closest("tr")!;
+    expect(within(notes).getByRole("link", { name: "update ready" }).getAttribute("href")).toBe("#updates");
+    expect(await within(notes).findByText("its data could not be copied first")).toBeTruthy();
   });
   it("says why a container's image could not be checked", async () => {
     serve({

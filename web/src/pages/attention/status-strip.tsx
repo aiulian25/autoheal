@@ -150,16 +150,19 @@ function dropWords(servers: OllamaServersView | undefined, draggingHosts: readon
   return going.length === 1 ? goesTo(going[0] ?? TEXT.attention.ollama.defaultServer) : goesToServers(going.length);
 }
 
-function OllamaCard({
+/** The Ollama agent: how it is doing, a link to its settings; where work may be handed to it, what is dropped on it. */
+export function OllamaCard({
   hosts,
   onHandOver,
-  draggingHosts,
-  working,
+  draggingHosts = [],
+  working = false,
 }: {
   hosts: readonly HostView[];
   onHandOver?: HandOver;
-  draggingHosts: readonly (string | null)[];
-  working: boolean;
+  // The hosts of what is being dragged now.
+  draggingHosts?: readonly (string | null)[];
+  // Whether the agent has something in hand.
+  working?: boolean;
 }) {
   const ollama = useQuery(ollamaQuery);
   const servers = useQuery(ollamaServersQuery);
@@ -259,23 +262,17 @@ function NetworkCard() {
 }
 
 /**
- * Each host, Home Assistant and Ollama in a line of cards: how each is doing, each a link to more. Where work may
- * be handed to the Ollama agent, its card takes what is dropped on it.
+ * Each host, Home Assistant and Ollama in a line of cards: how each is doing, each a link to more. Attention keeps the
+ * Ollama agent's card beside the page instead, where work dragged to it can always reach it.
  */
 export function StatusStrip({
   hosts,
   containers,
-  onHandOver,
-  draggingHosts = [],
-  working = false,
+  agent = true,
 }: {
   hosts: readonly HostView[];
   containers: readonly ContainerView[];
-  onHandOver?: HandOver;
-  // The hosts of what is being dragged now.
-  draggingHosts?: readonly (string | null)[];
-  // Whether the agent has something in hand.
-  working?: boolean;
+  agent?: boolean;
 }) {
   return (
     <nav className="status-strip" aria-label={TEXT.attention.services}>
@@ -286,7 +283,7 @@ export function StatusStrip({
         <HomeAssistantCard />
         <NetworkCard />
       </div>
-      <OllamaCard hosts={hosts} onHandOver={onHandOver} draggingHosts={draggingHosts} working={working} />
+      {agent && <OllamaCard hosts={hosts} />}
     </nav>
   );
 }

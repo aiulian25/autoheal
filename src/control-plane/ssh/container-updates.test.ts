@@ -3,14 +3,15 @@ import type { FakeDockerEngine } from "../../../test/fakes/fake-docker-engine.js
 import type { TestClient } from "../../../test/support/control-plane.js";
 import { runningContainer, startEmbeddedSshHost, until } from "../../../test/support/embedded-ssh-host.js";
 import { API_ROUTES, apiPath, type HostView, type JobView } from "../../shared/api.js";
-import { JOB_ACTION, JOB_OUTCOMES, JOB_STATUS } from "../../shared/constants.js";
+import { APP_VERSION, JOB_ACTION, JOB_OUTCOMES, JOB_STATUS } from "../../shared/constants.js";
 
 const OLD = `sha256:${"1".repeat(64)}`;
 const NEW = `sha256:${"2".repeat(64)}`;
 const WEB = "example/web:2";
 const DB = "example/db:16";
-// The image the test control plane runs, as its AUTOHEAL_IMAGE names it, and what the registry has behind it.
-const AUTOHEAL_IMAGE = "autoheal:test";
+// An SSH host's helpers run the exact release of the image the test control plane's AUTOHEAL_IMAGE names
+// (autoheal:test): never an older one the host kept under a tag that moved on since.
+const AUTOHEAL_IMAGE = `autoheal:${APP_VERSION}`;
 const HELPER = `sha256:${"3".repeat(64)}`;
 // An update waits this long for the new container to keep running: the updater's own settle time, and some.
 const UPDATE_TEST_MILLISECONDS = 90_000;

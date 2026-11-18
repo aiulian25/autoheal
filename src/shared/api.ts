@@ -29,6 +29,7 @@ import {
   type ContainerProblem,
   type ContainerStateName,
   type HandsOff,
+  type HeldReason,
   type HostChangeDetails,
   type HostChangeKind,
   type HostState,
@@ -1658,6 +1659,8 @@ export interface TaskSummaryView {
   advice: UpdateAssessment | null;
   // The assistant in Home Assistant asked a person about it: the latest it heard, and when. Absent when it never did.
   assistant?: TaskAssistantView | null;
+  // On an update: why its last try failed, where a short line can say, until it is tried again. Null otherwise.
+  heldBecause: HeldReason | null;
   // Put off by a person until then: it waits among what was noticed. Null when it is not, or no longer.
   snoozedUntil: number | null;
   // The incident that opened it, or the newest one that joined it.

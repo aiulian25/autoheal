@@ -23,6 +23,7 @@ import {
   HEARTBEAT_INTERVAL_MILLISECONDS,
   JOB_ANSWER_MILLISECONDS,
   JOB_EXPIRY_MILLISECONDS,
+  JOB_OUTCOMES,
 } from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
@@ -320,6 +321,30 @@ describe("container actions", () => {
     ]);
   });
 
+  it("lets a person start, stop or remove a copy an update kept aside, though Autoheal keeps its hands off it", async () => {
+    const old = "paperless-autoheal-old";
+    await report([
+      containerSnapshot({ name: "paperless" }),
+      containerSnapshot({ name: old, state: "exited", exitCode: 1 }),
+    ]);
+    for (const action of ["start", "stop", "remove"]) {
+      const asked = await ask(old, { action });
+      expect(asked.statusCode, asked.body).toBe(200);
+    }
+    // Only rolling its successor back changes it otherwise.
+    const updating = await ask(old, { action: "update" });
+    expect(updating.statusCode).toBe(422);
+    expect(updating.json<{ error: string }>().error).toBe("hands_off");
+    // Autoheal, the agent or the assistant never act on it on their own.
+    const agent = { kind: "agent", agent: "autoheal" } as const;
+    expect(() => controlPlane.services.jobsService.request(agent, hostId, old, "start", null)).toThrow("hands_off");
+    expect((await takeWork()).jobs.map((job) => [job.action, job.containerName])).toEqual([
+      ["start", old],
+      ["stop", old],
+      ["remove", old],
+    ]);
+  });
+
   it("refuses to change what the host keeps Autoheal's hands off, but still reads its logs", async () => {
     await report([containerSnapshot({ name: "paperless" }), containerSnapshot({ name: "newt" })], {
       protectedContainers: ["newt"],
@@ -482,8 +507,60 @@ describe("container actions", () => {
       expect(job).not.toHaveProperty("allowWithoutCheckpoint");
       await answer(job!.id, { succeeded: false, outcome: "Could not pull whoami: manifest unknown", output: null });
       const handedOver = await detail(task.id);
-      expect(handedOver).toMatchObject({ status: "todo", checkedOut: false });
+      expect(handedOver).toMatchObject({ status: "todo", checkedOut: false, heldBecause: null });
       expect(handedOver.assignee).toMatchObject({ kind: "user", name: "admin" });
+    });
+
+    it("says an update came back to a person because its data could not be copied first, until a try fails otherwise", async () => {
+      const task = await whoamiTask();
+      await workerWith({ decision: "update", reason: "A web demo with no data." }).run();
+      const [job] = (await takeWork()).jobs;
+      const outcome = `Could not update whoami (${JOB_OUTCOMES.checkpointRequired}.${JOB_OUTCOMES.checkpointSkipped("the copy failed: files vanished while it copied (rsync code 24)")}). The old container is back as it was.`;
+      await answer(job!.id, { succeeded: false, outcome, output: null });
+      const held = await detail(task.id);
+      expect(held).toMatchObject({ status: "todo", heldBecause: "data_not_kept" });
+      expect((await openTasks()).find(({ id }) => id === task.id)?.heldBecause).toBe("data_not_kept");
+
+      // Handed back to Autoheal, it tries again and fails another way: the copy is no longer why it waits.
+      await admin.request({
+        method: "PATCH",
+        url: apiPath(API_ROUTES.task, { taskId: task.id }),
+        payload: { assignee: { kind: "agent", id: "autoheal" } },
+      });
+      await workerWith({ decision: "update", reason: "A web demo with no data." }).run();
+      const [again] = (await takeWork()).jobs;
+      await answer(again!.id, { succeeded: false, outcome: "Could not pull whoami: manifest unknown", output: null });
+      const back = await detail(task.id);
+      expect(back.assignee).toMatchObject({ kind: "user" });
+      expect(back.heldBecause).toBeNull();
+    });
+
+    it("forgets why the last try failed once the update is gone and a new one opens the task again", async () => {
+      const task = await whoamiTask();
+      await workerWith({ decision: "update", reason: "A web demo with no data." }).run();
+      const [job] = (await takeWork()).jobs;
+      const outcome = JOB_OUTCOMES.refusedWithoutCheckpoint("whoami", JOB_OUTCOMES.checkpointUnavailable);
+      await answer(job!.id, { succeeded: false, outcome, output: null });
+      const current = { ...update, status: "current" as const };
+      await report([containerSnapshot({ name: "whoami", update: current, updatePolicy: "auto" })]);
+      await controlPlane.services.detectorService.run();
+      expect((await detail(task.id)).status).toBe("done");
+
+      const newer = { ...update, remoteDigest: `sha256:${"d".repeat(64)}` };
+      await report([containerSnapshot({ name: "whoami", update: newer, updatePolicy: "auto" })]);
+      await controlPlane.services.detectorService.run();
+      const reopened = await detail(task.id);
+      expect(reopened.status).not.toBe("done");
+      expect(reopened.heldBecause).toBeNull();
+    });
+
+    it("says so of an update refused before anything stopped, with nowhere to keep its data", async () => {
+      const task = await whoamiTask();
+      await workerWith({ decision: "update", reason: "A web demo with no data." }).run();
+      const [job] = (await takeWork()).jobs;
+      const outcome = JOB_OUTCOMES.refusedWithoutCheckpoint("whoami", JOB_OUTCOMES.checkpointUnavailable);
+      await answer(job!.id, { succeeded: false, outcome, output: null });
+      expect((await detail(task.id)).heldBecause).toBe("data_not_kept");
     });
 
     it("gives the task back, saying why, once the host protects the container", async () => {

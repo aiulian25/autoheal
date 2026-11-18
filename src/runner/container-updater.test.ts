@@ -18,11 +18,15 @@ import type { ContainerDetails, NetworkEndpoint } from "./incident-report.js";
 import type { PullLine } from "./update-progress.js";
 import {
   EDIT_OUTCOMES,
+  HELD_REASON,
   JOB_OUTCOMES,
   RECREATE_OUTCOMES,
   VERIFY_PROBLEMS,
   VOLUME_COPY_MESSAGES,
+  heldReasonOf,
 } from "../shared/constants.js";
+import { APPLICATION_HELPER_ERRORS } from "../shared/application-backups.js";
+import { HelperImageMissing } from "./application-backups.js";
 import { dataMountsOf, type RestoredData, type TakenCheckpoint } from "./volume-checkpoints.js";
 
 const OLD_IMAGE = `sha256:${"1".repeat(64)}`;
@@ -343,6 +347,7 @@ describe("ContainerUpdater", () => {
         verify: async () => ({ at: null, problem: null }),
         restore: async () => ({ at: null, problem: null }),
         discard: async () => {},
+        fetchHelperImage: async () => {},
       },
     );
   });
@@ -358,6 +363,73 @@ describe("ContainerUpdater", () => {
     };
     return started;
   };
+
+  // Copies that see when the helper's image was fetched, in the order of Docker's own calls.
+  const fetchingCopies = (fetched: () => Promise<void>) =>
+    new ContainerUpdater(
+      docker,
+      async (milliseconds) => {
+        now += milliseconds;
+      },
+      () => now,
+      {
+        fetchHelperImage: fetched,
+        take: async (name, details) => {
+          docker.calls.push(`take ${name}`);
+          return completeCheckpoint(details);
+        },
+        verify: async () => ({ at: null, problem: null }),
+        restore: async () => ({ at: null, problem: null }),
+        discard: async () => {},
+      },
+    );
+
+  it("fetches the helper that copies its data before anything stops: a new release's is pulled while the app runs", async () => {
+    const updating = fetchingCopies(async () => {
+      docker.calls.push("fetch helper");
+    });
+    expect((await updating.update("app", true)).succeeded).toBe(true);
+    const order = docker.calls.filter((call) => ["fetch helper", "stop /app", "take app"].includes(call));
+    expect(order).toEqual(["fetch helper", "stop /app", "take app"]);
+  });
+
+  it("leaves a fetch that failed some other way to the copy, which decides as it always did", async () => {
+    const updating = fetchingCopies(async () => {
+      throw new Error("the session dropped");
+    });
+    expect((await updating.update("app", true)).succeeded).toBe(true);
+    expect(docker.calls).toContain("take app");
+  });
+
+  const notOnHost = APPLICATION_HELPER_ERRORS.imageMissing("autoheal:1.5.7", "dial tcp: no route to host");
+  const withoutHelper = () =>
+    fetchingCopies(async () => {
+      throw new HelperImageMissing(notOnHost);
+    });
+
+  it("refuses an automatic update before anything stops when the host has not and cannot get the helper's image", async () => {
+    const result = await withoutHelper().update("app", true);
+    expect(result).toEqual({ succeeded: false, outcome: JOB_OUTCOMES.refusedWithoutHelper("app", notOnHost) });
+    expect(heldReasonOf(result.outcome)).toBe(HELD_REASON.dataNotKept);
+    expect(docker.calls.filter((call) => call.startsWith("stop"))).toEqual([]);
+    expect(app()).toMatchObject({ Image: OLD_IMAGE, State: { Running: true } });
+  });
+
+  it("updates by hand without the helper's image, as a person may, its data not kept", async () => {
+    const result = await withoutHelper().update("app", true, undefined, { allowWithoutCheckpoint: true });
+    expect(result.succeeded).toBe(true);
+    expect(docker.calls).toContain("stop /app");
+  });
+
+  it("fetches no helper for a container that keeps no data", async () => {
+    app().Mounts = [];
+    let fetched = 0;
+    const updating = fetchingCopies(async () => {
+      fetched += 1;
+    });
+    expect((await updating.update("app", true)).succeeded).toBe(true);
+    expect(fetched).toBe(0);
+  });
 
   const desired = `ghcr.io/example/app@sha256:${"a".repeat(64)}`;
   const rollout = () => ({
@@ -493,6 +565,7 @@ describe("ContainerUpdater", () => {
             throw new Error("must not restore");
           },
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
       const result = await unsafe.update("app", true);
@@ -554,6 +627,7 @@ describe("ContainerUpdater", () => {
           verify: async () => ({ at: null, problem: null }),
           restore: async () => ({ at: null, problem: null }),
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
 
@@ -599,6 +673,7 @@ describe("ContainerUpdater", () => {
             return { at: null, problem: null };
           },
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
 
@@ -730,6 +805,7 @@ describe("ContainerUpdater", () => {
           return { at: 1_000, problem: null };
         },
         discard: async () => {},
+        fetchHelperImage: async () => {},
       },
     );
     expect((await safe.update("app", true)).succeeded).toBe(false);
@@ -756,6 +832,7 @@ describe("ContainerUpdater", () => {
           throw new Error("must not restore");
         },
         discard: async () => {},
+        fetchHelperImage: async () => {},
       },
     );
     const result = await safe.update("app", true);
@@ -803,6 +880,7 @@ describe("ContainerUpdater", () => {
         },
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (_name, details) => {
             copied = schema;
             return completeCheckpoint(details);
@@ -1376,6 +1454,7 @@ describe("ContainerUpdater", () => {
             return { at: null, problem: null };
           },
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
       expect((await recovery.rollBack("app")).succeeded).toBe(true);
@@ -1502,6 +1581,7 @@ describe("ContainerUpdater", () => {
         },
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (name, details) => {
             docker.calls.push(`keep ${name}'s data`);
             return completeCheckpoint(details, kept);
@@ -1586,6 +1666,7 @@ describe("ContainerUpdater", () => {
               return { at: null, problem: null };
             },
             discard: async () => {},
+            fetchHelperImage: async () => {},
           },
         );
 
@@ -1680,6 +1761,7 @@ describe("ContainerUpdater", () => {
           return { at: KEPT_AT, problem: null };
         },
         discard: async () => {},
+        fetchHelperImage: async () => {},
       };
       const resume = () =>
         new ContainerUpdater(
@@ -1720,6 +1802,7 @@ describe("ContainerUpdater", () => {
               verify: async () => ({ at: null, problem: null }),
               restore: async () => ({ at: null, problem: null }),
               discard: async () => {},
+              fetchHelperImage: async () => {},
             },
           ).rollBack("app")
         ).succeeded,
@@ -1752,6 +1835,7 @@ describe("ContainerUpdater", () => {
           return { at: KEPT_AT, problem: null };
         },
         discard: async () => {},
+        fetchHelperImage: async () => {},
       };
       const create = docker.createVolume.bind(docker);
       docker.createVolume = async (name, labels) => {
@@ -2024,6 +2108,7 @@ describe("ContainerUpdater", () => {
         },
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (_name, details) => completeCheckpoint(details),
           verify: async () => ({ at: null, problem: null }),
           restore: async () => ({ at: null, problem: null }),
@@ -2112,6 +2197,7 @@ describe("ContainerUpdater", () => {
             return { at: null, problem: null };
           },
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
 
@@ -2145,6 +2231,7 @@ describe("ContainerUpdater", () => {
         },
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (_name, details) => completeCheckpoint(details),
           verify: async () => ({ at: null, problem: null }),
           restore: async () => ({ at: null, problem: null }),
@@ -2212,6 +2299,7 @@ describe("ContainerUpdater", () => {
           verify: async () => ({ at: null, problem: VOLUME_COPY_MESSAGES.incomplete }),
           restore: async () => ({ at: null, problem: null }),
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
 
@@ -2253,6 +2341,7 @@ describe("ContainerUpdater", () => {
         for (const name of names)
           docker.find(name)!.Mounts = [{ Type: "volume", Name: `${name}-data`, Destination: "/data", RW: true }];
         const checkpoints = {
+          fetchHelperImage: async () => {},
           take: async (name: string, details: ContainerDetails) => {
             expect([...docker.containers.values()].every(({ State }) => State.Running !== true)).toBe(true);
             kept.set(name, data.get(name)!);
@@ -2324,6 +2413,7 @@ describe("ContainerUpdater", () => {
           verify: async () => ({ at: null, problem: "copy failed" }),
           restore: async () => ({ at: null, problem: null }),
           discard: async () => {},
+          fetchHelperImage: async () => {},
         },
       );
       const result = await unsafe.update("app");
@@ -2366,6 +2456,7 @@ describe("ContainerUpdater", () => {
         async () => {},
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (_name, details) => completeCheckpoint(details),
           verify: async () => ({ at: null, problem: null }),
           restore: async (name) => ({ at: null, problem: name === "qbittorrent" ? "synthetic restore failure" : null }),
@@ -2423,6 +2514,7 @@ describe("ContainerUpdater", () => {
           return { at: null, problem: null };
         },
         discard: async () => {},
+        fetchHelperImage: async () => {},
       };
       const resume = () =>
         new ContainerUpdater(
@@ -2465,6 +2557,7 @@ describe("ContainerUpdater", () => {
         async () => {},
         () => now,
         {
+          fetchHelperImage: async () => {},
           take: async (_name, details) => completeCheckpoint(details),
           verify: async (name) => ({ at: null, problem: name === "qbittorrent" ? "checkpoint missing" : null }),
           restore: async () => {
@@ -2532,6 +2625,7 @@ describe("an update where a signed image is required", () => {
         verify: async () => ({ at: null, problem: null }),
         restore: async () => ({ at: null, problem: null }),
         discard: async () => {},
+        fetchHelperImage: async () => {},
       },
       undefined,
       undefined,

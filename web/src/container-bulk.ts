@@ -11,7 +11,14 @@ import {
   type HostVolumesView,
   type JobView,
 } from "../../src/shared/api.js";
-import { CONTAINER_STATE_PAUSED, CONTAINER_STATE_RUNNING, JOB_ACTION, JOB_STATUS } from "../../src/shared/constants.js";
+import {
+  CONTAINER_STATE_PAUSED,
+  CONTAINER_STATE_RUNNING,
+  HANDS_OFF,
+  JOB_ACTION,
+  JOB_STATUS,
+  KEPT_ASIDE_ACTIONS,
+} from "../../src/shared/constants.js";
 import { api } from "./api-client.js";
 import { isWaiting } from "./components/container-actions.js";
 import { BULK_REFRESH_MILLISECONDS } from "./constants.js";
@@ -50,10 +57,15 @@ const FITS: Record<BulkAction, (container: ContainerView) => boolean> = {
   [JOB_ACTION.remove]: () => true,
 };
 
-/** The ticked containers an action reaches: those the host lets Autoheal change, and of those the ones it fits. */
+// What the host lets be changed from here: anything it keeps no hands off, and the old container an update kept aside,
+// which a person may start, stop or remove.
+const changeable = (action: BulkAction, container: ContainerView) =>
+  container.handsOff === null || (container.handsOff === HANDS_OFF.parked && KEPT_ASIDE_ACTIONS.has(action));
+
+/** The ticked containers an action reaches: those that may be changed from here, and of those the ones it fits. */
 export const targetsOf = (action: BulkAction, ticked: readonly ContainerView[]) =>
   ticked.filter(
-    (container) => container.handsOff === null && container.recovery === undefined && FITS[action](container),
+    (container) => changeable(action, container) && container.recovery === undefined && FITS[action](container),
   );
 
 /** How the jobs one bulk action asked for are going, from the host's latest jobs. */

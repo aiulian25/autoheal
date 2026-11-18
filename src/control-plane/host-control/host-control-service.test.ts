@@ -269,7 +269,7 @@ describe("what each host's page lets Autoheal do on its own", () => {
     expect((await tick({ names: ["paperless"], restart: "restart" }, viewer)).statusCode).toBe(403);
   });
 
-  it("keeps its hands off the old container an update keeps aside: no tick, no update, nothing but its logs", async () => {
+  it("keeps its hands off the old container an update keeps aside: no tick, no update, but a person's to start", async () => {
     const parked = containerSnapshot({
       name: "paperless-autoheal-old",
       image: "ghcr.io/paperless-ngx/paperless-ngx:2",
@@ -291,7 +291,8 @@ describe("what each host's page lets Autoheal do on its own", () => {
     });
     expect((await tick({ names: [parked.name], update: "apply" })).statusCode).toBe(409);
     expect((await act("update")).json()).toMatchObject({ error: "hands_off" });
-    expect((await act("start")).json()).toMatchObject({ error: "hands_off" });
+    // Never held: a person may start, stop or remove it, as any other container.
+    expect((await act("start")).json<JobView>()).toMatchObject({ action: "start", status: "pending" });
     expect((await act("logs")).json<JobView>()).toMatchObject({ action: "logs", status: "pending" });
   });
 
