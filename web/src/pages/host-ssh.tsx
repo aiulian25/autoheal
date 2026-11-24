@@ -1,9 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
-import { API_ROUTES, apiPath, heldBackBy, type HostView, type SshHostDetailsView } from "../../../src/shared/api.js";
+import {
+  API_ROUTES,
+  apiPath,
+  heldBackBy,
+  type HostView,
+  type SshConnectionChangeView,
+  type SshHostDetailsView,
+} from "../../../src/shared/api.js";
 import {
   HOST_PACKAGES_SETTINGS,
   ROOT_COMMANDS,
+  SSH_HOST_FIELDS,
   type HostPackagesSetting,
   type RootMethod,
 } from "../../../src/shared/constants.js";
@@ -14,11 +22,12 @@ import { ErrorNotice, Loading } from "../components/common.js";
 import { HeldBack } from "../components/held-back.js";
 import { SSH_HOST_ANCHOR, SSH_SETUP, TEXT } from "../constants.js";
 import { hostsQuery, localHostQuery, settingsQuery, sshHostQuery, sshKeysQuery } from "../queries.js";
-import { SwitchToSshSteps, CommandBlock } from "./ssh-setup.js";
+import { SwitchToSshSteps, CommandBlock, KEY_CHOICE, keyIdOf, keyPickOf, SshKeyPicker } from "./ssh-setup.js";
 import { sshConnectionText } from "./host-system.js";
 import { SavedNote, useSavedNote } from "../components/saved-note.js";
 
 const text = TEXT.ssh.host;
+const addText = TEXT.ssh.add;
 // Names as a person types them: separated by spaces or commas.
 const NAME_SEPARATORS = /[\s,]+/;
 
@@ -57,7 +66,6 @@ function SettingsForm({ hostId, settings }: { hostId: string; settings: SshHostS
   };
   return (
     <form className="step-form ssh-settings" onSubmit={submit} aria-label={text.settingsTitle}>
-      <h3>{text.settingsTitle}</h3>
       <p className="small muted">{text.settingsExplanation}</p>
       <label className="tick">
         <input type="checkbox" name="dryRun" defaultChecked={settings.dryRun} />
@@ -139,42 +147,158 @@ function ChangedHostKey({ hostId, details }: { hostId: string; details: SshHostD
   );
 }
 
-function ReplaceKey({ hostId, current }: { hostId: string; current: string }) {
+/**
+ * How the host is reached, changed in one go: its address, port, user and key, tried first and kept only once
+ * Autoheal has signed in that way. Another host key there is shown to compare before it is trusted.
+ */
+function EditConnection({
+  host,
+  details,
+  onSaved,
+  onCancelled,
+}: {
+  host: HostView;
+  details: SshHostDetailsView;
+  onSaved: () => void;
+  onCancelled: () => void;
+}) {
   const queryClient = useQueryClient();
-  const keys = useQuery(sshKeysQuery);
-  const replace = useMutation({
-    mutationFn: (keyId: string) => api<HostView>("PUT", apiPath(API_ROUTES.sshHostKey, { hostId }), { keyId }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: sshHostQuery(hostId).queryKey });
+  const settings = useQuery(settingsQuery);
+  const [where, setWhere] = useState({ address: details.address, port: details.port, user: details.user });
+  const [pick, setPick] = useState(keyPickOf(details.keyId));
+  const [stored, setStored] = useState<string[]>([]);
+  const keepStored = (keyId: string) => setStored((keys) => [...keys, keyId]);
+  const save = useMutation({
+    mutationFn: async (hostKeyFingerprint: string | null) => {
+      const keyId = await keyIdOf(pick, host.label);
+      if (pick.choice === KEY_CHOICE.paste) {
+        keepStored(keyId);
+        setPick({ ...pick, choice: keyId });
+      }
+      return api<SshConnectionChangeView>("PUT", apiPath(API_ROUTES.sshHostConnection, { hostId: host.id }), {
+        ...where,
+        keyId,
+        hostKeyFingerprint,
+      });
+    },
+    onSuccess: async (result) => {
+      if ("offeredHostKeyFingerprint" in result) return;
+      await queryClient.invalidateQueries({ queryKey: sshHostQuery(host.id).queryKey });
+      await queryClient.invalidateQueries({ queryKey: hostsQuery.queryKey });
       await queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
+      onSaved();
     },
   });
-  const others = (keys.data ?? []).filter((key) => key.id !== current);
+  // The keys this change stored go again with it, as the page shows them at the click.
+  const cancel = useMutation({
+    mutationFn: (keyIds: readonly string[]) =>
+      Promise.all(keyIds.map((keyId) => api("DELETE", apiPath(API_ROUTES.sshKey, { keyId })).catch(() => undefined))),
+    onSettled: onCancelled,
+  });
+  // Whatever changes after a try makes its answer stale.
+  const changed =
+    <Value,>(set: (value: Value) => void) =>
+    (value: Value) => {
+      save.reset();
+      set(value);
+    };
+  const setWhereField = changed((patch: Partial<typeof where>) => setWhere({ ...where, ...patch }));
+  const answer = save.data;
+  const offered =
+    answer !== undefined && "offeredHostKeyFingerprint" in answer ? answer.offeredHostKeyFingerprint : null;
+  const runnerAddress = settings.data?.runnerAddress;
+  const dashboardAddress = runnerAddress === undefined ? "" : new URL(runnerAddress).hostname;
+  const waiting = pick.choice === KEY_CHOICE.none || pick.choice === KEY_CHOICE.make;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    replace.mutate(String(new FormData(event.currentTarget).get("keyId")));
+    save.mutate(null);
   };
-  if (others.length === 0) {
-    return <ErrorNotice error={keys.error} />;
-  }
+  const word = SSH_HOST_FIELDS.word.source;
   return (
-    <form className="step-form" onSubmit={submit}>
+    <form className="step-form ssh-connection" onSubmit={submit} aria-label={text.edit}>
+      <div className="connect-host-row with-end">
+        <label>
+          {addText.address}
+          <input
+            className="mono"
+            name="address"
+            required
+            pattern={word}
+            value={where.address}
+            onChange={(event) => setWhereField({ address: event.target.value.trim() })}
+          />
+        </label>
+        <label>
+          {addText.port}
+          <input
+            className="mono"
+            name="port"
+            type="number"
+            required
+            min={SSH_HOST_FIELDS.lowestPort}
+            max={SSH_HOST_FIELDS.highestPort}
+            value={where.port}
+            onChange={(event) => setWhereField({ port: Number(event.target.value) })}
+          />
+        </label>
+      </div>
       <label>
-        {text.replaceKey}
-        <select name="keyId" required defaultValue={others[0]!.id}>
-          {others.map((key) => (
-            <option key={key.id} value={key.id}>
-              {`${key.name} (${key.fingerprint})`}
-            </option>
-          ))}
-        </select>
+        {addText.user}
+        <input
+          className="mono"
+          name="user"
+          required
+          pattern={word}
+          value={where.user}
+          onChange={(event) => setWhereField({ user: event.target.value.trim() })}
+        />
       </label>
-      <button type="submit" disabled={replace.isPending}>
-        {text.replace}
-      </button>
-      <ErrorNotice error={replace.error ?? keys.error} />
+      <SshKeyPicker
+        label={host.label}
+        pick={pick}
+        onPick={changed(setPick)}
+        onKeyStored={keepStored}
+        currentKeyId={details.keyId}
+        user={where.user || null}
+        dashboardAddress={dashboardAddress}
+      />
+      <p className="small muted">{text.nothingUntil}</p>
+      {offered !== null && (
+        <div className="notice warning stack" role="alert">
+          <p>{text.otherHostKey(where.address, offered)}</p>
+          <CommandBlock command={SSH_SETUP.compareHostKey} />
+          <p className="row">
+            <button type="button" className="primary" disabled={save.isPending} onClick={() => save.mutate(offered)}>
+              {text.trustAndSave}
+            </button>
+          </p>
+        </div>
+      )}
+      <ErrorNotice error={save.error} />
+      <p className="row">
+        <button type="button" className="quiet" disabled={cancel.isPending} onClick={() => cancel.mutate(stored)}>
+          {addText.cancel}
+        </button>
+        <button type="submit" className="primary push" disabled={waiting || save.isPending}>
+          {text.testAndSave}
+        </button>
+      </p>
     </form>
   );
+}
+
+const rootStateOf = (method: RootMethod | null) =>
+  method === null ? text.rootState.none : text.rootState.saved(method);
+
+// How its settings stand, in the line its fold shows folded.
+function settingsStateOf(settings: SshHostSettings): string {
+  const words = text.settingsState;
+  const protectedCount = settings.protectedContainers.length;
+  return [
+    settings.dryRun ? words.dryRun : words.acting,
+    settings.containerAccess ? words.access : words.noAccess,
+    protectedCount === 0 ? words.nothingProtected : words.protectedCount(protectedCount),
+  ].join(TEXT.separator);
 }
 
 /** The password Autoheal runs root commands with: checked on the machine before it is kept, never shown back. */
@@ -202,7 +326,6 @@ function RootPassword({ hostId, method }: { hostId: string; method: RootMethod |
   };
   return (
     <div className="stack ssh-root">
-      <h3>{text.rootTitle}</h3>
       <p className="small muted">{text.rootExplanation}</p>
       {method !== null && (
         <p className="row">
@@ -247,30 +370,77 @@ function Interrupted({ host }: { host: HostView }) {
   );
 }
 
-/** An SSH host's own: how it is reached, with which key, its host key, and its settings. For an admin. */
+/**
+ * An SSH host's own: how it is reached and with which key, read here and changed only through Edit connection; its
+ * root password and its settings fold away, each saying how it stands. For an admin.
+ */
 export function SshHostCard({ host }: { host: HostView }) {
   const details = useQuery(sshHostQuery(host.id));
+  const [editing, setEditing] = useState(false);
+  const [saved, setSaved] = useState(false);
   const view = details.data;
   if (view === undefined) {
     return details.error ? <ErrorNotice error={details.error} /> : <Loading />;
   }
+  const startEditing = () => {
+    setSaved(false);
+    setEditing(true);
+  };
+  const finished = () => {
+    setEditing(false);
+    setSaved(true);
+  };
   return (
     <section className="card ssh-host" id={SSH_HOST_ANCHOR} aria-labelledby="ssh-host-title">
       <h2 id="ssh-host-title">{text.title}</h2>
       {host.docker === false && <p className="notice">{text.systemOnly}</p>}
-      <p className="mono">{text.signsInAs(view.user, view.address, view.port)}</p>
       <p className="small muted">{sshConnectionText(host)}</p>
       <Interrupted host={host} />
       <dl className="facts">
-        <dt>{text.key}</dt>
-        <dd>{view.keyName}</dd>
+        <dt>{text.signsInAsLabel}</dt>
+        <dd className="mono">{text.signsInAs(view.user, view.address, view.port)}</dd>
+        <dt>{text.keyLabel}</dt>
+        <dd>
+          <span className="mono">{view.keyFingerprint}</span>
+          {view.keySharedWith.length > 0 && (
+            <>
+              {TEXT.separator}
+              <span className="muted">{text.sharedWith(view.keySharedWith)}</span>
+            </>
+          )}
+        </dd>
         <dt>{text.hostKey}</dt>
         <dd className="mono">{view.hostKeyFingerprint}</dd>
       </dl>
       {view.offeredHostKeyFingerprint !== null && <ChangedHostKey hostId={host.id} details={view} />}
-      <ReplaceKey hostId={host.id} current={view.keyId} />
-      <RootPassword hostId={host.id} method={view.rootMethod} />
-      <SettingsForm hostId={host.id} settings={view.settings} />
+      {editing ? (
+        <EditConnection host={host} details={view} onSaved={finished} onCancelled={() => setEditing(false)} />
+      ) : (
+        <p className="row">
+          <button type="button" onClick={startEditing}>
+            {text.edit}
+          </button>
+          {saved && (
+            <span className="small text-good" role="status">
+              {text.connectionSaved}
+            </span>
+          )}
+        </p>
+      )}
+      <details className="fold ssh-fold">
+        <summary>
+          <h3>{text.rootTitle}</h3>
+          <span className="fold-state">{rootStateOf(view.rootMethod)}</span>
+        </summary>
+        <RootPassword hostId={host.id} method={view.rootMethod} />
+      </details>
+      <details className="fold ssh-fold">
+        <summary>
+          <h3>{text.settingsTitle}</h3>
+          <span className="fold-state">{settingsStateOf(view.settings)}</span>
+        </summary>
+        <SettingsForm hostId={host.id} settings={view.settings} />
+      </details>
     </section>
   );
 }

@@ -16,6 +16,7 @@ import { timeOfDay } from "../format.js";
 import { ConnectHostTile } from "./connect-host.js";
 
 const text = TEXT.connectHost;
+const picker = TEXT.sshKeyPicker;
 const PRIVATE_KEY =
   "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAKYWVzMjU2LWN0cg-the-secret\n-----END OPENSSH PRIVATE KEY-----\n";
 const PENDING_ID = "5b6a3f58-6a43-4f7c-9a3f-6a4e1d2c3b4a";
@@ -114,9 +115,9 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     type(dialog, /^Name/, "mini");
     type(dialog, text.address, "192.168.10.123");
     type(dialog, text.user, "alex");
-    fireEvent.change(await dialog.findByRole("combobox", { name: text.key }), { target: { value: "paste" } });
-    type(dialog, text.privateKey, PRIVATE_KEY);
-    fireEvent.change(dialog.getByLabelText(new RegExp(`^${text.passphrase}`)), {
+    fireEvent.change(await dialog.findByRole("combobox", { name: picker.key }), { target: { value: "paste" } });
+    type(dialog, picker.privateKey, PRIVATE_KEY);
+    fireEvent.change(dialog.getByLabelText(new RegExp(`^${picker.passphrase}`)), {
       target: { value: "my own passphrase" },
     });
     expect(dialog.getByRole<HTMLButtonElement>("button", { name: text.add }).disabled).toBe(true);
@@ -145,17 +146,25 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     };
     const { fetch } = show({
       [`GET ${API_ROUTES.settings}`]: settings,
-      [`GET ${API_ROUTES.sshKeys}`]: [key(), made.key],
+      [`GET ${API_ROUTES.sshKeys}`]: [
+        key({ hosts: ["Cedar", "Orion"] }),
+        key({ id: "k2", fingerprint: "SHA256:nohost" }),
+      ],
       [`POST ${API_ROUTES.sshKeysMake}`]: made,
     });
     const dialog = await openDialog();
     type(dialog, /^Name/, "mini");
     type(dialog, text.user, "alex");
-    fireEvent.change(await dialog.findByRole("combobox", { name: text.key }), { target: { value: "make" } });
-    fireEvent.change(dialog.getByLabelText(new RegExp(`^${text.passphrase}`)), { target: { value: "made's own" } });
-    fireEvent.click(dialog.getByRole("button", { name: text.make }));
+    // A kept key reads by the hosts that sign in with it; one no host uses is not offered at all.
+    expect(
+      await dialog.findByRole("option", { name: picker.usedBy(["Cedar", "Orion"], "SHA256:laptopfingerprint") }),
+    ).toBeTruthy();
+    expect(dialog.queryByRole("option", { name: /SHA256:nohost/ })).toBeNull();
+    fireEvent.change(await dialog.findByRole("combobox", { name: picker.key }), { target: { value: "make" } });
+    fireEvent.change(dialog.getByLabelText(new RegExp(`^${picker.passphrase}`)), { target: { value: "made's own" } });
+    fireEvent.click(dialog.getByRole("button", { name: picker.make }));
 
-    const commands = await dialog.findByText(text.newKeyCommands);
+    const commands = await dialog.findByText(picker.newKeyCommands);
     expect(sent(fetch, "POST", API_ROUTES.sshKeysMake)).toEqual([{ name: "mini", passphrase: "made's own" }]);
     const details = commands.closest("details")!;
     expect(details.open).toBe(true);
@@ -163,7 +172,7 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     expect(within(details).getAllByText(/ssh-ed25519 AAAAmade autoheal@mini/, { selector: "pre" })).toHaveLength(2);
     expect(within(details).getByRole("button", { name: TEXT.ssh.add.download })).toBeTruthy();
     // Chosen once made: Test connection is open to it.
-    expect(dialog.getByRole<HTMLSelectElement>("combobox", { name: text.key }).value).toBe("k5");
+    expect(dialog.getByRole<HTMLSelectElement>("combobox", { name: picker.key }).value).toBe("k5");
   });
 
   it("takes back the keys an attempt stored when it is cancelled, by its button or by Escape", async () => {
@@ -176,8 +185,8 @@ describe("connecting a new host from the tile at the end of the host grid", () =
     type(dialog, /^Name/, "mini");
     type(dialog, text.address, "192.168.10.123");
     type(dialog, text.user, "alex");
-    fireEvent.change(await dialog.findByRole("combobox", { name: text.key }), { target: { value: "paste" } });
-    type(dialog, text.privateKey, PRIVATE_KEY);
+    fireEvent.change(await dialog.findByRole("combobox", { name: picker.key }), { target: { value: "paste" } });
+    type(dialog, picker.privateKey, PRIVATE_KEY);
     fireEvent.click(dialog.getByRole("button", { name: text.test }));
     await dialog.findByText(pending.hostKeyFingerprint);
 

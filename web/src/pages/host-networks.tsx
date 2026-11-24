@@ -216,75 +216,77 @@ export function HostNetworks({
         </p>
       )}
       <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {canChange && <th className="tick-column" />}
-              <th>{text.columns.name}</th>
-              <th>{text.columns.who}</th>
-              <th>{text.columns.addresses}</th>
-              <th>{text.columns.madeBy}</th>
-              <th>{text.columns.state}</th>
-              <th>{text.columns.actions}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.length === 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={NETWORK_COLUMNS} className="muted">
-                  {text.nothingFound}
-                </td>
+                {canChange && <th className="tick-column" />}
+                <th>{text.columns.name}</th>
+                <th>{text.columns.who}</th>
+                <th>{text.columns.addresses}</th>
+                <th>{text.columns.madeBy}</th>
+                <th>{text.columns.state}</th>
+                <th>{text.columns.actions}</th>
               </tr>
-            )}
-            {shown.flatMap((network) => {
-              const open = opened === network.name;
-              const tickable = !isLocked(network) && network.members.length === 0;
-              const row = (
-                <tr key={network.name} className={ticked.has(network.name) ? "selected" : undefined}>
-                  {canChange && (
-                    <td className="tick-column">
-                      {tickable && (
-                        <input
-                          type="checkbox"
-                          checked={ticked.has(network.name)}
-                          aria-label={text.tick(network.name)}
-                          onChange={() => setTicked(toggled(ticked, network.name))}
-                        />
-                      )}
-                    </td>
-                  )}
-                  <td className="mono">{network.name}</td>
-                  <td>
-                    <Members network={network} />
-                  </td>
-                  <td className="mono muted">{network.subnet ?? text.none}</td>
-                  <td className="muted">{madeByOf(network)}</td>
-                  <StateCell network={network} />
-                  <td>
-                    <RowActions
-                      network={network}
-                      canChange={canChange}
-                      open={open}
-                      busy={removal.isPending}
-                      onToggle={() => setOpened(open ? null : network.name)}
-                      onOpen={() => setOpened(network.name)}
-                      onRemove={() => (network.members.length > 0 ? setAsking(network) : remove([network.name]))}
-                    />
+            </thead>
+            <tbody>
+              {shown.length === 0 && (
+                <tr>
+                  <td colSpan={NETWORK_COLUMNS} className="muted">
+                    {text.nothingFound}
                   </td>
                 </tr>
-              );
-              if (!open) return [row];
-              return [
-                row,
-                <tr key={`${network.name}-panel`}>
-                  <td colSpan={canChange ? COLUMNS + 1 : COLUMNS}>
-                    <NetworkPanel host={host} network={network} networks={networks} canChange={canChange} />
-                  </td>
-                </tr>,
-              ];
-            })}
-          </tbody>
-        </table>
+              )}
+              {shown.flatMap((network) => {
+                const open = opened === network.name;
+                const tickable = !isLocked(network) && network.members.length === 0;
+                const row = (
+                  <tr key={network.name} className={ticked.has(network.name) ? "selected" : undefined}>
+                    {canChange && (
+                      <td className="tick-column">
+                        {tickable && (
+                          <input
+                            type="checkbox"
+                            checked={ticked.has(network.name)}
+                            aria-label={text.tick(network.name)}
+                            onChange={() => setTicked(toggled(ticked, network.name))}
+                          />
+                        )}
+                      </td>
+                    )}
+                    <td className="mono">{network.name}</td>
+                    <td>
+                      <Members network={network} />
+                    </td>
+                    <td className="mono muted">{network.subnet ?? text.none}</td>
+                    <td className="muted">{madeByOf(network)}</td>
+                    <StateCell network={network} />
+                    <td>
+                      <RowActions
+                        network={network}
+                        canChange={canChange}
+                        open={open}
+                        busy={removal.isPending}
+                        onToggle={() => setOpened(open ? null : network.name)}
+                        onOpen={() => setOpened(network.name)}
+                        onRemove={() => (network.members.length > 0 ? setAsking(network) : remove([network.name]))}
+                      />
+                    </td>
+                  </tr>
+                );
+                if (!open) return [row];
+                return [
+                  row,
+                  <tr key={`${network.name}-panel`}>
+                    <td colSpan={canChange ? COLUMNS + 1 : COLUMNS}>
+                      <NetworkPanel host={host} network={network} networks={networks} canChange={canChange} />
+                    </td>
+                  </tr>,
+                ];
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
       <ErrorNotice error={removal.error} />
       {creating && (

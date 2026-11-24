@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   API_ROUTES,
@@ -13,6 +13,7 @@ import { MemoryRouter } from "react-router";
 import { SwitchToSshSteps } from "./ssh-setup.js";
 
 const text = TEXT.ssh.add;
+const picker = TEXT.sshKeyPicker;
 const PRIVATE_KEY =
   "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA-the-secret-body\n-----END OPENSSH PRIVATE KEY-----\n";
 const PENDING_ID = "5b6a3f58-6a43-4f7c-9a3f-6a4e1d2c3b4a";
@@ -84,6 +85,15 @@ const sent = (fetch: ReturnType<typeof show>, method: string, path: string) =>
     .filter(([url, options]) => url === path && options?.method === method)
     .map(([, options]) => JSON.parse(String(options!.body ?? "null")));
 
+// Cedar signs in with the laptop's key: it is offered by that host's name.
+const cedarsKey = () => key({ hosts: ["Cedar"] });
+// Once the list holds it: a key is offered only once the keys Autoheal keeps have come.
+async function choose(value: string) {
+  const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: picker.key });
+  await waitFor(() => expect([...select.options].map((option) => option.value)).toContain(value));
+  fireEvent.change(select, { target: { value } });
+}
+const useKey = () => fireEvent.click(screen.getByRole("button", { name: text.useKey }));
 function fillWhere() {
   fireEvent.change(screen.getByRole("textbox", { name: text.address }), { target: { value: "192.168.10.50" } });
   fireEvent.change(screen.getByRole("textbox", { name: text.user }), { target: { value: "alex" } });
@@ -93,7 +103,7 @@ function fillWhere() {
 describe("switching a runner host to SSH, step by step", () => {
   it("switches a runner host to SSH under its own name, then says how to remove its runner", async () => {
     const fetch = show({
-      [`GET ${API_ROUTES.sshKeys}`]: [key()],
+      [`GET ${API_ROUTES.sshKeys}`]: [cedarsKey()],
       [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: { ...pending(READY), label: "orion2480" },
       [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "orion2480" },
     });
@@ -103,9 +113,13 @@ describe("switching a runner host to SSH, step by step", () => {
     fireEvent.change(screen.getByRole("textbox", { name: text.address }), { target: { value: "192.168.10.60" } });
     fireEvent.change(screen.getByRole("textbox", { name: text.user }), { target: { value: "alex" } });
     fireEvent.click(screen.getByRole("button", { name: text.next }));
-    fireEvent.change(await screen.findByRole("combobox", { name: text.storedKey }), { target: { value: "k1" } });
-    fireEvent.click(screen.getAllByRole("button", { name: text.useKey })[0]!);
+    expect(
+      await screen.findByRole("option", { name: picker.usedBy(["Cedar"], "SHA256:laptopfingerprint") }),
+    ).toBeTruthy();
+    await choose("k1");
+    useKey();
     fireEvent.click(await screen.findByRole("button", { name: text.connect }));
+    expect(screen.getAllByText(text.chosen("SHA256:laptopfingerprint")).length).toBeGreaterThan(0);
     expect(await screen.findByText("SHA256:hostkeyfingerprint")).toBeTruthy();
     expect(screen.getByText(SSH_SETUP.compareHostKey)).toBeTruthy();
     expect(screen.getByText(text.withDocker)).toBeTruthy();
@@ -131,11 +145,12 @@ describe("switching a runner host to SSH, step by step", () => {
       [`POST ${apiPath(API_ROUTES.sshHostConfirm, { pendingId: PENDING_ID })}`]: { id: "h3", label: "orion2480" },
     });
     fillWhere();
-    fireEvent.change(await screen.findByRole("textbox", { name: text.privateKey }), {
-      target: { value: PRIVATE_KEY },
+    await choose("paste");
+    fireEvent.change(screen.getByRole("textbox", { name: picker.privateKey }), { target: { value: PRIVATE_KEY } });
+    fireEvent.change(screen.getByLabelText(new RegExp(`^${picker.passphrase}`)), {
+      target: { value: "its passphrase" },
     });
-    fireEvent.change(screen.getByLabelText(text.passphrase), { target: { value: "its passphrase" } });
-    fireEvent.click(screen.getByRole("button", { name: text.useKey }));
+    useKey();
     await waitFor(() =>
       expect(sent(fetch, "POST", API_ROUTES.sshKeys)).toEqual([
         { name: "orion2480", privateKey: PRIVATE_KEY, passphrase: "its passphrase" },
@@ -152,12 +167,12 @@ describe("switching a runner host to SSH, step by step", () => {
 
   it("says, without asking, how the user would reach Docker that is there but not theirs", async () => {
     show({
-      [`GET ${API_ROUTES.sshKeys}`]: [key()],
+      [`GET ${API_ROUTES.sshKeys}`]: [cedarsKey()],
       [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: pending({ socket: true, usable: false }),
     });
     fillWhere();
-    fireEvent.change(await screen.findByRole("combobox", { name: text.storedKey }), { target: { value: "k1" } });
-    fireEvent.click(screen.getAllByRole("button", { name: text.useKey })[0]!);
+    await choose("k1");
+    useKey();
     fireEvent.click(await screen.findByRole("button", { name: text.connect }));
     expect(await screen.findByText(text.notUsable("alex"))).toBeTruthy();
     expect(screen.getByText(SSH_SETUP.joinDocker("alex"))).toBeTruthy();
@@ -170,7 +185,7 @@ describe("switching a runner host to SSH, step by step", () => {
       privateKey: PRIVATE_KEY,
     };
     const fetch = show({
-      [`GET ${API_ROUTES.sshKeys}`]: [key()],
+      [`GET ${API_ROUTES.sshKeys}`]: [cedarsKey()],
       [`POST ${API_ROUTES.sshKeysMake}`]: made,
       [`POST ${API_ROUTES.sshKeys}`]: key({ id: "k3", name: "pasted" }),
     });
@@ -182,14 +197,16 @@ describe("switching a runner host to SSH, step by step", () => {
     fireEvent.click(screen.getByRole("button", { name: text.next }));
     expect(await screen.findByText(TEXT.ssh.host.signsInAs("alex", "192.168.10.21", 22))).toBeTruthy();
 
-    fireEvent.click(await screen.findByRole("button", { name: text.make }));
+    await choose("make");
+    fireEvent.click(screen.getByRole("button", { name: picker.make }));
     await screen.findByText(SSH_SETUP.folder);
+    useKey();
+    await screen.findByRole("button", { name: text.connect });
     // Another key after all: pasted in instead.
     fireEvent.click(screen.getAllByRole("button", { name: text.change }).at(-1)!);
-    fireEvent.change(await screen.findByRole("textbox", { name: text.privateKey }), {
-      target: { value: PRIVATE_KEY },
-    });
-    fireEvent.click(screen.getAllByRole("button", { name: text.useKey }).at(-1)!);
+    await choose("paste");
+    fireEvent.change(screen.getByRole("textbox", { name: picker.privateKey }), { target: { value: PRIVATE_KEY } });
+    useKey();
     await screen.findByRole("button", { name: text.connect });
 
     fireEvent.click(screen.getByRole("button", { name: text.cancel }));
@@ -207,12 +224,10 @@ describe("switching a runner host to SSH, step by step", () => {
     const createObjectURL = vi.fn(() => "blob:made-key");
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() }));
     fillWhere();
-    const make = await screen.findByRole("button", { name: text.make });
+    await choose("make");
     // Its private half comes encrypted with the passphrase given, as ssh-keygen's would.
-    fireEvent.change(within(make.closest("form")!).getByLabelText(new RegExp(`^${TEXT.connectHost.passphrase}`)), {
-      target: { value: "made's own" },
-    });
-    fireEvent.click(make);
+    fireEvent.change(screen.getByLabelText(new RegExp(`^${picker.passphrase}`)), { target: { value: "made's own" } });
+    fireEvent.click(screen.getByRole("button", { name: picker.make }));
 
     for (const command of [
       SSH_SETUP.folder,
@@ -230,20 +245,23 @@ describe("switching a runner host to SSH, step by step", () => {
     const [blob] = createObjectURL.mock.calls[0] as unknown as [Blob];
     expect(await blob.text()).toBe(PRIVATE_KEY);
     expect(document.body.textContent).not.toContain("the-secret-body");
-    // Chosen at once: connecting is the next step.
-    expect(screen.getByRole("button", { name: text.connect })).toBeTruthy();
+    // Picked once made: using it makes connecting the next step, its setup still on the page.
+    expect(screen.getByRole<HTMLSelectElement>("combobox", { name: picker.key }).value).toBe("k2");
+    useKey();
+    expect(await screen.findByRole("button", { name: text.connect })).toBeTruthy();
+    expect(screen.getByText(SSH_SETUP.folder)).toBeTruthy();
   });
 
   it("says what a refused key means, and what to do", async () => {
     show({
-      [`GET ${API_ROUTES.sshKeys}`]: [key()],
+      [`GET ${API_ROUTES.sshKeys}`]: [cedarsKey()],
       [`POST ${apiPath(API_ROUTES.sshHostSwitch, { hostId: "h3" })}`]: [
         { status: 422, body: { error: "ssh_host_refused_key" } },
       ],
     });
     fillWhere();
-    fireEvent.change(await screen.findByRole("combobox", { name: text.storedKey }), { target: { value: "k1" } });
-    fireEvent.click(screen.getAllByRole("button", { name: text.useKey })[0]!);
+    await choose("k1");
+    useKey();
     fireEvent.click(await screen.findByRole("button", { name: text.connect }));
     expect(await screen.findByText(ERROR_TEXT.ssh_host_refused_key)).toBeTruthy();
   });

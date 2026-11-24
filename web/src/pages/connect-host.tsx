@@ -5,9 +5,7 @@ import {
   apiPath,
   type EnrolledHostView,
   type HostView,
-  type MadeSshKeyView,
   type PendingSshHostView,
-  type SshKeyView,
 } from "../../../src/shared/api.js";
 import {
   HOST_KIND,
@@ -15,7 +13,6 @@ import {
   HOST_STATE,
   RUNNER_NAS_FOLDER,
   SSH_HOST_FIELDS,
-  SSH_KEY,
   SSH_SESSION,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
@@ -24,13 +21,11 @@ import { Icon } from "../components/icons.js";
 import { SSH_SETUP, TEXT } from "../constants.js";
 import { timeOfDay } from "../format.js";
 import { hostsQuery, settingsQuery, sshKeysQuery } from "../queries.js";
-import { CommandBlock, DockerFound, KeySetup } from "./ssh-setup.js";
+import { CommandBlock, DockerFound, KEY_CHOICE, keyIdOf, keyPickOf, SshKeyPicker } from "./ssh-setup.js";
 
 type Connection = typeof HOST_KIND.ssh | typeof HOST_KIND.runner;
 
 const text = TEXT.connectHost;
-// The key list's two ways to a key not stored yet; every other value is a stored key's id.
-const KEY_CHOICE = { none: "", paste: "paste", make: "make" } as const;
 
 /** Name and how Autoheal reaches the host: the top of either form. */
 function NameAndConnection({
@@ -119,46 +114,22 @@ function SshForm({
   onAdded: () => void;
 }) {
   const queryClient = useQueryClient();
-  const keys = useQuery(sshKeysQuery);
   const [where, setWhere] = useState<{ address: string; port: number; user: string }>({
     address: "",
     port: SSH_SESSION.defaultPort,
     user: "",
   });
-  const [keyChoice, setKeyChoice] = useState<string>(KEY_CHOICE.none);
-  const [pasted, setPasted] = useState({ privateKey: "", passphrase: "" });
-  const [madePassphrase, setMadePassphrase] = useState("");
-  const [made, setMade] = useState<MadeSshKeyView | null>(null);
+  const [pick, setPick] = useState(keyPickOf(KEY_CHOICE.none));
   const refreshKeys = () => queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
-  const make = useMutation({
-    mutationFn: () =>
-      api<MadeSshKeyView>("POST", API_ROUTES.sshKeysMake, {
-        name: label.trim() || text.namePlaceholder,
-        passphrase: madePassphrase || null,
-      }),
-    onSuccess: async (key) => {
-      onKeyStored(key.key.id);
-      setMade(key);
-      await refreshKeys();
-      setKeyChoice(key.key.id);
-    },
-  });
+  // Named after the host, or the example while it has no name yet: the hostname it will take is not known here.
+  const keyLabel = label.trim() || text.namePlaceholder;
   // A pasted key is stored first, then used as any stored one.
   const probe = useMutation({
     mutationFn: async () => {
-      const keyId =
-        keyChoice === KEY_CHOICE.paste
-          ? (
-              await api<SshKeyView>("POST", API_ROUTES.sshKeys, {
-                name: label.trim(),
-                privateKey: pasted.privateKey,
-                passphrase: pasted.passphrase,
-              })
-            ).id
-          : keyChoice;
-      if (keyChoice === KEY_CHOICE.paste) {
+      const keyId = await keyIdOf(pick, keyLabel);
+      if (pick.choice === KEY_CHOICE.paste) {
         onKeyStored(keyId);
-        setKeyChoice(keyId);
+        setPick({ ...pick, choice: keyId });
         void refreshKeys();
       }
       return api<PendingSshHostView>("POST", API_ROUTES.sshHosts, { label: label.trim(), ...where, keyId });
@@ -180,8 +151,6 @@ function SshForm({
       set(value);
     };
   const setWhereField = changed((patch: Partial<typeof where>) => setWhere({ ...where, ...patch }));
-  const stored = keys.data ?? [];
-  const chosen = stored.find((key) => key.id === keyChoice) ?? null;
   const pending = probe.data;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -218,113 +187,37 @@ function SshForm({
           />
         </label>
       </div>
-      <div className="connect-host-row">
-        <label>
-          {text.user}
-          <input
-            className="mono"
-            name="user"
-            required
-            pattern={word}
-            value={where.user}
-            onChange={(event) => setWhereField({ user: event.target.value.trim() })}
-          />
-        </label>
-        <label>
-          {text.key}
-          <select
-            name="key"
-            required
-            value={keyChoice}
-            disabled={make.isPending}
-            onChange={(event) => changed(setKeyChoice)(event.target.value)}
-          >
-            <option value={KEY_CHOICE.none} disabled>
-              {text.chooseKey}
-            </option>
-            {stored.map((key) => (
-              <option key={key.id} value={key.id}>
-                {`${key.name} · ${key.fingerprint}`}
-              </option>
-            ))}
-            <option value={KEY_CHOICE.paste}>{text.pasteKey}</option>
-            <option value={KEY_CHOICE.make}>{text.makeKey}</option>
-          </select>
-        </label>
-      </div>
-      {keyChoice === KEY_CHOICE.paste && (
-        <>
-          <label>
-            {text.privateKey}
-            <textarea
-              className="mono"
-              name="privateKey"
-              required
-              rows={4}
-              maxLength={SSH_KEY.privateKeyCharacters}
-              placeholder={text.privateKeyPlaceholder}
-              autoComplete="off"
-              spellCheck={false}
-              value={pasted.privateKey}
-              onChange={(event) => changed(setPasted)({ ...pasted, privateKey: event.target.value })}
-            />
-          </label>
-          <label>
-            {text.passphrase}
-            <input
-              name="passphrase"
-              type="password"
-              autoComplete="off"
-              maxLength={SSH_KEY.passphraseCharacters}
-              value={pasted.passphrase}
-              onChange={(event) => changed(setPasted)({ ...pasted, passphrase: event.target.value })}
-            />
-            <span className="hint">{text.pastePassphraseHint}</span>
-          </label>
-        </>
-      )}
-      {keyChoice === KEY_CHOICE.make && (
-        <div className="connect-host-row with-end">
-          <label>
-            {text.passphrase}
-            <input
-              name="madePassphrase"
-              type="password"
-              autoComplete="new-password"
-              maxLength={SSH_KEY.passphraseCharacters}
-              value={madePassphrase}
-              onChange={(event) => setMadePassphrase(event.target.value)}
-            />
-            <span className="hint">{text.makePassphraseHint}</span>
-          </label>
-          <button type="button" className="connect-host-make" disabled={make.isPending} onClick={() => make.mutate()}>
-            {text.make}
-          </button>
-        </div>
-      )}
-      {chosen !== null && (
-        <details className="connect-host-details" open={made?.key.id === chosen.id}>
-          <summary>{made?.key.id === chosen.id ? text.newKeyCommands : text.commands}</summary>
-          <KeySetup
-            publicLine={chosen.publicLine}
-            made={made?.key.id === chosen.id ? made : null}
-            user={where.user || null}
-            dashboardAddress={dashboardAddress}
-          />
-        </details>
-      )}
+      <label>
+        {text.user}
+        <input
+          className="mono"
+          name="user"
+          required
+          pattern={word}
+          value={where.user}
+          onChange={(event) => setWhereField({ user: event.target.value.trim() })}
+        />
+      </label>
+      <SshKeyPicker
+        label={keyLabel}
+        pick={pick}
+        onPick={changed(setPick)}
+        onKeyStored={onKeyStored}
+        user={where.user || null}
+        dashboardAddress={dashboardAddress}
+      />
       {probe.isPending && (
         <p className="connect-host-result" role="status">
           {text.testing(where.address, where.port, where.user)}
         </p>
       )}
       {pending !== undefined && <Probed pending={pending} user={where.user} />}
-      <ErrorNotice error={keys.error ?? make.error ?? probe.error ?? confirm.error} />
+      <ErrorNotice error={probe.error ?? confirm.error} />
       <Footer>
         <button type="button" className="quiet" onClick={onCancel}>
           {text.cancel}
         </button>
-        <button type="submit" disabled={probe.isPending || keyChoice === KEY_CHOICE.make}>
+        <button type="submit" disabled={probe.isPending || pick.choice === KEY_CHOICE.make}>
           {text.test}
         </button>
         <button

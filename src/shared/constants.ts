@@ -3483,7 +3483,7 @@ export const AUDIT_ACTIONS = {
   selfUpdateFinished: "autoheal.update_finished",
   selfUpdateRollbackSettled: "autoheal.update_rollback_settled",
   hostSshHostKeyTrusted: "host.ssh_host_key_trusted",
-  hostSshKeyReplaced: "host.ssh_key_replaced",
+  hostSshConnectionChanged: "host.ssh_connection_changed",
   hostSshSettingsSaved: "host.ssh_settings_saved",
   hostSshRootPasswordSaved: "host.ssh_root_password_saved",
   hostSshRootPasswordRemoved: "host.ssh_root_password_removed",
@@ -5718,6 +5718,8 @@ export const SSH_KEY = {
   // A host offered for confirmation waits this long for a person to trust its key.
   pendingMilliseconds: 10 * MILLISECONDS_PER_MINUTE,
   probeTimeoutMilliseconds: 20 * MILLISECONDS_PER_SECOND,
+  // A key no host signs in with is kept this long, for a person still adding or changing the host it is for.
+  unusedGraceMilliseconds: MILLISECONDS_PER_DAY,
 } as const;
 // What an SSH host is added with: a port, and an address and user as OpenSSH takes them (no spaces, nothing a shell
 // would read).

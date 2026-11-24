@@ -24,13 +24,32 @@ interface Where {
 
 interface ChosenKey {
   id: string;
-  name: string;
   fingerprint: string;
 }
 
+/** How a key is chosen: one Autoheal keeps, by its id, or one given now. */
+export const KEY_CHOICE = { none: "", paste: "paste", make: "make" } as const;
+
+/** What is chosen so far, with what pasting or making a key needs. */
+export interface KeyPick {
+  choice: string;
+  privateKey: string;
+  passphrase: string;
+  madePassphrase: string;
+  made: MadeSshKeyView | null;
+}
+
+export const keyPickOf = (choice: string): KeyPick => ({
+  choice,
+  privateKey: "",
+  passphrase: "",
+  madePassphrase: "",
+  made: null,
+});
+
 const STEPS = { where: 1, key: 2, connect: 3 } as const;
 const text = TEXT.ssh.add;
-const chosenOf = (key: SshKeyView): ChosenKey => ({ id: key.id, name: key.name, fingerprint: key.fingerprint });
+const pickerText = TEXT.sshKeyPicker;
 
 function stepOf(where: Where | null, chosen: ChosenKey | null): number {
   if (where === null) return STEPS.where;
@@ -172,124 +191,215 @@ function WhereForm({
   );
 }
 
-/** A key Autoheal keeps, the user's own pasted in, or one made now. */
-function KeyChoice({
-  where,
-  onChosen,
-  onMade,
+// A key reads by the hosts that sign in with it, never by a typed name: the host's own, others', or one given just now.
+function keyLabel(key: SshKeyView, currentKeyId: string | null): string {
+  if (key.id === currentKeyId) {
+    return pickerText.now(key.fingerprint);
+  }
+  return key.hosts.length === 0 ? pickerText.fresh(key.fingerprint) : pickerText.usedBy(key.hosts, key.fingerprint);
+}
+
+/**
+ * The key a host signs in with, in one list: those Autoheal keeps, named by the hosts using them, a private key pasted
+ * now, or one made now, its commands and private half shown once. A key no host uses is left out, unless chosen here.
+ */
+export function SshKeyPicker({
+  label,
+  pick,
+  onPick,
+  onKeyStored,
+  currentKeyId = null,
+  user,
+  dashboardAddress,
 }: {
-  where: Where;
-  // A key stored by this choice is new: cancelling takes it away again.
-  onChosen: (key: ChosenKey, isNew: boolean) => void;
-  onMade: (made: MadeSshKeyView) => void;
+  // The host the key is for: what a key made for it is filed under.
+  label: string;
+  pick: KeyPick;
+  onPick: (pick: KeyPick) => void;
+  // A key stored by this choice is new: the form's Cancel takes it away again.
+  onKeyStored: (keyId: string) => void;
+  // The key the host signs in with now, when it is being changed.
+  currentKeyId?: string | null;
+  user: string | null;
+  dashboardAddress: string;
 }) {
   const queryClient = useQueryClient();
   const keys = useQuery(sshKeysQuery);
-  const refreshKeys = () => queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
-  const add = useMutation({
-    mutationFn: (key: { name: string; privateKey: string; passphrase: string }) =>
-      api<SshKeyView>("POST", API_ROUTES.sshKeys, key),
-    onSuccess: (key) => {
-      onChosen(chosenOf(key), true);
-      void refreshKeys();
-    },
-  });
   const make = useMutation({
-    mutationFn: (passphrase: string) =>
-      api<MadeSshKeyView>("POST", API_ROUTES.sshKeysMake, { name: where.label, passphrase }),
-    onSuccess: (made) => {
-      onMade(made);
-      onChosen(chosenOf(made.key), true);
-      void refreshKeys();
+    mutationFn: () =>
+      api<MadeSshKeyView>("POST", API_ROUTES.sshKeysMake, { name: label, passphrase: pick.madePassphrase || null }),
+    onSuccess: async (made) => {
+      onKeyStored(made.key.id);
+      await queryClient.invalidateQueries({ queryKey: sshKeysQuery.queryKey });
+      onPick({ ...pick, choice: made.key.id, made });
     },
   });
-  const chooseStored = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const key = keys.data?.find((candidate) => candidate.id === new FormData(event.currentTarget).get("keyId"));
-    if (key !== undefined) onChosen(chosenOf(key), false);
-  };
-  const paste = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    add.mutate({
-      name: String(form.get("name") ?? "").trim(),
-      privateKey: String(form.get("privateKey") ?? ""),
-      passphrase: String(form.get("passphrase") ?? ""),
-    });
-  };
-  const stored = keys.data ?? [];
+  // The key made here is listed at once, before the list Autoheal keeps has caught up with it.
+  const madeKeys = pick.made === null ? [] : [pick.made.key];
+  const known = [...(keys.data ?? []).filter((key) => !madeKeys.some((made) => made.id === key.id)), ...madeKeys];
+  const offered = known.filter((key) => key.hosts.length > 0 || key.id === pick.choice || key.id === currentKeyId);
+  const chosen = offered.find((key) => key.id === pick.choice && key.id !== currentKeyId) ?? null;
+  const madeNow = pick.made !== null && pick.made.key.id === pick.choice;
   return (
     <>
-      {stored.length > 0 && (
-        <form className="step-form" onSubmit={chooseStored}>
+      <label>
+        {pickerText.key}
+        <select
+          name="key"
+          required
+          value={pick.choice}
+          disabled={make.isPending}
+          onChange={(event) => onPick({ ...pick, choice: event.target.value })}
+        >
+          <option value={KEY_CHOICE.none} disabled>
+            {pickerText.chooseKey}
+          </option>
+          {offered.map((key) => (
+            <option key={key.id} value={key.id}>
+              {keyLabel(key, currentKeyId)}
+            </option>
+          ))}
+          <option value={KEY_CHOICE.paste}>{pickerText.pasteKey}</option>
+          <option value={KEY_CHOICE.make}>{pickerText.makeKey}</option>
+        </select>
+      </label>
+      {pick.choice === KEY_CHOICE.paste && (
+        <>
           <label>
-            {text.storedKey}
-            <select name="keyId" required defaultValue="">
-              <option value="" disabled>
-                {text.chooseKey}
-              </option>
-              {stored.map((key) => (
-                <option key={key.id} value={key.id}>
-                  {`${key.name} (${key.fingerprint})`}
-                </option>
-              ))}
-            </select>
+            {pickerText.privateKey}
+            <textarea
+              className="mono"
+              name="privateKey"
+              required
+              rows={4}
+              maxLength={SSH_KEY.privateKeyCharacters}
+              placeholder={pickerText.privateKeyPlaceholder}
+              autoComplete="off"
+              spellCheck={false}
+              value={pick.privateKey}
+              onChange={(event) => onPick({ ...pick, privateKey: event.target.value })}
+            />
           </label>
-          <button type="submit">{text.useKey}</button>
-        </form>
+          <label>
+            {pickerText.passphrase}
+            <input
+              name="passphrase"
+              type="password"
+              autoComplete="off"
+              maxLength={SSH_KEY.passphraseCharacters}
+              value={pick.passphrase}
+              onChange={(event) => onPick({ ...pick, passphrase: event.target.value })}
+            />
+            <span className="hint">{pickerText.pastePassphraseHint}</span>
+          </label>
+        </>
       )}
-      <form className="step-form" onSubmit={paste}>
-        <h4>{text.pasteTitle}</h4>
-        <label>
-          {text.keyName}
-          <input name="name" required defaultValue={where.label} maxLength={SSH_KEY.nameCharacters} />
-        </label>
-        <label>
-          {text.privateKey}
-          <textarea
-            className="mono"
-            name="privateKey"
-            required
-            rows={4}
-            placeholder={text.privateKeyPlaceholder}
-            autoComplete="off"
-            spellCheck={false}
+      {pick.choice === KEY_CHOICE.make && (
+        <div className="connect-host-row with-end">
+          <label>
+            {pickerText.passphrase}
+            <input
+              name="madePassphrase"
+              type="password"
+              autoComplete="new-password"
+              maxLength={SSH_KEY.passphraseCharacters}
+              value={pick.madePassphrase}
+              onChange={(event) => onPick({ ...pick, madePassphrase: event.target.value })}
+            />
+            <span className="hint">{pickerText.makePassphraseHint}</span>
+          </label>
+          <button type="button" className="connect-host-make" disabled={make.isPending} onClick={() => make.mutate()}>
+            {pickerText.make}
+          </button>
+        </div>
+      )}
+      {chosen !== null && (
+        <details className="connect-host-details" open={madeNow}>
+          <summary>{madeNow ? pickerText.newKeyCommands : pickerText.commands}</summary>
+          <KeySetup
+            publicLine={chosen.publicLine}
+            made={madeNow ? pick.made : null}
+            user={user}
+            dashboardAddress={dashboardAddress}
           />
-        </label>
-        <label>
-          {text.passphrase}
-          <input name="passphrase" type="password" autoComplete="off" />
-        </label>
-        <button type="submit" disabled={add.isPending}>
-          {text.useKey}
-        </button>
-      </form>
-      <form
-        className="step-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          make.mutate(String(new FormData(event.currentTarget).get("madePassphrase") ?? ""));
-        }}
-      >
-        <h4>{text.makeTitle}</h4>
-        <label>
-          {TEXT.connectHost.passphrase}
-          <input
-            name="madePassphrase"
-            type="password"
-            autoComplete="new-password"
-            maxLength={SSH_KEY.passphraseCharacters}
-          />
-          <span className="hint">{TEXT.connectHost.makePassphraseHint}</span>
-        </label>
-        <button type="submit" disabled={make.isPending}>
-          {text.make}
-        </button>
-      </form>
-      <ErrorNotice error={keys.error ?? add.error ?? make.error} />
+        </details>
+      )}
+      <ErrorNotice error={keys.error ?? make.error} />
     </>
   );
 }
+
+// A pasted key is stored when it is used; one already kept, by its fingerprint, comes back as it is.
+const storePasted = (pick: KeyPick, label: string) =>
+  api<SshKeyView>("POST", API_ROUTES.sshKeys, {
+    name: label,
+    privateKey: pick.privateKey,
+    passphrase: pick.passphrase,
+  });
+
+/** The key to dial with: a pasted one is stored first. */
+export async function keyIdOf(pick: KeyPick, label: string): Promise<string> {
+  return pick.choice === KEY_CHOICE.paste ? (await storePasted(pick, label)).id : pick.choice;
+}
+
+// The key chosen, as Autoheal keeps it: one pasted is stored first, and one made here is the one it gave back.
+async function chosenKey(pick: KeyPick, label: string, kept: readonly SshKeyView[]): Promise<SshKeyView | null> {
+  if (pick.choice === KEY_CHOICE.paste) {
+    return storePasted(pick, label);
+  }
+  if (pick.made?.key.id === pick.choice) {
+    return pick.made.key;
+  }
+  return kept.find((key) => key.id === pick.choice) ?? null;
+}
+
+/** The key to sign in with, chosen in one list and used once chosen; a pasted one is stored then. */
+function KeyChoice({
+  where,
+  dashboardAddress,
+  onChosen,
+  onKeyStored,
+}: {
+  where: Where;
+  dashboardAddress: string;
+  onChosen: (key: ChosenKey, made: MadeSshKeyView | null) => void;
+  onKeyStored: (keyId: string) => void;
+}) {
+  const keys = useQuery(sshKeysQuery);
+  const [pick, setPick] = useState(keyPickOf(KEY_CHOICE.none));
+  const use = useMutation({
+    mutationFn: () => chosenKey(pick, where.label, keys.data ?? []),
+    onSuccess: (key) => {
+      if (key === null) return;
+      if (pick.choice === KEY_CHOICE.paste) onKeyStored(key.id);
+      onChosen({ id: key.id, fingerprint: key.fingerprint }, madeAs(pick, key.id));
+    },
+  });
+  const waiting = pick.choice === KEY_CHOICE.none || pick.choice === KEY_CHOICE.make;
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    use.mutate();
+  };
+  return (
+    <form className="step-form" onSubmit={submit}>
+      <SshKeyPicker
+        label={where.label}
+        pick={pick}
+        onPick={setPick}
+        onKeyStored={onKeyStored}
+        user={where.user}
+        dashboardAddress={dashboardAddress}
+      />
+      <button type="submit" disabled={waiting || use.isPending}>
+        {text.useKey}
+      </button>
+      <ErrorNotice error={use.error} />
+    </form>
+  );
+}
+
+// The key made here, while it is the one chosen: its commands and private half stay on the page.
+const madeAs = (pick: KeyPick, keyId: string) => (pick.made?.key.id === keyId ? pick.made : null);
 
 /** Connects, shows the host key to compare and what Docker is there, and switches the host once a person trusts it. */
 function Connect({
@@ -326,7 +436,7 @@ function Connect({
   const pending = probe.data;
   return (
     <>
-      <p className="small muted">{text.chosen(chosen.name, chosen.fingerprint)}</p>
+      <p className="small muted">{text.chosen(chosen.fingerprint)}</p>
       {pending === undefined && (
         <p className="row">
           <button type="button" className="primary" disabled={probe.isPending} onClick={() => probe.mutate()}>
@@ -411,10 +521,11 @@ export function SwitchToSshSteps({
     setWhere(next);
     setEditingWhere(false);
   };
-  const keep = (key: ChosenKey, isNew: boolean) => {
+  const keep = (key: ChosenKey, madeHere: MadeSshKeyView | null) => {
     setChosen(key);
-    if (isNew) setStored((keys) => [...keys, key.id]);
+    setMade(madeHere);
   };
+  const keepStored = (keyId: string) => setStored((keys) => [...keys, keyId]);
   return (
     <>
       <p className="add-host-explanation muted">{text.switchExplanation}</p>
@@ -430,14 +541,15 @@ export function SwitchToSshSteps({
           )}
         </Step>
         <Step number={STEPS.key} title={text.keyStep} active={step === STEPS.key}>
-          {whereDone !== null && chosen === null && <KeyChoice where={whereDone} onChosen={keep} onMade={setMade} />}
+          {whereDone !== null && chosen === null && (
+            <KeyChoice where={whereDone} dashboardAddress={dashboardAddress} onChosen={keep} onKeyStored={keepStored} />
+          )}
           {chosen !== null && (
             <p className="small">
-              {text.chosen(chosen.name, chosen.fingerprint)}{" "}
-              {switched === null && <Change onChange={() => setChosen(null)} />}
+              {text.chosen(chosen.fingerprint)} {switched === null && <Change onChange={() => setChosen(null)} />}
             </p>
           )}
-          {whereDone !== null && made !== null && (
+          {whereDone !== null && chosen !== null && made !== null && (
             <KeySetup
               publicLine={made.key.publicLine}
               made={made}

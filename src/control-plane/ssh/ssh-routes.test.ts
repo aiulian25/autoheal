@@ -63,7 +63,8 @@ describe("the SSH keys and SSH hosts API", () => {
       port: server.port,
       user: USER,
       keyId,
-      keyName: "laptop",
+      keyFingerprint: added.json<SshKeyView>().fingerprint,
+      keySharedWith: [],
       hostKeyFingerprint: ready.hostKeyFingerprint,
       offeredHostKeyFingerprint: null,
       settings: DEFAULT_SSH_HOST_SETTINGS,
@@ -81,18 +82,21 @@ describe("the SSH keys and SSH hosts API", () => {
     ).toBe(400);
 
     // Another key, made here with a passphrase: its private half comes back once, encrypted with it, and the host
-    // takes it only once it opens the host, signed in with the passphrase kept sealed.
+    // signs in with it only once it opens the host, with the passphrase kept sealed.
     const made = (
       await admin.post(API_ROUTES.sshKeysMake, { name: "made for mini", passphrase: "made's own passphrase" })
     ).json<MadeSshKeyView>();
     expect(made.privateKey).toContain("BEGIN OPENSSH PRIVATE KEY");
     expect(utils.parseKey(made.privateKey)).toBeInstanceOf(Error);
     expect(utils.parseKey(made.privateKey, "made's own passphrase")).not.toBeInstanceOf(Error);
-    const refused = await admin.put(apiPath(API_ROUTES.sshHostKey, { hostId: host.id }), { keyId: made.key.id });
+    const connection = apiPath(API_ROUTES.sshHostConnection, { hostId: host.id });
+    const reach = { address: "127.0.0.1", port: server.port, user: USER, keyId: made.key.id };
+    const refused = await admin.put(connection, reach);
     expect(refused.json()).toEqual({ error: "ssh_host_refused_key" });
     server.acceptedKeys.push(made.key.publicLine);
-    const replaced = await admin.put(apiPath(API_ROUTES.sshHostKey, { hostId: host.id }), { keyId: made.key.id });
+    const replaced = await admin.put(connection, reach);
     expect(replaced.statusCode, replaced.body).toBe(200);
+    expect(replaced.json()).toMatchObject({ host: { id: host.id, label: "mini" } });
 
     // The first key is free now and may go; the one in use may not.
     expect((await admin.delete(apiPath(API_ROUTES.sshKey, { keyId: made.key.id }))).json()).toEqual({
@@ -125,6 +129,14 @@ describe("the SSH keys and SSH hosts API", () => {
     for (const body of bad) {
       expect((await admin.post(API_ROUTES.sshHosts, body)).statusCode).toBe(400);
     }
+    const unknownHost = apiPath(API_ROUTES.sshHostConnection, { hostId: "8d0c3a52-0f8e-4b8f-9a55-3f6c1b2a4d5e" });
+    const badReach = [
+      { address: "127.0.0.1; reboot", port: 22, user: USER, keyId },
+      { address: "127.0.0.1", port: 22, user: USER, keyId, hostKeyFingerprint: "MD5:not one" },
+    ];
+    for (const body of badReach) {
+      expect((await admin.put(unknownHost, body)).statusCode).toBe(400);
+    }
     expect((await admin.post(API_ROUTES.sshKeys, { name: "", privateKey: key })).statusCode).toBe(400);
     expect((await admin.post(API_ROUTES.sshKeys, { name: "public", privateKey: "ssh-ed25519 AAAA" })).json()).toEqual({
       error: "ssh_key_unreadable",
@@ -144,7 +156,7 @@ describe("the SSH keys and SSH hosts API", () => {
       () => viewer.post(apiPath(API_ROUTES.sshHostConfirm, { pendingId: UNKNOWN_ID })),
       () => viewer.get(apiPath(API_ROUTES.sshHost, { hostId })),
       () => viewer.post(apiPath(API_ROUTES.sshHostTrustHostKey, { hostId }), { fingerprint: "SHA256:x" }),
-      () => viewer.put(apiPath(API_ROUTES.sshHostKey, { hostId }), { keyId: UNKNOWN_ID }),
+      () => viewer.put(apiPath(API_ROUTES.sshHostConnection, { hostId }), { keyId: UNKNOWN_ID }),
       () => viewer.put(apiPath(API_ROUTES.sshHostSettings, { hostId }), DEFAULT_SSH_HOST_SETTINGS),
       () => viewer.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "pw" }),
       () => viewer.delete(apiPath(API_ROUTES.sshHostRoot, { hostId })),

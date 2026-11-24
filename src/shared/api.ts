@@ -161,7 +161,8 @@ export const API_ROUTES = {
   sshHostConfirm: "/api/hosts/ssh/:pendingId/confirm",
   sshHost: "/api/hosts/:hostId/ssh",
   sshHostTrustHostKey: "/api/hosts/:hostId/ssh/trust-host-key",
-  sshHostKey: "/api/hosts/:hostId/ssh/key",
+  // How the host is reached from now on: tried first, kept only once Autoheal has signed in that way.
+  sshHostConnection: "/api/hosts/:hostId/ssh/connection",
   sshHostSettings: "/api/hosts/:hostId/ssh/settings",
   // The password Autoheal runs root commands with on the host, saved or removed; never read back.
   sshHostRoot: "/api/hosts/:hostId/ssh/root",
@@ -424,7 +425,6 @@ export const API_ERRORS = {
   sshKeyUnsupported: "ssh_key_unsupported",
   sshKeyNotFound: "ssh_key_not_found",
   sshKeyInUse: "ssh_key_in_use",
-  sshKeyNameTaken: "ssh_key_name_taken",
   sshHostRefusedKey: "ssh_host_refused_key",
   sshHostUnreachable: "ssh_host_unreachable",
   sshHostKeyMismatch: "ssh_host_key_mismatch",
@@ -1332,13 +1332,30 @@ export interface SshHostDetailsView {
   port: number;
   user: string;
   keyId: string;
-  keyName: string;
+  keyFingerprint: string;
+  // The other hosts that sign in with the same key.
+  keySharedWith: string[];
   hostKeyFingerprint: string;
   // The key the host offers now, when it is not the trusted one; null otherwise.
   offeredHostKeyFingerprint: string | null;
   settings: SshHostSettings;
   // How a saved root password is used; null while none is saved. The password itself is never sent back.
   rootMethod: RootMethod | null;
+}
+
+/**
+ * What changing how a host is reached did: the host as it is now, or the other host key the machine answered with,
+ * kept only once a person has compared it and asks again with it.
+ */
+export type SshConnectionChangeView = { host: HostView } | { offeredHostKeyFingerprint: string };
+
+/** Where, as whom and with which key a host is reached from now on; a host key named is one a person compared. */
+export interface SshConnectionChange {
+  address: string;
+  port: number;
+  user: string;
+  keyId: string;
+  hostKeyFingerprint?: string | null;
 }
 
 /** What closing Add a host did: false where the runner had joined meanwhile, which then stays. */

@@ -19,17 +19,8 @@ export const CONNECT_TEXT = {
       port: "Port",
       user: "User",
       keyStep: "Your key",
-      storedKey: "A key Autoheal keeps",
-      chooseKey: "Choose a key",
-      pasteTitle: "Or give your own private key",
-      keyName: "Its name here",
-      privateKey: "Private key",
-      privateKeyPlaceholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
-      passphrase: "Its passphrase, if it has one",
       useKey: "Use this key",
-      makeTitle: "No key?",
-      make: "Make one for me",
-      chosen: (name: string, fingerprint: string) => `Signing in with ${name} (${fingerprint})`,
+      chosen: (fingerprint: string) => `Signing in with the key ${fingerprint}`,
       madeIntro: (user: string) => `On the host, as ${user}, run each of these in turn:`,
       fromIntro: (address: string) =>
         `To let only this dashboard (${address}) use the key, use this line for the second:`,
@@ -61,14 +52,26 @@ export const CONNECT_TEXT = {
     host: {
       title: "Over SSH",
       signsInAs: (user: string, address: string, port: number) => `${user}@${address}:${port}`,
-      key: "Key",
+      signsInAsLabel: "Signs in as",
+      keyLabel: "With the key",
+      sharedWith: (hosts: readonly string[]) => `also signs in to ${hosts.join(", ")}`,
       hostKey: "Host key",
+      edit: "Edit connection",
+      testAndSave: "Test and save",
+      nothingUntil:
+        "Nothing changes until Autoheal has signed in this way. Then its runner restarts, as when its settings are saved.",
+      otherHostKey: (address: string, fingerprint: string) =>
+        `${address} answers with another host key, ${fingerprint}. Compare it on that machine before trusting it:`,
+      trustAndSave: "Trust it, and save",
+      connectionSaved: "Signed in, and saved.",
       changed: (trusted: string, offered: string) =>
         `The host's key changed: ${trusted} was trusted, and it now offers ${offered}. Compare it on the host before trusting it.`,
       trustNew: "Trust the new key",
-      replaceKey: "Sign in with another key",
-      replace: "Use this key",
       rootTitle: "Root commands",
+      rootState: {
+        none: "no password saved",
+        saved: (method: string) => `runs them through ${method}, password saved`,
+      },
       rootExplanation:
         "Save the machine's root password (or your user's, if it may use sudo), and Autoheal runs root commands there by itself, such as operating system updates. It is checked on the machine first, kept sealed, and never shown again.",
       rootPassword: "Root or sudo password",
@@ -82,6 +85,14 @@ export const CONNECT_TEXT = {
       systemOnly:
         "No Docker here: Autoheal watches this machine's system. Its containers show by themselves if Docker is installed.",
       settingsTitle: "Settings",
+      settingsState: {
+        dryRun: "reports only",
+        acting: "acts for real",
+        access: "shells and files allowed",
+        noAccess: "no shells or files",
+        nothingProtected: "nothing protected",
+        protectedCount: (count: number) => `${count} protected`,
+      },
       settingsExplanation: "What a runner's .env would say, for this host.",
       dryRun: "Dry run: report what it would do, change nothing",
       protectedContainers: "Protected containers",
@@ -129,20 +140,28 @@ export const CONNECT_TEXT = {
     since: (state: string, ago: string) => `${state} since ${ago}`,
     // Connected, and its runner turned away by what was interrupted part-way: what, and the way past it, follow.
     heldBack: "its runner is held back",
-    keys: {
-      title: "SSH keys",
-      explanation: "The keys Autoheal signs in to SSH hosts with, sealed with the backup passphrase.",
-      none: "No keys yet.",
-      usedBy: (labels: readonly string[]) => (labels.length === 0 ? "used by no host" : `used by ${labels.join(", ")}`),
-      made: "made here",
-      remove: "Remove",
-      removeConfirm: (name: string) => `Remove the key ${name}? Autoheal can no longer sign in with it.`,
-      add: "Add a key",
-      makeName: "Name for a new key",
-      madeNotice: (name: string) => `${name} is made. Its public line goes in ~/.ssh/authorized_keys on each host:`,
-      count: (count: number) => (count === 1 ? "1 key" : `${count} keys`),
-      unused: (count: number) => `${count} used by no host`,
+  },
+  // The key a host signs in with, wherever it is chosen: one kept, named by the hosts using it, or one given now.
+  sshKeyPicker: {
+    key: "Key",
+    chooseKey: "Choose a key",
+    now: (fingerprint: string) => `Its key now · ${fingerprint}`,
+    usedBy: (hosts: readonly string[], fingerprint: string) => {
+      const named = hosts.length === 1 ? hosts[0] : `${hosts.slice(0, -1).join(", ")} and ${hosts.at(-1)}`;
+      return `The key ${named} ${hosts.length === 1 ? "uses" : "use"} · ${fingerprint}`;
     },
+    fresh: (fingerprint: string) => `A new key · ${fingerprint}`,
+    pasteKey: "Paste a private key…",
+    makeKey: "Make a new key…",
+    privateKey: "Private key",
+    privateKeyPlaceholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
+    passphrase: "Passphrase",
+    pastePassphraseHint: "The key's own passphrase, if it has one. Autoheal keeps it sealed with the key.",
+    makePassphraseHint:
+      "Encrypts the private key you download, as ssh-keygen does. Autoheal keeps the key and the passphrase sealed.",
+    make: "Make the key",
+    commands: "Show the commands that let this key in on the host",
+    newKeyCommands: "A new key? Show the commands to run on the host",
   },
   // What holds a host's runner back, wherever the host shows: what to look at for each, and the way past it.
   heldBack: {
@@ -174,19 +193,6 @@ export const CONNECT_TEXT = {
     addressPlaceholder: "e.g. 192.168.10.50",
     port: "Port",
     user: "User",
-    key: "Key",
-    chooseKey: "Choose a key",
-    pasteKey: "Paste a private key…",
-    makeKey: "Make a new key…",
-    privateKey: "Private key",
-    privateKeyPlaceholder: "-----BEGIN OPENSSH PRIVATE KEY-----",
-    passphrase: "Passphrase",
-    pastePassphraseHint: "The key's own passphrase, if it has one. Autoheal keeps it sealed with the key.",
-    makePassphraseHint:
-      "Encrypts the private key you download, as ssh-keygen does. Autoheal keeps the key and the passphrase sealed.",
-    make: "Make the key",
-    commands: "Show the commands that let this key in on the host",
-    newKeyCommands: "A new key? Show the commands to run on the host",
     test: "Test connection",
     testing: (address: string, port: number, user: string) => `Signing in to ${address}:${port} as ${user}…`,
     signedIn: (user: string) => `Signed in as ${user}.`,

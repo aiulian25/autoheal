@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   API_ROUTES,
@@ -9,11 +9,12 @@ import {
   type SshKeyView,
 } from "../../../src/shared/api.js";
 import { DEFAULT_SSH_HOST_SETTINGS } from "../../../src/shared/ssh-hosts.js";
-import { SSH_SETUP, TEXT } from "../constants.js";
+import { ERROR_TEXT, SSH_SETUP, TEXT } from "../constants.js";
 import { SshHostCard } from "./host-ssh.js";
 
 const HOST_ID = "8d0c3a52-0f8e-4b8f-9a55-3f6c1b2a4d5e";
 const text = TEXT.ssh.host;
+const picker = TEXT.sshKeyPicker;
 const host = {
   id: HOST_ID,
   label: "mini",
@@ -25,14 +26,22 @@ const details = (overrides: Partial<SshHostDetailsView> = {}): SshHostDetailsVie
   port: 22,
   user: "alex",
   keyId: "k1",
-  keyName: "laptop",
+  keyFingerprint: "SHA256:laptop",
+  keySharedWith: [],
   hostKeyFingerprint: "SHA256:trusted",
   offeredHostKeyFingerprint: null,
   settings: DEFAULT_SSH_HOST_SETTINGS,
   rootMethod: null,
   ...overrides,
 });
-const key = (id: string, name: string) => ({ id, name, fingerprint: `SHA256:${name}` }) as SshKeyView;
+const key = (id: string, name: string) =>
+  ({
+    id,
+    name,
+    fingerprint: `SHA256:${name}`,
+    publicLine: `ssh-ed25519 AAAA ${name}`,
+    hosts: [],
+  }) as unknown as SshKeyView;
 
 let client: QueryClient;
 afterEach(() => {
@@ -51,9 +60,11 @@ function show(view: SshHostDetailsView, shown: HostView = host, more: Record<str
       [`GET ${API_ROUTES.sshKeys}`]: [key("k1", "laptop"), key("k2", "made-for-mini")],
       [`PUT ${apiPath(API_ROUTES.sshHostSettings, { hostId: HOST_ID })}`]: JSON.parse(String(options?.body ?? "{}")),
     };
-    return new Response(JSON.stringify(answers[`${method} ${path}`] ?? host), {
-      headers: { "content-type": "application/json" },
-    });
+    const answer = answers[`${method} ${path}`];
+    // A function answers each call afresh: a reply of its own, or the next of several.
+    const reply = typeof answer === "function" ? (answer as () => unknown)() : answer;
+    if (reply instanceof Response) return reply;
+    return new Response(JSON.stringify(reply ?? host), { headers: { "content-type": "application/json" } });
   });
   vi.stubGlobal("fetch", fetch);
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -140,13 +151,80 @@ describe("an SSH host's own card", () => {
     );
   });
 
-  it("signs in with another stored key, and saves its settings as a runner's .env would hold them", async () => {
-    const fetch = show(details());
-    expect(screen.queryByRole("button", { name: text.trustNew })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: text.replace }));
+  it("shows how it is reached and with which key, with nothing on the page to switch it by mistake", async () => {
+    show(details({ keySharedWith: ["Cedar"] }));
+    expect(await screen.findByText(text.signsInAs("alex", "192.168.10.50", 22))).toBeTruthy();
+    expect(screen.getByText("SHA256:laptop")).toBeTruthy();
+    expect(screen.getByText(text.sharedWith(["Cedar"]))).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: picker.key })).toBeNull();
+    expect(screen.getByRole("button", { name: text.edit })).toBeTruthy();
+  });
+
+  it("changes how it is reached in one form, tried first, and keeps another host key only once a person trusts it", async () => {
+    const connection = apiPath(API_ROUTES.sshHostConnection, { hostId: HOST_ID });
+    const replies: unknown[] = [{ offeredHostKeyFingerprint: "SHA256:other" }, { host }];
+    const fetch = show(details(), host, { [`PUT ${connection}`]: () => replies.shift() });
+    fireEvent.click(await screen.findByRole("button", { name: text.edit }));
+    const form = within(screen.getByRole("form", { name: text.edit }));
+    // It opens on what the host has now: its own key picked, nothing else.
+    const select = await form.findByRole<HTMLSelectElement>("combobox", { name: picker.key });
+    await waitFor(() => expect(select.value).toBe("k1"));
+    expect(form.getByRole("option", { name: picker.now("SHA256:laptop") })).toBeTruthy();
+    fireEvent.change(form.getByRole("spinbutton", { name: TEXT.ssh.add.port }), { target: { value: "2222" } });
+    fireEvent.click(form.getByRole("button", { name: text.testAndSave }));
+
+    expect(await form.findByText(text.otherHostKey("192.168.10.50", "SHA256:other"))).toBeTruthy();
+    expect(form.getByText(SSH_SETUP.compareHostKey)).toBeTruthy();
+    fireEvent.click(form.getByRole("button", { name: text.trustAndSave }));
+    expect(await screen.findByText(text.connectionSaved)).toBeTruthy();
+    expect(sent(fetch, "PUT", connection)).toEqual([
+      { address: "192.168.10.50", port: 2222, user: "alex", keyId: "k1", hostKeyFingerprint: null },
+      { address: "192.168.10.50", port: 2222, user: "alex", keyId: "k1", hostKeyFingerprint: "SHA256:other" },
+    ]);
+    expect(screen.queryByRole("form", { name: text.edit })).toBeNull();
+  });
+
+  it("takes a pasted key in place, says what a refusal means, and lets the key go again when cancelled", async () => {
+    const connection = apiPath(API_ROUTES.sshHostConnection, { hostId: HOST_ID });
+    const pasted = "-----BEGIN OPENSSH PRIVATE KEY-----\nmini";
+    const refused = () =>
+      new Response(JSON.stringify({ error: "ssh_host_refused_key" }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      });
+    const fetch = show(details(), host, {
+      [`POST ${API_ROUTES.sshKeys}`]: key("k9", "mini"),
+      [`PUT ${connection}`]: refused,
+    });
+    fireEvent.click(await screen.findByRole("button", { name: text.edit }));
+    const form = within(screen.getByRole("form", { name: text.edit }));
+    fireEvent.change(await form.findByRole("combobox", { name: picker.key }), { target: { value: "paste" } });
+    fireEvent.change(form.getByRole("textbox", { name: picker.privateKey }), { target: { value: pasted } });
+    fireEvent.click(form.getByRole("button", { name: text.testAndSave }));
+
+    expect(await form.findByText(ERROR_TEXT.ssh_host_refused_key)).toBeTruthy();
+    expect(sent(fetch, "POST", API_ROUTES.sshKeys)).toEqual([{ name: "mini", privateKey: pasted, passphrase: "" }]);
+    expect(sent(fetch, "PUT", connection)).toEqual([
+      { address: "192.168.10.50", port: 22, user: "alex", keyId: "k9", hostKeyFingerprint: null },
+    ]);
+    fireEvent.click(form.getByRole("button", { name: TEXT.ssh.add.cancel }));
+    const removed = apiPath(API_ROUTES.sshKey, { keyId: "k9" });
     await waitFor(() =>
-      expect(sent(fetch, "PUT", apiPath(API_ROUTES.sshHostKey, { hostId: HOST_ID }))).toEqual([{ keyId: "k2" }]),
+      expect(fetch.mock.calls.some(([url, options]) => url === removed && options?.method === "DELETE")).toBe(true),
     );
+    expect(screen.queryByRole("form", { name: text.edit })).toBeNull();
+  });
+
+  it("folds away its root password and its settings, each saying how it stands, and saves the settings", async () => {
+    const fetch = show(details());
+    expect(await screen.findByText(text.rootState.none)).toBeTruthy();
+    const settings = text.settingsState;
+    const state = [
+      DEFAULT_SSH_HOST_SETTINGS.dryRun ? settings.dryRun : settings.acting,
+      DEFAULT_SSH_HOST_SETTINGS.containerAccess ? settings.access : settings.noAccess,
+      settings.nothingProtected,
+    ].join(TEXT.separator);
+    expect(screen.getByText(state)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("checkbox", { name: text.dryRun }));
     fireEvent.change(screen.getByRole("textbox", { name: new RegExp(text.protectedContainers) }), {

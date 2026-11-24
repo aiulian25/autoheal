@@ -56,7 +56,6 @@ const DOMAIN_ERROR_STATUS: Partial<Record<ApiErrorCode, number>> = {
   [API_ERRORS.sshKeyUnsupported]: HTTP_STATUS.badRequest,
   [API_ERRORS.sshKeyNotFound]: HTTP_STATUS.notFound,
   [API_ERRORS.sshKeyInUse]: HTTP_STATUS.conflict,
-  [API_ERRORS.sshKeyNameTaken]: HTTP_STATUS.conflict,
   [API_ERRORS.sshHostRefusedKey]: HTTP_STATUS.unprocessableContent,
   [API_ERRORS.sshHostUnreachable]: HTTP_STATUS.gatewayTimeout,
   [API_ERRORS.sshHostKeyMismatch]: HTTP_STATUS.conflict,

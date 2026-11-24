@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, lt } from "drizzle-orm";
 import { API_ERRORS, type MadeSshKeyView, type SshKeyView } from "../../shared/api.js";
 import {
   AUDIT_ACTIONS,
   FORMER_USER_LABEL,
   HOST_KIND,
   HOST_STATUS_ACTIVE,
+  SSH_KEY,
   TARGET_SSH_KEY,
 } from "../../shared/constants.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
-import type { DatabaseHandle } from "../database/connection.js";
+import type { AppDatabase, DatabaseHandle } from "../database/connection.js";
 import { hosts, sshKeys, users } from "../database/schema.js";
 import type { SecretBox } from "../database/secret-box.js";
 import { DomainError } from "../domain-error.js";
 import { makeKey, readUserKey } from "./ssh-keys.js";
+
+// The second key given a name in use is that name with 2 after it.
+const FIRST_NAME_NUMBER = 2;
 
 /** A stored key opened for a connection; it stays in memory only while dialling. */
 export interface OpenedSshKey {
@@ -33,8 +37,14 @@ export class SshKeysService {
     private readonly clock: () => number = Date.now,
   ) {}
 
+  /** The user's own key; one already kept (the same fingerprint) is used as it is, never stored twice. */
   add(actor: Actor, name: string, privateKey: string, passphrase: string | null): SshKeyView {
     const read = readUserKey(privateKey, passphrase);
+    this.sweepUnused(actor);
+    const kept = this.withFingerprint(read.fingerprint);
+    if (kept !== null) {
+      return this.view(kept);
+    }
     const id = this.insert(actor, name, {
       publicLine: read.publicLine,
       fingerprint: read.fingerprint,
@@ -46,22 +56,48 @@ export class SshKeysService {
       actor,
       AUDIT_ACTIONS.sshKeyAdded,
       { kind: TARGET_SSH_KEY, id },
-      { name, fingerprint: read.fingerprint },
+      { name: this.view(id).name, fingerprint: read.fingerprint },
     );
     return this.view(id);
   }
 
   /** A new key for a user who has none; its private half is given this once, for them to keep if they want. */
   make(actor: Actor, name: string, passphrase: string | null = null): MadeSshKeyView {
+    this.sweepUnused(actor);
     const made = makeKey(name, passphrase);
     const id = this.insert(actor, name, { ...made, passphrase, madeByAutoheal: true });
     this.auditLog.recordUserAction(
       actor,
       AUDIT_ACTIONS.sshKeyMade,
       { kind: TARGET_SSH_KEY, id },
-      { name, fingerprint: made.fingerprint },
+      { name: this.view(id).name, fingerprint: made.fingerprint },
     );
     return { key: this.view(id), privateKey: made.privateKey };
+  }
+
+  /**
+   * A key no active host signs in with goes, its private half of no use, once older than a person still adding or
+   * changing the host it is for could need.
+   */
+  sweepUnused(actor: Actor) {
+    const database = this.databaseHandle.database;
+    const used = new Set(
+      database
+        .select({ keyId: hosts.sshKeyId })
+        .from(hosts)
+        .where(eq(hosts.status, HOST_STATUS_ACTIVE))
+        .all()
+        .map(({ keyId }) => keyId),
+    );
+    const unused = database
+      .select({ id: sshKeys.id, name: sshKeys.name })
+      .from(sshKeys)
+      .where(lt(sshKeys.createdAt, this.clock() - SSH_KEY.unusedGraceMilliseconds))
+      .all()
+      .filter(({ id }) => !used.has(id));
+    for (const key of unused) {
+      database.transaction((transaction) => this.drop(transaction, actor, key.id, key.name));
+    }
   }
 
   list(): SshKeyView[] {
@@ -88,9 +124,7 @@ export class SshKeysService {
       if (used !== undefined) {
         throw new DomainError(API_ERRORS.sshKeyInUse);
       }
-      transaction.update(hosts).set({ sshKeyId: null }).where(eq(hosts.sshKeyId, keyId)).run();
-      transaction.delete(sshKeys).where(eq(sshKeys.id, keyId)).run();
-      this.auditLog.recordUserAction(actor, AUDIT_ACTIONS.sshKeyRemoved, { kind: TARGET_SSH_KEY, id: keyId }, key);
+      this.drop(transaction, actor, keyId, key.name);
     });
   }
 
@@ -112,21 +146,49 @@ export class SshKeysService {
     return this.view(keyId).fingerprint;
   }
 
+  // A revoked host lets go of it with it.
+  private drop(transaction: Pick<AppDatabase, "update" | "delete">, actor: Actor, keyId: string, name: string) {
+    transaction.update(hosts).set({ sshKeyId: null }).where(eq(hosts.sshKeyId, keyId)).run();
+    transaction.delete(sshKeys).where(eq(sshKeys.id, keyId)).run();
+    this.auditLog.recordUserAction(actor, AUDIT_ACTIONS.sshKeyRemoved, { kind: TARGET_SSH_KEY, id: keyId }, { name });
+  }
+
+  private withFingerprint(fingerprint: string): string | null {
+    const kept = this.databaseHandle.database
+      .select({ id: sshKeys.id })
+      .from(sshKeys)
+      .where(eq(sshKeys.fingerprint, fingerprint))
+      .get();
+    return kept?.id ?? null;
+  }
+
+  // Names are never typed or shown any more, and still stay apart: a second key named after a host is numbered.
+  private freeName(name: string): string {
+    const taken = new Set(
+      this.databaseHandle.database
+        .select({ name: sshKeys.name })
+        .from(sshKeys)
+        .all()
+        .map((row) => row.name),
+    );
+    let candidate = name;
+    for (let number = FIRST_NAME_NUMBER; taken.has(candidate); number += 1) {
+      candidate = `${name} ${number}`;
+    }
+    return candidate;
+  }
+
   private insert(
     actor: Actor,
     name: string,
     key: Pick<SshKeyView, "publicLine" | "fingerprint" | "madeByAutoheal"> & OpenedSshKey,
   ): string {
-    const database = this.databaseHandle.database;
-    if (database.select({ id: sshKeys.id }).from(sshKeys).where(eq(sshKeys.name, name)).get()) {
-      throw new DomainError(API_ERRORS.sshKeyNameTaken);
-    }
     const id = randomUUID();
-    database
+    this.databaseHandle.database
       .insert(sshKeys)
       .values({
         id,
-        name,
+        name: this.freeName(name),
         publicLine: key.publicLine,
         fingerprint: key.fingerprint,
         privateKey: this.secretBox.seal(key.privateKey),

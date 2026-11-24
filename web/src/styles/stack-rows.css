@@ -34,7 +34,7 @@
 /* A stack with a panel open keeps its controls in view while the panel scrolls under them. */
 .stack-head:has(.stack-panel) .stack-head-bar {
   position: sticky;
-  top: var(--compact-head-height);
+  top: calc(var(--list-top, 0px) + var(--compact-head-height));
   z-index: 1;
   background: var(--surface);
 }

@@ -5,6 +5,8 @@ import {
   type HostHealthView,
   type HostView,
   type PendingSshHostView,
+  type SshConnectionChange,
+  type SshConnectionChangeView,
   type SshDockerReadiness,
   type SshHostDetailsView,
 } from "../../shared/api.js";
@@ -113,10 +115,10 @@ export class SshHostsService {
     private readonly databaseHandle: DatabaseHandle,
     private readonly auditLog: AuditLog,
     private readonly secretBox: SecretBox,
-    private readonly keys: Pick<SshKeysService, "opened" | "fingerprintOf" | "list">,
+    private readonly keys: Pick<SshKeysService, "opened" | "fingerprintOf" | "list" | "sweepUnused">,
     private readonly clock: () => number = Date.now,
     private readonly probe: typeof probeSsh = probeSsh,
-    // Called once a host is stored, trusts a new host key, signs in with another key or has new settings.
+    // Called once a host is stored, trusts a new host key, is reached another way or has new settings.
     private readonly onChanged: (hostId: string) => void = () => undefined,
     // The runner on the dashboard's own machine stays one: that machine is managed in place.
     private readonly isLocalRunner: (hostId: string) => boolean = () => false,
@@ -279,26 +281,55 @@ export class SshHostsService {
     return toHostView(updated, this.clock());
   }
 
-  /** Signs in with another stored key, once that key has opened the host (its pinned host key unchanged). */
-  async replaceKey(actor: Actor, hostId: string, keyId: string): Promise<HostView> {
+  /**
+   * How the host is reached from now on: dialled that way first, and kept only once it signs in and answers with the
+   * host key trusted for it, or another one a person compared and named. Anything else changes nothing; a key no
+   * host signs in with any more goes.
+   */
+  async changeConnection(actor: Actor, hostId: string, change: SshConnectionChange): Promise<SshConnectionChangeView> {
     const host = this.sshHost(hostId);
-    const probe = await this.probe(
-      this.target(this.requestOf(host), keyId, host.sshHostKey),
-      SSH_KEY.probeTimeoutMilliseconds,
-    );
+    const probe = await this.probe(this.target(change, change.keyId, null), SSH_KEY.probeTimeoutMilliseconds);
     requireConnected(probe);
-    const updated = this.update(hostId, { sshKeyId: keyId });
+    const offered = probe.hostKey;
+    const trusted = [host.sshHostKeyFingerprint, change.hostKeyFingerprint].includes(offered.fingerprint);
+    if (!trusted) {
+      return { offeredHostKeyFingerprint: offered.fingerprint };
+    }
+    const unchanged =
+      host.sshAddress === change.address &&
+      host.sshPort === change.port &&
+      host.sshUser === change.user &&
+      host.sshKeyId === change.keyId &&
+      host.sshHostKeyFingerprint === offered.fingerprint;
+    if (unchanged) {
+      return { host: toHostView(host, this.clock()) };
+    }
+    const updated = this.update(hostId, {
+      sshAddress: change.address,
+      sshPort: change.port,
+      sshUser: change.user,
+      sshKeyId: change.keyId,
+      sshHostKey: offered.key,
+      sshHostKeyFingerprint: offered.fingerprint,
+    });
     this.auditLog.recordUserAction(
       actor,
-      AUDIT_ACTIONS.hostSshKeyReplaced,
+      AUDIT_ACTIONS.hostSshConnectionChanged,
       { kind: TARGET_HOST, id: hostId },
-      {
-        from: host.sshKeyId === null ? null : this.keys.fingerprintOf(host.sshKeyId),
-        to: this.keys.fingerprintOf(keyId),
-      },
+      { from: this.connectionOf(host), to: this.connectionOf(updated) },
     );
     this.onChanged(hostId);
-    return toHostView(updated, this.clock());
+    this.keys.sweepUnused(actor);
+    return { host: toHostView(updated, this.clock()) };
+  }
+
+  // What the audit says of how a host is reached: fingerprints, never a key itself.
+  private connectionOf(host: HostRow) {
+    return {
+      ...this.requestOf(host),
+      key: this.keys.fingerprintOf(host.sshKeyId!),
+      hostKey: host.sshHostKeyFingerprint,
+    };
   }
 
   settingsOf(hostId: string): SshHostSettings {
@@ -323,7 +354,10 @@ export class SshHostsService {
     return checked;
   }
 
-  /** Where and as whom, with which key, and its settings; the host key it offers now comes from its session. */
+  /**
+   * Where and as whom, with which key (and which other hosts share it), and its settings; the host key it offers now
+   * comes from its session.
+   */
   detailsOf(hostId: string, offeredHostKeyFingerprint: string | null): SshHostDetailsView {
     const host = this.sshHost(hostId);
     const keyId = host.sshKeyId!;
@@ -333,7 +367,8 @@ export class SshHostsService {
       port: host.sshPort!,
       user: host.sshUser!,
       keyId,
-      keyName: key?.name ?? "",
+      keyFingerprint: key?.fingerprint ?? "",
+      keySharedWith: (key?.hosts ?? []).filter((label) => label !== host.label),
       hostKeyFingerprint: host.sshHostKeyFingerprint!,
       offeredHostKeyFingerprint:
         offeredHostKeyFingerprint === host.sshHostKeyFingerprint ? null : offeredHostKeyFingerprint,

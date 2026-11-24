@@ -12,7 +12,6 @@ import { SettingsFrame, useSettingsSection, type SettingsSection } from "../comp
 import { SETTINGS_SECTIONS, TEXT } from "../constants.js";
 import { integrationsQuery, settingsQuery } from "../queries.js";
 import { isAdmin, useSignedInSession } from "../session.js";
-import { SshKeysCard } from "./ssh-keys-card.js";
 import { OllamaCard } from "./settings/ollama-card.js";
 import { HomeAssistantCard, isChannel, ChannelRow } from "./settings/integration-cards.js";
 import { PackageWindowCard } from "./settings/package-window-card.js";
@@ -103,7 +102,6 @@ export function SettingsPage() {
             <SettingsBlock section={SETTINGS_SECTIONS.people}>
               <PeopleSummary />
               <WidgetKeysCard publicBaseUrl={view.publicBaseUrl} />
-              <SshKeysCard dashboardAddress={new URL(view.runnerAddress).hostname} />
             </SettingsBlock>
           )}
           {shown === SETTINGS_SECTIONS.system && (

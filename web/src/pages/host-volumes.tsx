@@ -240,115 +240,117 @@ export function HostVolumes({
         </p>
       )}
       <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              {canChange && <th className="tick-column" />}
-              <th>{text.columns.name}</th>
-              <th>{text.columns.who}</th>
-              <th>{text.columns.holds}</th>
-              <th>{text.columns.madeBy}</th>
-              <th>{text.columns.state}</th>
-              <th>{text.columns.actions}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.length === 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
               <tr>
-                <td colSpan={VOLUME_COLUMNS} className="muted">
-                  {text.nothingFound}
-                </td>
+                {canChange && <th className="tick-column" />}
+                <th>{text.columns.name}</th>
+                <th>{text.columns.who}</th>
+                <th>{text.columns.holds}</th>
+                <th>{text.columns.madeBy}</th>
+                <th>{text.columns.state}</th>
+                <th>{text.columns.actions}</th>
               </tr>
-            )}
-            {shown.flatMap((volume) => {
-              const open = opened?.name === volume.name;
-              const removable = isRemovableVolume(volume);
-              const tickable = removable && volume.ownedBy === null;
-              const row = (
-                <tr key={volume.name} className={ticked.has(volume.name) ? "selected" : undefined}>
-                  {canChange && (
-                    <td className="tick-column">
-                      {tickable && (
-                        <input
-                          type="checkbox"
-                          checked={ticked.has(volume.name)}
-                          aria-label={text.tick(volume.name)}
-                          onChange={() => setTicked(toggled(ticked, volume.name))}
-                        />
-                      )}
-                    </td>
-                  )}
-                  <td>
-                    <VolumeName volume={volume} />
-                  </td>
-                  <td>
-                    <Members volume={volume} />
-                  </td>
-                  <td className="muted">{sizeOf(volume)}</td>
-                  <td className="muted">{madeByOf(volume)}</td>
-                  <td className={STATE_CLASS[volumeState(volume)] ?? "muted"}>{stateLine(volume)}</td>
-                  <td>
-                    <span className="network-actions">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        title={text.open(volume.name)}
-                        aria-label={text.open(volume.name)}
-                        aria-expanded={open}
-                        onClick={() => setOpened(open ? null : { name: volume.name, looking: false })}
-                      >
-                        <Icon name="eye" />
-                      </button>
-                      {volume.own ? (
-                        <span className="locked" title={text.lockedNote}>
-                          <Icon name="lock" />
-                        </span>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            title={text.look(volume.name)}
-                            aria-label={text.look(volume.name)}
-                            onClick={() => setOpened({ name: volume.name, looking: true })}
-                          >
-                            <Icon name="folder" />
-                          </button>
-                          {canChange && (
-                            <button
-                              type="button"
-                              className="icon-button icon-danger"
-                              title={removable ? text.removeOne(volume.name) : text.busy}
-                              aria-label={text.removeOne(volume.name)}
-                              disabled={!removable || removal.isPending}
-                              onClick={() => removeOrAsk([volume])}
-                            >
-                              <Icon name="trash" />
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </span>
+            </thead>
+            <tbody>
+              {shown.length === 0 && (
+                <tr>
+                  <td colSpan={VOLUME_COLUMNS} className="muted">
+                    {text.nothingFound}
                   </td>
                 </tr>
-              );
-              if (!open) return [row];
-              return [
-                row,
-                <tr key={`${volume.name}-panel`}>
-                  <td colSpan={canChange ? COLUMNS + 1 : COLUMNS}>
-                    <VolumePanel
-                      hostId={host.id}
-                      volume={volume}
-                      looking={opened.looking}
-                      onLook={() => setOpened({ name: volume.name, looking: true })}
-                    />
-                  </td>
-                </tr>,
-              ];
-            })}
-          </tbody>
-        </table>
+              )}
+              {shown.flatMap((volume) => {
+                const open = opened?.name === volume.name;
+                const removable = isRemovableVolume(volume);
+                const tickable = removable && volume.ownedBy === null;
+                const row = (
+                  <tr key={volume.name} className={ticked.has(volume.name) ? "selected" : undefined}>
+                    {canChange && (
+                      <td className="tick-column">
+                        {tickable && (
+                          <input
+                            type="checkbox"
+                            checked={ticked.has(volume.name)}
+                            aria-label={text.tick(volume.name)}
+                            onChange={() => setTicked(toggled(ticked, volume.name))}
+                          />
+                        )}
+                      </td>
+                    )}
+                    <td>
+                      <VolumeName volume={volume} />
+                    </td>
+                    <td>
+                      <Members volume={volume} />
+                    </td>
+                    <td className="muted">{sizeOf(volume)}</td>
+                    <td className="muted">{madeByOf(volume)}</td>
+                    <td className={STATE_CLASS[volumeState(volume)] ?? "muted"}>{stateLine(volume)}</td>
+                    <td>
+                      <span className="network-actions">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          title={text.open(volume.name)}
+                          aria-label={text.open(volume.name)}
+                          aria-expanded={open}
+                          onClick={() => setOpened(open ? null : { name: volume.name, looking: false })}
+                        >
+                          <Icon name="eye" />
+                        </button>
+                        {volume.own ? (
+                          <span className="locked" title={text.lockedNote}>
+                            <Icon name="lock" />
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              title={text.look(volume.name)}
+                              aria-label={text.look(volume.name)}
+                              onClick={() => setOpened({ name: volume.name, looking: true })}
+                            >
+                              <Icon name="folder" />
+                            </button>
+                            {canChange && (
+                              <button
+                                type="button"
+                                className="icon-button icon-danger"
+                                title={removable ? text.removeOne(volume.name) : text.busy}
+                                aria-label={text.removeOne(volume.name)}
+                                disabled={!removable || removal.isPending}
+                                onClick={() => removeOrAsk([volume])}
+                              >
+                                <Icon name="trash" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </span>
+                    </td>
+                  </tr>
+                );
+                if (!open) return [row];
+                return [
+                  row,
+                  <tr key={`${volume.name}-panel`}>
+                    <td colSpan={canChange ? COLUMNS + 1 : COLUMNS}>
+                      <VolumePanel
+                        hostId={host.id}
+                        volume={volume}
+                        looking={opened.looking}
+                        onLook={() => setOpened({ name: volume.name, looking: true })}
+                      />
+                    </td>
+                  </tr>,
+                ];
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
       <ErrorNotice error={removal.error} />
       {creating && (

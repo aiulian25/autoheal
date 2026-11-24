@@ -338,3 +338,18 @@ label.choice-option {
   flex-basis: 100%;
   min-width: 0;
 }
+
+/* An SSH host's root password and settings fold under its connection, each one line until opened. */
+.ssh-fold {
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.ssh-fold > summary h3 {
+  font-size: var(--text-card-title);
+}
+
+/* How it is reached, changed in place: a form's width, as on the dialog that added it. */
+.ssh-connection {
+  max-width: calc(2 * var(--form-width));
+}

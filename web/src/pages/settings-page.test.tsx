@@ -249,30 +249,7 @@ describe("the settings page", () => {
   });
 
   it("folds each card to one line that says how it stands, closed until opened", async () => {
-    serve("admin", {
-      [API_ROUTES.sshKeys]: [
-        {
-          id: "s1",
-          name: "Alder",
-          publicLine: "",
-          fingerprint: "SHA256:a",
-          madeByAutoheal: true,
-          createdBy: "admin",
-          createdAt: 1,
-          hosts: ["Alder"],
-        },
-        {
-          id: "s2",
-          name: "Spare",
-          publicLine: "",
-          fingerprint: "SHA256:b",
-          madeByAutoheal: false,
-          createdBy: "admin",
-          createdAt: 1,
-          hosts: [],
-        },
-      ],
-    });
+    serve("admin");
     const router = renderSettings("admin");
     const ollama = await fold("Ollama");
     expect(ollama.open).toBe(false);
@@ -287,9 +264,10 @@ describe("the settings page", () => {
     await waitFor(() => expect(data.querySelector("summary")!.textContent).toContain(bytes(DATA.bytes)));
 
     await act(() => router.navigate("#people"));
-    const keys = await fold("SSH keys");
-    await waitFor(() => expect(keys.querySelector("summary")!.textContent).toContain("2 keys · 1 used by no host"));
+    const keys = await fold("Widget and metrics keys");
     expect(keys.open).toBe(false);
+    // A host's SSH key is set on that host's page: no list of them is kept here.
+    expect(screen.queryByRole("group", { name: "SSH keys" })).toBeNull();
   });
 
   it("opens by itself a card that needs a person", async () => {

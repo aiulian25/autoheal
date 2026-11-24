@@ -135,7 +135,6 @@ export function serve(role: "admin" | "viewer", extra: Record<string, unknown> =
     [API_ROUTES.widgetKeys]: [
       { id: "k1", name: "homepage", scope: "widget", hint: "abcd", createdBy: "admin", createdAt: 1, lastUsedAt: null },
     ],
-    [API_ROUTES.sshKeys]: [],
     [API_ROUTES.selfUpdate]: selfUpdate,
     ...extra,
   };

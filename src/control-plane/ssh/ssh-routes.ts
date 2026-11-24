@@ -47,10 +47,9 @@ const reachBody = z.object({
 const addHostBody = reachBody.extend({ label: z.string().regex(HOST_LABEL_PATTERN) });
 const pendingParameters = z.object({ pendingId: z.uuid() });
 const hostParameters = z.object({ hostId: z.uuid() });
-const trustBody = z.object({
-  fingerprint: z.string().startsWith(SSH_FINGERPRINT_PREFIX).max(SSH_HOST_FIELDS.wordCharacters),
-});
-const replaceKeyBody = z.object({ keyId: z.uuid() });
+const fingerprint = z.string().startsWith(SSH_FINGERPRINT_PREFIX).max(SSH_HOST_FIELDS.wordCharacters);
+const trustBody = z.object({ fingerprint });
+const connectionBody = reachBody.extend({ hostKeyFingerprint: fingerprint.nullable().optional() });
 const rootBody = z.object({ password: z.string().min(1).max(ROOT_COMMANDS.passwordCharacters) });
 
 /** Keys and SSH hosts: an admin's alone, as every secret here is. */
@@ -106,11 +105,11 @@ export function registerSshRoutes(
     ),
   );
 
-  app.put(API_ROUTES.sshHostKey, adminOnly, async (request) =>
-    sshHosts.replaceKey(
+  app.put(API_ROUTES.sshHostConnection, adminOnly, async (request) =>
+    sshHosts.changeConnection(
       actorOf(request),
       parseBody(hostParameters, request.params).hostId,
-      parseBody(replaceKeyBody, request.body).keyId,
+      parseBody(connectionBody, request.body),
     ),
   );
 

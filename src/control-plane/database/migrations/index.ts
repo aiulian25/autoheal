@@ -48,6 +48,7 @@ import { jobExpectedDigestMigration } from "./0074-job-expected-digest.js";
 import { jarvisAnswerLineMigration } from "./0075-jarvis-answer-line.js";
 import { dockerLostMigration } from "./0076-host-docker-lost-at.js";
 import { healthReadMigration } from "./0077-host-health-at.js";
+import { sshKeysOnceMigration } from "./0078-ssh-keys-once.js";
 import { searchMigration } from "./0027-search.js";
 import { notificationDeliveriesMigration } from "./0026-notification-deliveries.js";
 import { topologyMigration } from "./0025-topology.js";
@@ -162,6 +163,7 @@ export const MIGRATIONS: readonly Migration[] = [
   jarvisAnswerLineMigration,
   dockerLostMigration,
   healthReadMigration,
+  sshKeysOnceMigration,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

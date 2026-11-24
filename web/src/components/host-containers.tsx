@@ -286,253 +286,257 @@ export function HostContainers({
         {list === undefined && (containers.error ? <ErrorNotice error={containers.error} /> : <Loading />)}
         {list !== undefined && (
           <div className="table-wrap container-table">
-            <table>
-              <thead>
-                <tr>
-                  {admin && (
-                    <th className="tick-column">
-                      <input
-                        type="checkbox"
-                        checked={allTicked}
-                        disabled={tickable.length === 0}
-                        aria-label={BULK_TEXT.tickAll}
-                        onChange={() =>
-                          setTicked(allTicked ? new Set() : new Set(tickable.map((container) => container.name)))
-                        }
-                      />
-                    </th>
-                  )}
-                  <th className="name-column">{text.container}</th>
-                  <th className="state-column">{text.state}</th>
-                  <th className="up-column">{text.upFor}</th>
-                  <th className="image-column">{text.image}</th>
-                  <th className="ports-column">{text.ports}</th>
-                  <th className="cpu-column usage-cell">{TEXT.metrics.cpu}</th>
-                  <th className="memory-column usage-cell">{text.ram}</th>
-                  <th className="choice-column">{text.ifItFails}</th>
-                  <th className="choice-column">{text.newImage}</th>
-                  {actionsShown && <th className="actions-column">{text.actions}</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {found.length === 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
                   <tr>
-                    <td colSpan={columns} className="muted">
-                      {list.length === 0 ? TEXT.containers.empty : text.nothingFound}
-                    </td>
+                    {admin && (
+                      <th className="tick-column">
+                        <input
+                          type="checkbox"
+                          checked={allTicked}
+                          disabled={tickable.length === 0}
+                          aria-label={BULK_TEXT.tickAll}
+                          onChange={() =>
+                            setTicked(allTicked ? new Set() : new Set(tickable.map((container) => container.name)))
+                          }
+                        />
+                      </th>
+                    )}
+                    <th className="name-column">{text.container}</th>
+                    <th className="state-column">{text.state}</th>
+                    <th className="up-column">{text.upFor}</th>
+                    <th className="image-column">{text.image}</th>
+                    <th className="ports-column">{text.ports}</th>
+                    <th className="cpu-column usage-cell">{TEXT.metrics.cpu}</th>
+                    <th className="memory-column usage-cell">{text.ram}</th>
+                    <th className="choice-column">{text.ifItFails}</th>
+                    <th className="choice-column">{text.newImage}</th>
+                    {actionsShown && <th className="actions-column">{text.actions}</th>}
                   </tr>
-                )}
-                {groups.map((group) => (
-                  <Fragment key={group.stack ?? ""}>
-                    {(group.stack !== null || groups.length > 1) && (
-                      <tr className="group-row">
-                        <th scope="rowgroup" colSpan={columns}>
-                          {group.stack === null ? (
-                            text.single
-                          ) : (
-                            <StackHead
-                              hostId={host.id}
-                              stack={group.stack}
-                              members={membersOf(group.stack)}
-                              canRestart={mayRestart(group.stack)}
-                              admin={admin}
-                              overSsh={host.kind === HOST_KIND.ssh}
-                              tick={
-                                admin
-                                  ? {
-                                      ticked:
-                                        tickableIn(group.stack).length > 0 &&
-                                        tickableIn(group.stack).every(({ name }) => ticked.has(name)),
-                                      onChange: () => tickStack(group.stack!),
-                                    }
-                                  : undefined
-                              }
+                </thead>
+                <tbody>
+                  {found.length === 0 && (
+                    <tr>
+                      <td colSpan={columns} className="muted">
+                        {list.length === 0 ? TEXT.containers.empty : text.nothingFound}
+                      </td>
+                    </tr>
+                  )}
+                  {groups.map((group) => (
+                    <Fragment key={group.stack ?? ""}>
+                      {(group.stack !== null || groups.length > 1) && (
+                        <tr className="group-row">
+                          <th scope="rowgroup" colSpan={columns}>
+                            {group.stack === null ? (
+                              text.single
+                            ) : (
+                              <StackHead
+                                hostId={host.id}
+                                stack={group.stack}
+                                members={membersOf(group.stack)}
+                                canRestart={mayRestart(group.stack)}
+                                admin={admin}
+                                overSsh={host.kind === HOST_KIND.ssh}
+                                tick={
+                                  admin
+                                    ? {
+                                        ticked:
+                                          tickableIn(group.stack).length > 0 &&
+                                          tickableIn(group.stack).every(({ name }) => ticked.has(name)),
+                                        onChange: () => tickStack(group.stack!),
+                                      }
+                                    : undefined
+                                }
+                              />
+                            )}
+                          </th>
+                        </tr>
+                      )}
+                      {group.stack !== null && stackLine(group.stack) !== null && (
+                        <tr className="update-stream-row">
+                          <td colSpan={columns}>
+                            <UpdateStream
+                              name={group.stack}
+                              image={group.stack}
+                              progress={stackLine(group.stack)!.progress!}
                             />
-                          )}
-                        </th>
-                      </tr>
-                    )}
-                    {group.stack !== null && stackLine(group.stack) !== null && (
-                      <tr className="update-stream-row">
-                        <td colSpan={columns}>
-                          <UpdateStream
-                            name={group.stack}
-                            image={group.stack}
-                            progress={stackLine(group.stack)!.progress!}
-                          />
-                        </td>
-                      </tr>
-                    )}
-                    {group.stack !== null && stackLine(group.stack) === null && endedForStack(group.stack) !== null && (
-                      <tr className="update-stream-row">
-                        <td colSpan={columns}>
-                          <FinishedLine job={endedForStack(group.stack)!} image={group.stack} />
-                        </td>
-                      </tr>
-                    )}
-                    {group.containers.map((container) => {
-                      if (gone.has(container.name)) {
-                        return (
-                          <GoneRow key={container.name} container={container} admin={admin} actions={actionsShown} />
-                        );
-                      }
-                      const open = selection.open === container.name;
-                      const job = working.get(container.name) ?? null;
-                      const waits = waitInRun(run.data ?? null, container.name);
-                      return (
-                        <Fragment key={container.name}>
-                          <tr
-                            ref={pinnedName === container.name ? pinnedRow : undefined}
-                            className={rowClassOf(
-                              open,
-                              pinnedName === container.name,
-                              job,
-                              motion.motions.get(container.name),
-                            )}
-                            aria-busy={job !== null}
-                          >
-                            {admin && (
-                              <td className="tick-column">
-                                {container.handsOff === null && (
-                                  <input
-                                    type="checkbox"
-                                    checked={ticked.has(container.name)}
-                                    aria-label={BULK_TEXT.tickOne(container.name)}
-                                    onChange={() => setTicked((names) => toggled(names, container.name))}
-                                  />
-                                )}
-                              </td>
-                            )}
-                            <td>
-                              <span className="name-cell">
-                                <button
-                                  type="button"
-                                  className="link container-name"
-                                  title={container.name}
-                                  aria-expanded={open}
-                                  onClick={() => selection.toggle(container.name)}
-                                >
-                                  <span className="name-text">{container.name}</span>
-                                </button>
-                                {job === null && canUpdate(container) && (
-                                  <button
-                                    type="button"
-                                    className="icon-button update-ready"
-                                    title={TEXT.hostContainers.updateBox.icon(container.name)}
-                                    aria-label={TEXT.hostContainers.updateBox.icon(container.name)}
-                                    aria-expanded={updateAsked?.target.name === container.name}
-                                    disabled={bulk.run.isPending || operatorAction.isPending}
-                                    onClick={(event) =>
-                                      setUpdateAsked({ target: container, anchor: event.currentTarget })
-                                    }
-                                  >
-                                    <Icon name="circleArrowUp" />
-                                  </button>
-                                )}
-                                <MaintenanceBadge hostId={container.hostId} containerName={container.name} />
-                                <WebLink container={container} />
-                              </span>
+                          </td>
+                        </tr>
+                      )}
+                      {group.stack !== null &&
+                        stackLine(group.stack) === null &&
+                        endedForStack(group.stack) !== null && (
+                          <tr className="update-stream-row">
+                            <td colSpan={columns}>
+                              <FinishedLine job={endedForStack(group.stack)!} image={group.stack} />
                             </td>
-                            <td className={job === null ? stateTone(container) : undefined}>
-                              {job === null ? stateOf(container) : <WorkingState job={job} />}
-                              {waits !== null && <div className="state-note muted">{waits}</div>}
-                              <RestartsUsed host={host} name={container.name} admin={admin} />
-                            </td>
-                            <UpForCell container={container} />
-                            <td>
-                              <ImageCell container={container} held={heldUpdates.get(container.name)} admin={admin} />
-                            </td>
-                            <td>
-                              <PortsCell container={container} address={address} />
-                            </td>
-                            <UsageCells container={container} />
-                            <ChoiceCells
-                              container={container}
-                              canAct={admin}
-                              onChange={(change) => choose.mutate({ names: [container.name], ...change })}
-                            />
-                            {actionsShown && (
-                              <td>
-                                <RowActions
-                                  admin={admin}
-                                  onBackup={(mode) => setBackingUp({ name: container.name, mode })}
-                                  host={host}
-                                  container={container}
-                                  open={open}
-                                  reaching={reachingOf(container.name)}
-                                  busy={bulk.run.isPending || operatorAction.isPending}
-                                  ask={ask}
-                                  onToggle={() => selection.toggle(container.name)}
-                                  onLogs={() =>
-                                    setLogsAsked({
-                                      name: container.name,
-                                      request: { tab: "logs", count: (logsAsked?.request.count ?? 0) + 1 },
-                                    })
-                                  }
-                                  onReach={(kind) => toggleReach(container.name, kind)}
-                                  allowed={(action) => allowed(action, container)}
-                                />
-                              </td>
-                            )}
                           </tr>
-                          {job !== null && job.progress !== null && lineOwner(job, group.stack) && (
-                            <tr className="update-stream-row">
-                              <td colSpan={columns}>
-                                <UpdateStream name={container.name} image={container.image} progress={job.progress} />
-                              </td>
-                            </tr>
-                          )}
-                          {job === null && endedForRow(container, group.stack) !== null && (
-                            <tr className="update-stream-row">
-                              <td colSpan={columns}>
-                                <FinishedLine job={endedForRow(container, group.stack)!} image={container.image} />
-                              </td>
-                            </tr>
-                          )}
-                          {open && (
-                            <tr className="inspector-row">
-                              <td colSpan={columns}>
-                                <ContainerInspector
-                                  container={container}
-                                  siblings={list}
-                                  canAct={admin}
-                                  arrived={selection.arrived === container.name}
-                                  tabRequest={logsAsked?.name === container.name ? logsAsked.request : null}
-                                  tools={(files) => (
-                                    <PanelReach
-                                      host={host}
-                                      container={container}
-                                      reaching={reachingOf(container.name)}
-                                      onReach={(kind) => toggleReach(container.name, kind)}
-                                      allowed={(action) => allowed(action, container)}
-                                      files={files}
+                        )}
+                      {group.containers.map((container) => {
+                        if (gone.has(container.name)) {
+                          return (
+                            <GoneRow key={container.name} container={container} admin={admin} actions={actionsShown} />
+                          );
+                        }
+                        const open = selection.open === container.name;
+                        const job = working.get(container.name) ?? null;
+                        const waits = waitInRun(run.data ?? null, container.name);
+                        return (
+                          <Fragment key={container.name}>
+                            <tr
+                              ref={pinnedName === container.name ? pinnedRow : undefined}
+                              className={rowClassOf(
+                                open,
+                                pinnedName === container.name,
+                                job,
+                                motion.motions.get(container.name),
+                              )}
+                              aria-busy={job !== null}
+                            >
+                              {admin && (
+                                <td className="tick-column">
+                                  {container.handsOff === null && (
+                                    <input
+                                      type="checkbox"
+                                      checked={ticked.has(container.name)}
+                                      aria-label={BULK_TEXT.tickOne(container.name)}
+                                      onChange={() => setTicked((names) => toggled(names, container.name))}
                                     />
                                   )}
-                                />
+                                </td>
+                              )}
+                              <td>
+                                <span className="name-cell">
+                                  <button
+                                    type="button"
+                                    className="link container-name"
+                                    title={container.name}
+                                    aria-expanded={open}
+                                    onClick={() => selection.toggle(container.name)}
+                                  >
+                                    <span className="name-text">{container.name}</span>
+                                  </button>
+                                  {job === null && canUpdate(container) && (
+                                    <button
+                                      type="button"
+                                      className="icon-button update-ready"
+                                      title={TEXT.hostContainers.updateBox.icon(container.name)}
+                                      aria-label={TEXT.hostContainers.updateBox.icon(container.name)}
+                                      aria-expanded={updateAsked?.target.name === container.name}
+                                      disabled={bulk.run.isPending || operatorAction.isPending}
+                                      onClick={(event) =>
+                                        setUpdateAsked({ target: container, anchor: event.currentTarget })
+                                      }
+                                    >
+                                      <Icon name="circleArrowUp" />
+                                    </button>
+                                  )}
+                                  <MaintenanceBadge hostId={container.hostId} containerName={container.name} />
+                                  <WebLink container={container} />
+                                </span>
                               </td>
-                            </tr>
-                          )}
-                          {reach?.name === container.name && allowed(permissionOf(reach.kind), container) && (
-                            <tr className="reach-row">
-                              <td colSpan={columns}>
-                                <ReachPanel
-                                  reach={reach.kind}
-                                  hostId={host.id}
-                                  containerName={container.name}
-                                  composeProject={container.composeProject}
-                                  keptByHost={container.handsOff !== null}
-                                  onClose={() => setReach(null)}
-                                />
+                              <td className={job === null ? stateTone(container) : undefined}>
+                                {job === null ? stateOf(container) : <WorkingState job={job} />}
+                                {waits !== null && <div className="state-note muted">{waits}</div>}
+                                <RestartsUsed host={host} name={container.name} admin={admin} />
                               </td>
+                              <UpForCell container={container} />
+                              <td>
+                                <ImageCell container={container} held={heldUpdates.get(container.name)} admin={admin} />
+                              </td>
+                              <td>
+                                <PortsCell container={container} address={address} />
+                              </td>
+                              <UsageCells container={container} />
+                              <ChoiceCells
+                                container={container}
+                                canAct={admin}
+                                onChange={(change) => choose.mutate({ names: [container.name], ...change })}
+                              />
+                              {actionsShown && (
+                                <td>
+                                  <RowActions
+                                    admin={admin}
+                                    onBackup={(mode) => setBackingUp({ name: container.name, mode })}
+                                    host={host}
+                                    container={container}
+                                    open={open}
+                                    reaching={reachingOf(container.name)}
+                                    busy={bulk.run.isPending || operatorAction.isPending}
+                                    ask={ask}
+                                    onToggle={() => selection.toggle(container.name)}
+                                    onLogs={() =>
+                                      setLogsAsked({
+                                        name: container.name,
+                                        request: { tab: "logs", count: (logsAsked?.request.count ?? 0) + 1 },
+                                      })
+                                    }
+                                    onReach={(kind) => toggleReach(container.name, kind)}
+                                    allowed={(action) => allowed(action, container)}
+                                  />
+                                </td>
+                              )}
                             </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
+                            {job !== null && job.progress !== null && lineOwner(job, group.stack) && (
+                              <tr className="update-stream-row">
+                                <td colSpan={columns}>
+                                  <UpdateStream name={container.name} image={container.image} progress={job.progress} />
+                                </td>
+                              </tr>
+                            )}
+                            {job === null && endedForRow(container, group.stack) !== null && (
+                              <tr className="update-stream-row">
+                                <td colSpan={columns}>
+                                  <FinishedLine job={endedForRow(container, group.stack)!} image={container.image} />
+                                </td>
+                              </tr>
+                            )}
+                            {open && (
+                              <tr className="inspector-row">
+                                <td colSpan={columns}>
+                                  <ContainerInspector
+                                    container={container}
+                                    siblings={list}
+                                    canAct={admin}
+                                    arrived={selection.arrived === container.name}
+                                    tabRequest={logsAsked?.name === container.name ? logsAsked.request : null}
+                                    tools={(files) => (
+                                      <PanelReach
+                                        host={host}
+                                        container={container}
+                                        reaching={reachingOf(container.name)}
+                                        onReach={(kind) => toggleReach(container.name, kind)}
+                                        allowed={(action) => allowed(action, container)}
+                                        files={files}
+                                      />
+                                    )}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                            {reach?.name === container.name && allowed(permissionOf(reach.kind), container) && (
+                              <tr className="reach-row">
+                                <td colSpan={columns}>
+                                  <ReachPanel
+                                    reach={reach.kind}
+                                    hostId={host.id}
+                                    containerName={container.name}
+                                    composeProject={container.composeProject}
+                                    keptByHost={container.handsOff !== null}
+                                    onClose={() => setReach(null)}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
         {bulk.impact}

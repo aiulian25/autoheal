@@ -108,7 +108,6 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   ssh_key_unsupported: "That kind of key is not supported: use an ed25519, ECDSA or RSA key.",
   ssh_key_not_found: "That SSH key is no longer there, or another backup passphrase sealed it: add it again.",
   ssh_key_in_use: "A host still signs in with that key: give it another key first.",
-  ssh_key_name_taken: "A key with that name is already stored.",
   ssh_host_refused_key: "The host refused that key for this user: check it is in ~/.ssh/authorized_keys there.",
   ssh_host_unreachable: "The host did not answer over SSH: check its address, its port and that sshd runs.",
   ssh_host_key_mismatch: "The host offered a different host key than the one compared: nothing was changed.",

@@ -10,6 +10,7 @@ import {
 } from "../../../test/support/control-plane.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, type AssignableView } from "../../shared/api.js";
+import { SSH_KEY } from "../../shared/constants.js";
 import { DEFAULT_SSH_HOST_SETTINGS } from "../../shared/ssh-hosts.js";
 import type { Actor } from "../audit/audit-log.js";
 import { hosts, sshKeys } from "../database/schema.js";
@@ -83,7 +84,10 @@ describe("SSH keys and SSH hosts", () => {
     const made = keys().make(actor, "made for cedar2");
     expect(made.key).toMatchObject({ madeByAutoheal: true });
     expect(made.privateKey).toContain("BEGIN OPENSSH PRIVATE KEY");
-    expect(() => keys().add(actor, "alex's laptop", own.private, PASSPHRASE)).toThrow("ssh_key_name_taken");
+    // The same key given again is kept once, as it is; another key given a name in use is named apart.
+    expect(keys().add(actor, "alex's laptop again", own.private, PASSPHRASE).id).toBe(added.id);
+    const other = readable(() => utils.generateKeyPairSync("ed25519"));
+    expect(keys().add(actor, "alex's laptop", other.private, null).name).toBe("alex's laptop 2");
     expect(() => keys().add(actor, "wrong", own.private, "not it")).toThrow("ssh_key_unreadable");
 
     const seen = await everything();
@@ -145,43 +149,85 @@ describe("SSH keys and SSH hosts", () => {
     expect(() => sshHosts().confirm(actor, late.pendingId)).toThrow("ssh_pending_not_found");
   });
 
-  it("refuses a changed host key until a person trusts exactly the new one, and replaces a key only once it opens the host", async () => {
+  it("refuses a changed host key until a person trusts exactly the new one", async () => {
     const key = keys().add(actor, "own", own.private, PASSPHRASE);
     const host = sshHosts().confirm(actor, (await sshHosts().add(actor, request(key.id))).pendingId);
-
-    // Another key of the user's, which the host also accepts.
-    const second = readable(() => utils.generateKeyPairSync("ed25519"));
-    server.acceptedKeys.push(second.public);
     server.hostKey = FakeSshServer.newHostKey();
     await server.restart();
-    const replacement = keys().add(actor, "second", second.private, null);
-
-    // The host now offers another host key: nothing changes until a person trusts it.
-    await expect(sshHosts().replaceKey(actor, host.id, replacement.id)).rejects.toThrow("ssh_host_key_mismatch");
     const offered = sshFingerprint(Buffer.from(server.hostKeyBlob(), "base64"));
     await expect(sshHosts().trustHostKey(actor, host.id, "SHA256:not what it offers")).rejects.toThrow(
       "ssh_host_key_mismatch",
     );
     await sshHosts().trustHostKey(actor, host.id, offered);
+    expect(sshHosts().targetOf(host.id).pinnedHostKey).toBe(server.hostKeyBlob());
+    const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
+    for (const action of ["host.ssh_added", "host.ssh_host_key_trusted"]) expect(audit).toContain(action);
+  });
 
-    const refused = keys().make(actor, "not on the host");
-    await expect(sshHosts().replaceKey(actor, host.id, refused.key.id)).rejects.toThrow("ssh_host_refused_key");
-    expect(sshHosts().targetOf(host.id).privateKey).toBe(own.private);
-    await sshHosts().replaceKey(actor, host.id, replacement.id);
-    expect(sshHosts().targetOf(host.id)).toMatchObject({
-      privateKey: second.private,
-      pinnedHostKey: server.hostKeyBlob(),
+  it("changes how a host is reached only once Autoheal has signed in that way, and lets go of keys no host uses", async () => {
+    const key = keys().add(actor, "own", own.private, PASSPHRASE);
+    const host = sshHosts().confirm(actor, (await sshHosts().add(actor, request(key.id))).pendingId);
+    const reach = (overrides = {}) => ({
+      address: "127.0.0.1",
+      port: server.port,
+      user: USER,
+      keyId: key.id,
+      hostKeyFingerprint: null,
+      ...overrides,
     });
-    keys().remove(actor, key.id);
+    const changes = async () =>
+      JSON.stringify((await admin.get(API_ROUTES.audit)).json()).split("host.ssh_connection_changed").length - 1;
+
+    // Saved as it is, it signs in again and nothing changes.
+    expect(await sshHosts().changeConnection(actor, host.id, reach())).toMatchObject({ host: { id: host.id } });
+    expect(await changes()).toBe(0);
+
+    // A key the machine refuses, or a port nothing answers on: nothing is kept.
+    const stranger = keys().make(actor, "not on the host");
+    await expect(sshHosts().changeConnection(actor, host.id, reach({ keyId: stranger.key.id }))).rejects.toThrow(
+      "ssh_host_refused_key",
+    );
+    await expect(sshHosts().changeConnection(actor, host.id, reach({ port: 1 }))).rejects.toThrow(
+      "ssh_host_unreachable",
+    );
+    expect(sshHosts().targetOf(host.id)).toMatchObject({ privateKey: own.private, port: server.port });
+
+    // Another key the host takes is kept; the keys no host signs in with any more go, once a day old.
+    const second = readable(() => utils.generateKeyPairSync("ed25519"));
+    server.acceptedKeys.push(second.public);
+    const replacement = keys().add(actor, "second", second.private, null);
+    // As if all were stored longer ago than a key is kept unused, for a person still adding the host it is for.
+    controlPlane.services.databaseHandle.database
+      .update(sshKeys)
+      .set({ createdAt: controlPlane.clock.now - SSH_KEY.unusedGraceMilliseconds - 1 })
+      .run();
+    expect(await sshHosts().changeConnection(actor, host.id, reach({ keyId: replacement.id }))).toMatchObject({
+      host: { id: host.id },
+    });
+    expect(sshHosts().targetOf(host.id).privateKey).toBe(second.private);
     expect(
       keys()
         .list()
-        .map((each) => each.name),
-    ).toEqual(["not on the host", "second"]);
-    const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
-    for (const action of ["host.ssh_added", "host.ssh_host_key_trusted", "host.ssh_key_replaced", "ssh_key.removed"]) {
-      expect(audit).toContain(action);
-    }
+        .map(({ id }) => id),
+    ).toEqual([replacement.id]);
+    expect(await changes()).toBe(1);
+
+    // Another machine's host key where it now points: said, and kept only once a person trusts exactly that one.
+    server.hostKey = FakeSshServer.newHostKey();
+    await server.restart();
+    const offered = sshFingerprint(Buffer.from(server.hostKeyBlob(), "base64"));
+    expect(await sshHosts().changeConnection(actor, host.id, reach({ keyId: replacement.id }))).toEqual({
+      offeredHostKeyFingerprint: offered,
+    });
+    expect(sshHosts().targetOf(host.id).pinnedHostKey).not.toBe(server.hostKeyBlob());
+    await sshHosts().changeConnection(actor, host.id, reach({ keyId: replacement.id, hostKeyFingerprint: offered }));
+    expect(sshHosts().targetOf(host.id).pinnedHostKey).toBe(server.hostKeyBlob());
+    expect(sshHosts().detailsOf(host.id, null)).toMatchObject({
+      keyId: replacement.id,
+      keyFingerprint: replacement.fingerprint,
+      keySharedWith: [],
+      hostKeyFingerprint: offered,
+    });
   });
 
   it("keeps an SSH host's settings, as a runner's .env would give them, and refuses what a runner would", async () => {

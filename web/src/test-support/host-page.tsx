@@ -104,7 +104,8 @@ export const sshDetails: SshHostDetailsView = {
   port: 22,
   user: "alex",
   keyId: "k1",
-  keyName: "laptop",
+  keyFingerprint: "SHA256:laptop",
+  keySharedWith: [],
   hostKeyFingerprint: "SHA256:hostkey",
   offeredHostKeyFingerprint: null,
   settings: {

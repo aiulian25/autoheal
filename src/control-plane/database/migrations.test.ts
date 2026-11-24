@@ -13,6 +13,7 @@ import { hostDefaultsMigration } from "./migrations/0013-host-defaults.js";
 import { containerChoicesMigration } from "./migrations/0015-container-choices.js";
 import { widgetKeyScopeMigration } from "./migrations/0035-widget-key-scope.js";
 import { healthReadMigration } from "./migrations/0077-host-health-at.js";
+import { sshKeysOnceMigration } from "./migrations/0078-ssh-keys-once.js";
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate, schemaVersionOf } from "./migrations/index.js";
 import * as schema from "./schema.js";
 
@@ -124,6 +125,41 @@ describe("migrations", () => {
       { id: "read", health_at: 5_000 },
       { id: "unread", health_at: null },
       { id: "silent", health_at: null },
+    ]);
+    sqlite.close();
+  });
+
+  it("keeps each SSH key once, its hosts signing in with the oldest copy, and lets go of keys no active host uses", () => {
+    const sqlite = new Database(":memory:");
+    for (const migration of MIGRATIONS.filter(({ version }) => version < sshKeysOnceMigration.version)) {
+      sqlite.exec(migration.sql);
+      sqlite.pragma(`user_version = ${migration.version}`);
+    }
+    const addKey = sqlite.prepare(
+      "insert into ssh_keys (id, name, public_line, fingerprint, private_key, created_at) values (?, ?, ?, ?, ?, ?)",
+    );
+    addKey.run("first", "Alder", "ssh-ed25519 AAAAone", "SHA256:same", "sealed one", 1);
+    addKey.run("copy", "DS224", "ssh-ed25519 AAAAone", "SHA256:same", "sealed copy", 2);
+    addKey.run("own", "Cedar", "ssh-ed25519 AAAAtwo", "SHA256:other", "sealed two", 3);
+    addKey.run("unused", "Orion", "ssh-ed25519 AAAAthree", "SHA256:unused", "sealed three", 4);
+    addKey.run("let-go", "Rowan", "ssh-ed25519 AAAAfour", "SHA256:revoked", "sealed four", 5);
+    const addHost = sqlite.prepare(
+      "insert into hosts (id, label, token_hash, token_hint, enrolled_at, kind, status, ssh_key_id) values (?, ?, ?, ?, ?, 'ssh', ?, ?)",
+    );
+    addHost.run("alder", "Alder", "hash-alder", "abcd", 1, "active", "copy");
+    addHost.run("cedar", "Cedar", "hash-cedar", "efgh", 2, "active", "own");
+    addHost.run("rowan", "Rowan", "hash-rowan", "ijkl", 3, "revoked", "let-go");
+
+    migrate(sqlite);
+
+    expect(sqlite.prepare("select id, ssh_key_id from hosts order by enrolled_at").all()).toEqual([
+      { id: "alder", ssh_key_id: "first" },
+      { id: "cedar", ssh_key_id: "own" },
+      { id: "rowan", ssh_key_id: null },
+    ]);
+    expect(sqlite.prepare("select id from ssh_keys order by created_at").all()).toEqual([
+      { id: "first" },
+      { id: "own" },
     ]);
     sqlite.close();
   });

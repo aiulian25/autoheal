@@ -51,34 +51,48 @@
   min-height: var(--find-height);
 }
 
-/* Every container is listed: past the screen's height the list scrolls in its card, its header in view, with room
-   for the tabs and the bar pinned above it. */
+/* Every one is listed, and the list scrolls with the page: one scroll for the wheel, as a list in a box of its own held
+   the wheel on the page until the pointer moved. Its header stays in view under the tabs, and under the bar while
+   something is ticked. */
 .host-containers .table-wrap {
-  max-height: calc(100vh - var(--host-tabs-height) - var(--compact-head-height) - 2 * var(--space-4));
-  overflow-y: auto;
+  --list-top: var(--host-tabs-height);
+  overflow: clip;
   /* A stack's header keeps to the box's own width when the table is wider, on a phone. */
   container-type: inline-size;
 }
 
-/* On a phone the choices stay: the table scrolls sideways in its box instead. */
+.host-containers .action-bar ~ .table-wrap {
+  --list-top: calc(var(--host-tabs-height) + var(--compact-head-height));
+}
+
+/* Narrower than its table, as on a phone, the list scrolls in its card both ways, its header at the card's top, with
+   room for the tabs and the bar above it. The width is the table's, --host-containers-width, which a query cannot read. */
+@container (width < 1072px) {
+  .host-containers .table-scroll {
+    --list-top: 0px;
+    max-height: calc(100vh - var(--host-tabs-height) - var(--compact-head-height) - 2 * var(--space-4));
+    overflow: auto;
+  }
+
+  .host-containers .table-scroll:has(tr.pinned) {
+    overscroll-behavior: contain;
+  }
+}
+
+/* The choices stay however narrow: the table scrolls sideways in its card instead. */
 .host-containers table {
   min-width: var(--host-containers-width);
   table-layout: fixed;
 }
 
-/* The container being worked on stays in view at the top or the bottom of the list, whichever way it scrolled off,
-   and scrolling inside it never moves the page behind. */
+/* The container being worked on stays in view at the top or the bottom of the list, whichever way it scrolled off. */
 .host-containers tr.pinned > td {
   position: sticky;
-  top: var(--compact-head-height);
+  top: calc(var(--list-top) + var(--compact-head-height));
   bottom: 0;
   z-index: 1;
   background: var(--surface-muted);
   box-shadow: inset 0 calc(-1 * var(--border-width)) 0 var(--border);
-}
-
-.host-containers .table-wrap:has(tr.pinned) {
-  overscroll-behavior: contain;
 }
 
 /* Compact: a row a line high, its choices in small menus. */
@@ -97,7 +111,7 @@
 
 .host-containers thead th {
   position: sticky;
-  top: 0;
+  top: var(--list-top);
   z-index: 1;
   height: var(--compact-head-height);
   /* A collapsed border scrolls away from a sticky cell, so its line is drawn on the cell itself. */
