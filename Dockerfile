@@ -1,7 +1,7 @@
 # One image, two modes: "control-plane" (dashboard + API) and "runner" (one per host).
 # Both base images are pinned by digest: bump them by hand.
-ARG BUILDER_IMAGE=node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
-ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs24-debian13:nonroot@sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+ARG BUILDER_IMAGE=node:24-trixie-slim@sha256:4d00acb4bcc42c454c4eb801526f7ad7f772ea3bd4fd168c5cc2e384abcbb9d4
+ARG RUNTIME_IMAGE=gcr.io/distroless/nodejs24-debian13:nonroot@sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693
 
 # The two tool stages copy programs and libraries out of the builder, upgraded first: they ship as Debian has them now,
 # not as the builder's pinned image had them. Their Debian records go into the image beside the base image's own, where
