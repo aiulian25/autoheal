@@ -335,6 +335,10 @@ export const OLLAMA_TEMPERATURE = 0;
 export const OLLAMA_ANSWER_TOKENS = 8_192;
 // A lookup (a batch of package names) is asked without thinking, and its answer is short.
 export const OLLAMA_LOOKUP_TOKENS = 2_048;
+// The longest a format can hold a string or a list to. Past it Ollama keeps the format but drops the limit without a
+// word: 2,000 held and 4,000 was ignored (0.40.8, 26 November). Every limit a format sets stays within it, so a model
+// that keeps repeating itself must close its answer.
+export const OLLAMA_FORMAT_LENGTH_LIMIT = 2_000;
 // How Ollama says an answer stopped at that cap.
 export const OLLAMA_CUT_SHORT = "length";
 export const OLLAMA_ROLE_SYSTEM = "system";
@@ -420,6 +424,8 @@ export const WORK_POLL_INTERVAL_MILLISECONDS = 1 * 1000;
 export const RUNNER_JOB_CONCURRENCY = 3;
 export const OUTCOME_TEXT_LIMIT = 2_000;
 export const DIAGNOSIS_TEXT_LIMIT = 4_000;
+// What the model may write of a diagnosis: as much as a format can hold it to.
+export const DIAGNOSIS_ANSWER_CHARACTERS = OLLAMA_FORMAT_LENGTH_LIMIT;
 export type TraceKind = (typeof TRACE)[keyof typeof TRACE];
 export const INCIDENT_LIST_LIMIT = 100;
 
@@ -2977,7 +2983,7 @@ export const ASSESSMENT_JSON_SCHEMA = {
   type: "object",
   properties: {
     kind: { type: "string", enum: APP_KINDS },
-    reason: { type: "string" },
+    reason: { type: "string", maxLength: ASSESSMENT_REASON_CHARACTERS },
   },
   required: ["kind", "reason"],
 } as const;
@@ -3273,6 +3279,10 @@ export const HOME_REVIEW_LIMITS = {
   messageCharacters: 2_000,
   idCharacters: 16,
   suggestions: 8,
+  // What the model may write of one suggestion: a short title, why in plain words, and one YAML to paste.
+  titleCharacters: 200,
+  whyCharacters: 2_000,
+  yamlCharacters: OLLAMA_FORMAT_LENGTH_LIMIT,
   roomEntities: 150,
   scanMilliseconds: 30_000,
   // What it waits past that for reads under way to end, before answering without them.
@@ -5244,9 +5254,13 @@ export const REPAIR_JSON_SCHEMA = {
   type: "object",
   properties: {
     repair: { type: "string", enum: REPAIRS },
-    findings: { type: "string" },
-    cause: { type: "string" },
-    steps: { type: "array", items: { type: "string" } },
+    findings: { type: "string", maxLength: REPAIR_LIMITS.findingsCharacters },
+    cause: { type: "string", maxLength: REPAIR_LIMITS.findingsCharacters },
+    steps: {
+      type: "array",
+      maxItems: REPAIR_LIMITS.steps,
+      items: { type: "string", maxLength: REPAIR_LIMITS.stepCharacters },
+    },
   },
   required: ["repair", "findings", "cause", "steps"],
 } as const;
@@ -5310,9 +5324,13 @@ export const AGENT_DISPATCH_LIMIT = 100;
 export const FAILURE_REPORT_JSON_SCHEMA = {
   type: "object",
   properties: {
-    findings: { type: "string" },
-    cause: { type: "string" },
-    steps: { type: "array", items: { type: "string" } },
+    findings: { type: "string", maxLength: REPAIR_LIMITS.findingsCharacters },
+    cause: { type: "string", maxLength: REPAIR_LIMITS.findingsCharacters },
+    steps: {
+      type: "array",
+      maxItems: REPAIR_LIMITS.steps,
+      items: { type: "string", maxLength: REPAIR_LIMITS.stepCharacters },
+    },
   },
   required: ["findings", "cause", "steps"],
 } as const;

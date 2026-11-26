@@ -4,7 +4,9 @@ import {
   ACTION_RESTART_DEPENDENCY,
   ALLOWED_ACTIONS,
   DECISION_MESSAGES,
+  DIAGNOSIS_ANSWER_CHARACTERS,
   DIAGNOSIS_TEXT_LIMIT,
+  REPORT_LIMITS,
   RESTARTING_ACTIONS,
   type AllowedAction,
 } from "./constants.js";
@@ -18,11 +20,11 @@ export interface Decision {
 
 const decisionAnswerSchema = z.object({
   action: z.enum(ALLOWED_ACTIONS),
-  target: z.string(),
-  diagnosis: z.string(),
+  target: z.string().max(REPORT_LIMITS.nameCharacters),
+  diagnosis: z.string().max(DIAGNOSIS_ANSWER_CHARACTERS),
 });
 
-// Sent to Ollama as `format`, so the model can only answer in this shape.
+// Sent to Ollama as `format`, so the model can only answer in this shape, and must end its answer.
 const { $schema: _draftUri, ...decisionJsonSchema } = z.toJSONSchema(decisionAnswerSchema);
 export { decisionJsonSchema };
 

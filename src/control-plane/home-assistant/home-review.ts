@@ -81,14 +81,14 @@ const answerSchema = z.object({
     .array(
       z.object({
         kind: z.enum([HOME_SUGGESTION_KIND.fix, HOME_SUGGESTION_KIND.new, HOME_SUGGESTION_KIND.improve]),
-        title: z.string(),
-        why: z.string(),
-        yaml: z.string(),
+        title: z.string().max(HOME_REVIEW_LIMITS.titleCharacters),
+        why: z.string().max(HOME_REVIEW_LIMITS.whyCharacters),
+        yaml: z.string().max(HOME_REVIEW_LIMITS.yamlCharacters),
       }),
     )
     .max(HOME_REVIEW_LIMITS.suggestions),
 });
-const ANSWER_FORMAT = z.toJSONSchema(answerSchema);
+export const HOME_REVIEW_ANSWER_FORMAT = z.toJSONSchema(answerSchema);
 
 const idOf = (record: HomeLogRecord) =>
   createHash("sha256")
@@ -275,7 +275,7 @@ export class HomeReview {
     void (async () => {
       try {
         const { system, user } = await prompt();
-        const parsed = answerSchema.parse(JSON.parse(await ask(system, user, ANSWER_FORMAT)));
+        const parsed = answerSchema.parse(JSON.parse(await ask(system, user, HOME_REVIEW_ANSWER_FORMAT)));
         const known = this.knownEntities(facts() ?? { areas: new Map(), devices: [], entities: [], states: new Map() });
         const suggestions: HomeSuggestion[] = parsed.suggestions.map((suggestion) => ({
           ...suggestion,

@@ -45,6 +45,11 @@ export const NETWORK_LIMITS = {
   logLineCharacters: 4_096,
   listed: 500,
   flowsListed: 200,
+  // What the model may write: two or three sentences about one device; the week's one sentence, then its points.
+  explainCharacters: 2_000,
+  summaryCharacters: 500,
+  reportPoints: 3,
+  pointCharacters: 500,
 } as const;
 
 export const NETWORK_EVENT = {
