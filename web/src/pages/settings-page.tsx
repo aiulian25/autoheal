@@ -18,7 +18,6 @@ import { PackageWindowCard } from "./settings/package-window-card.js";
 import { AlwaysRunningCard } from "./settings/always-running-card.js";
 import { BackupSummary } from "./settings/backup-summary.js";
 import { DataCard } from "./settings/data-card.js";
-import { PeopleSummary } from "./settings/people-summary.js";
 import { WidgetKeysCard } from "./settings/widget-keys-card.js";
 import { SystemFacts } from "./settings/system-facts.js";
 import { SelfUpdateCard } from "./settings/self-update-card.js";
@@ -98,9 +97,8 @@ export function SettingsPage() {
               <DataCard />
             </SettingsBlock>
           )}
-          {shown === SETTINGS_SECTIONS.people && (
-            <SettingsBlock section={SETTINGS_SECTIONS.people}>
-              <PeopleSummary />
+          {shown === SETTINGS_SECTIONS.keys && (
+            <SettingsBlock section={SETTINGS_SECTIONS.keys}>
               <WidgetKeysCard publicBaseUrl={view.publicBaseUrl} />
             </SettingsBlock>
           )}

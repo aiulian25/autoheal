@@ -129,8 +129,8 @@ it("keeps settings highlighting on the browser URL through native clicks, Back/F
   await waitFor(() => selected(nav, words.connections));
 });
 it("keeps a settings subpage's explicit current section regardless of its hash", async () => {
-  const nav = show({ hash: "#notifications", current: "people" });
-  selected(nav, TEXT.settingsPage.nav.people);
+  const nav = show({ hash: "#notifications", current: "keys" });
+  selected(nav, TEXT.settingsPage.nav.keys);
   expect(within(nav).getByRole("link", { name: TEXT.settingsPage.nav.notifications }).getAttribute("href")).toBe(
     `${PATHS.settings}#notifications`,
   );
@@ -141,7 +141,7 @@ it("keeps a settings subpage's explicit current section regardless of its hash",
     window.location.hash = "schedules";
   });
   await waitFor(() => expect(window.location.hash).toBe("#schedules"));
-  selected(nav, TEXT.settingsPage.nav.people);
+  selected(nav, TEXT.settingsPage.nav.keys);
 });
 it("marks Connections for a viewer whose address names a section only administrators have", () => {
   selected(show({ hash: "#backups", role: "viewer" }), TEXT.settingsPage.nav.connections);
@@ -151,7 +151,7 @@ it("preserves viewer navigation filtering and the default section", async () => 
   const nav = show({ hash: "#unknown", role: "viewer" });
   const words = TEXT.settingsPage.nav;
   selected(nav, words.connections);
-  expect(within(nav).queryByRole("link", { name: words.people })).toBeNull();
+  expect(within(nav).queryByRole("link", { name: words.keys })).toBeNull();
   expect(within(nav).queryByRole("link", { name: words.backups })).toBeNull();
   fireEvent.click(within(nav).getByRole("link", { name: words.notifications }));
   await waitFor(() => selected(nav, words.notifications));

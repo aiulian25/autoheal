@@ -1,12 +1,6 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  API_ROUTES,
-  apiPath,
-  type HostView,
-  type SessionView,
-  type StackRestartView,
-} from "../../../src/shared/api.js";
+import { API_ROUTES, apiPath, type HostView, type StackRestartView } from "../../../src/shared/api.js";
 import { containerUsage } from "../../../test/support/inventory.js";
 import { stackRestartQuery } from "./stack-head.js";
 import { timeOfDay } from "../format.js";
@@ -19,7 +13,6 @@ import {
   alder,
   container,
   CONTAINERS,
-  noPanels,
   serve,
   show,
   sent,
@@ -193,6 +186,21 @@ describe("container CPU and RAM in the host table", () => {
 });
 
 describe("a host's containers and what each does", () => {
+  it("offers nothing to change to a session that is not its owner's, in its row or its panel", async () => {
+    serve({ [API_ROUTES.containers]: CONTAINERS });
+    const host = { ...alder(false), containerAccess: true };
+    show(<HostContainers host={host} admin={false} />, { ...session, user: { ...session.user, role: "viewer" } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "attic" }));
+    expect(await screen.findByRole("tab", { name: /Overview/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restart attic" })).toBeNull();
+    expect(screen.queryByRole("button", { name: TEXT.hostContainers.shell("attic") })).toBeNull();
+    expect(screen.queryByRole("button", { name: TEXT.containerDetails.terminal })).toBeNull();
+    expect(screen.queryByRole("button", { name: TEXT.containerDetails.editSettings })).toBeNull();
+    const stack = screen.getByRole("rowheader", { name: /^attic/ });
+    expect(within(stack).queryByRole("button", { name: "Restart stack attic" })).toBeNull();
+  });
+
   it("lists stacks first, then the ones on their own, and says why a choice is fixed", async () => {
     serve({ [API_ROUTES.containers]: CONTAINERS });
     show(<HostContainers host={alder(false)} admin />);
@@ -301,34 +309,6 @@ describe("a host's containers and what each does", () => {
     await waitFor(() => expect(client.getQueryData(stackRestartQuery("h1").queryKey)).toEqual(stopped));
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(screen.queryByText(/Stopped at/)).toBeNull();
-  });
-  it("offers a viewer Restart stack only with a grant on every container it would restart", async () => {
-    // Grants name hosts by id, which the dashboard checks is a UUID.
-    const hostId = "66cc4c4e-efb1-4a02-9e0b-f9ba7c2e7b92";
-    const host = { ...alder(false), id: hostId };
-    const viewer: SessionView = { ...session, user: { ...session.user, role: "viewer" } };
-    const routes = (scope: "container" | "stack") => ({
-      [API_ROUTES.containers]: [container({ hostId }), container({ name: "attic-postgres", hostId })],
-      [apiPath(API_ROUTES.containerUpdates, { hostId })]: null,
-      [apiPath(API_ROUTES.stackRestarts, { hostId })]: null,
-      ...noPanels(hostId),
-      [API_ROUTES.accountPermissions]: {
-        revision: 1,
-        grants: [{ hostId, scope, resource: "attic", actions: ["lifecycle"] }],
-      },
-    });
-    serve(routes("container"));
-    show(<HostContainers host={host} admin={false} />, viewer);
-    // attic is granted, so its own row offers its restart; attic-postgres is not, so the stack is not the viewer's.
-    expect(await screen.findByRole("button", { name: "Restart attic" })).toBeTruthy();
-    const header = screen.getByRole("rowheader", { name: /^attic/ });
-    expect(within(header).queryByRole("button", { name: "Restart stack attic" })).toBeNull();
-
-    cleanup();
-    serve(routes("stack"));
-    show(<HostContainers host={host} admin={false} />, viewer);
-    const granted = await screen.findByRole("rowheader", { name: /^attic/ });
-    expect(await within(granted).findByRole("button", { name: "Restart stack attic" })).toBeTruthy();
   });
   it("sets what one container does when it fails, or when a new image is out, as the control plane keeps it", async () => {
     const fetch = serve({ [API_ROUTES.containers]: CONTAINERS });

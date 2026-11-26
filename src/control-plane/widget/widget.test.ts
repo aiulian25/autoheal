@@ -6,7 +6,7 @@ import {
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith, hostHealth, hostMetrics } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -14,8 +14,12 @@ import {
   type EnrolledHostView,
   type WidgetKeyView,
 } from "../../shared/api.js";
-import { MILLISECONDS_PER_MINUTE } from "../../shared/constants.js";
+import { HTTP_STATUS, MILLISECONDS_PER_MINUTE } from "../../shared/constants.js";
+import { jobs } from "../database/schema.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
+
+// Signed out, or refused the request it brings: a key is never let past the sign-in.
+const REFUSED: readonly number[] = [HTTP_STATUS.unauthorized, HTTP_STATUS.forbidden];
 
 describe("the Homepage widget", () => {
   let controlPlane: TestControlPlane;
@@ -220,9 +224,38 @@ describe("the Homepage widget", () => {
     expect(controlPlane.stdout.join("")).toContain('"scope":"metrics"');
   });
 
-  it("lets only admins manage keys", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.widgetKeys)).statusCode).toBe(403);
-    expect((await viewer.post(API_ROUTES.widgetKeys, { name: "mine" })).statusCode).toBe(403);
+  it("opens nothing but the numbers it reads: no page, no change, no key of its own and no sign-in", async () => {
+    const homepage = await keyFor("Homepage");
+    const prometheus = await keyFor("Prometheus", "metrics");
+    const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+    const hostId = enrolled.host.id;
+    const keys = { "x-api-key": homepage.secret, authorization: `Bearer ${prometheus.secret}` };
+    const attempts = [
+      ["GET", API_ROUTES.session],
+      ["GET", API_ROUTES.hosts],
+      ["GET", API_ROUTES.containers],
+      ["GET", API_ROUTES.settings],
+      ["GET", API_ROUTES.widgetKeys],
+      ["POST", API_ROUTES.widgetKeys],
+      ["DELETE", apiPath(API_ROUTES.widgetKey, { keyId: homepage.key.id })],
+      ["POST", API_ROUTES.hosts],
+      ["POST", apiPath(API_ROUTES.hostActions, { hostId })],
+      ["POST", apiPath(API_ROUTES.hostJoinCode, { hostId })],
+    ] as const;
+    for (const [method, url] of attempts) {
+      const answer = await controlPlane.client().request({
+        method,
+        url,
+        headers: keys,
+        payload: { name: "mine", scope: "widget", label: "Cedar", action: "reboot" },
+      });
+      expect([method, url, REFUSED.includes(answer.statusCode)]).toEqual([method, url, true]);
+      expect(answer.headers["set-cookie"]).toBeUndefined();
+    }
+    const listed = (await admin.get(API_ROUTES.widgetKeys)).json<WidgetKeyView[]>();
+    expect(listed.map(({ name }) => name).sort()).toEqual(["Homepage", "Prometheus"]);
+    expect((await admin.get(API_ROUTES.hosts)).json<unknown[]>()).toHaveLength(1);
+    expect(controlPlane.services.databaseHandle.database.select().from(jobs).all()).toEqual([]);
+    expect((await widget(homepage.secret)).statusCode).toBe(200);
   });
 });

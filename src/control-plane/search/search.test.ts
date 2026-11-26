@@ -15,7 +15,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { heartbeatWith, containerSnapshot } from "../../../test/support/inventory.js";
 import { hostChanges, runbooks, tasks, users } from "../database/schema.js";
 import { randomUUID } from "node:crypto";
@@ -114,9 +114,8 @@ describe("bounded infrastructure search", () => {
     await plane.app.close();
     await plane.runnerApp.close();
   });
-  it("finds every supported entity for existing viewers with safe metadata and valid deep links", async () => {
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    const response = await viewer.get(path("Atlas"));
+  it("finds every supported entity with safe metadata and valid deep links", async () => {
+    const response = await admin.get(path("Atlas"));
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
     const result = response.json<SearchResponse>();
@@ -136,8 +135,8 @@ describe("bounded infrastructure search", () => {
     expect(changeLink("Atlas-gone")).toBe(`/hosts/${host.host.id}#${HOST_CHANGES_ANCHOR}`);
     expect(result.results.length).toBeLessThanOrEqual(SEARCH_LIMITS.results);
     expect(response.body).not.toContain(SECRET);
-    expect((await viewer.get(path(SECRET))).json<SearchResponse>().results).toEqual([]);
-    expect((await viewer.get(path("#42"))).json<SearchResponse>().results).toEqual([
+    expect((await admin.get(path(SECRET))).json<SearchResponse>().results).toEqual([]);
+    expect((await admin.get(path("#42"))).json<SearchResponse>().results).toEqual([
       expect.objectContaining({ kind: "task", title: "Atlas repair" }),
     ]);
     expect((await plane.client().get(path("Atlas"))).statusCode).toBe(401);

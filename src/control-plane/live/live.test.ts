@@ -8,8 +8,10 @@ import {
 import {
   EVERY_RUNNER_CAPABILITY,
   containerSnapshot,
+  containerUsage,
   heartbeatWith,
   hostHealth,
+  hostMetrics,
 } from "../../../test/support/inventory.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, type EnrolledHostView } from "../../shared/api.js";
@@ -18,7 +20,10 @@ import type { LiveEvent } from "./live-events.js";
 import {
   HTTP_HEADERS,
   HTTP_STATUS,
+  LIVE_ALIVE_MESSAGE,
+  LIVE_EVENT,
   LIVE_KEEPALIVE_MILLISECONDS,
+  LIVE_METRICS_CONTAINER_LIMIT,
   LIVE_STREAMS_PER_ACCOUNT,
 } from "../../shared/constants.js";
 
@@ -54,11 +59,12 @@ describe("the live stream", () => {
     vi.advanceTimersByTime(LIVE_KEEPALIVE_MILLISECONDS);
     const response = await stream;
     expect(response.headers[HTTP_HEADERS.contentType]).toContain("text/event-stream");
+    // Alive as it opens and at each keepalive, as an event a page hears: a comment it could not.
     expect(response.body).toBe(
-      ":\n\n" +
+      LIVE_ALIVE_MESSAGE +
         'event: inventory\ndata: {"kind":"inventory","hostId":"h1","changed":true}\n\n' +
         'event: job\ndata: {"kind":"job","hostId":"h1","jobId":"j1"}\n\n' +
-        ":\n\n",
+        LIVE_ALIVE_MESSAGE,
     );
     // The stream that ended left nothing listening: its listener is gone already.
     expect(subscribe.mock.results[0]!.value()).toBe(false);
@@ -89,6 +95,50 @@ describe("the live stream", () => {
     await beat(heartbeatWith({ containers: [stopped], host: hostHealth({ rebootRequired: true }) }));
     const reports = events.filter((event) => event.kind === "inventory");
     expect(reports.map((event) => event.kind === "inventory" && event.changed)).toEqual([true, false, true, true]);
+  });
+
+  it("tells the dashboards each host's latest readings as they arrive, its containers' usage by name", async () => {
+    const events: LiveEvent[] = [];
+    controlPlane.services.live.subscribe((event) => events.push(event));
+    const added = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+    const sent = await controlPlane.runnerApp.inject({
+      method: "POST",
+      url: RUNNER_ROUTES.metrics,
+      headers: { authorization: `Bearer ${runnerTokenOf(added)}` },
+      payload: { host: hostMetrics(), containers: [containerUsage({ name: "paperless" })] },
+    });
+    expect(sent.statusCode, sent.body).toBe(204);
+    const readings = events.find((event) => event.kind === LIVE_EVENT.metrics);
+    expect(readings).toEqual({
+      kind: LIVE_EVENT.metrics,
+      hostId: added.host.id,
+      host: controlPlane.services.metricsStore.latestHost(added.host.id),
+      containers: { paperless: controlPlane.services.metricsStore.latestContainers(added.host.id).get("paperless") },
+    });
+    expect(readings?.kind === LIVE_EVENT.metrics && readings.host).not.toBeNull();
+  });
+
+  it("carries a host's containers' usage up to its limit, and past it leaves their lists to be read instead", async () => {
+    const events: LiveEvent[] = [];
+    controlPlane.services.live.subscribe((event) => events.push(event));
+    const added = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
+    const usage = (count: number) =>
+      Array.from({ length: count }, (_, index) => containerUsage({ name: `app${index}` }));
+    for (const count of [LIVE_METRICS_CONTAINER_LIMIT, LIVE_METRICS_CONTAINER_LIMIT + 1]) {
+      const sent = await controlPlane.runnerApp.inject({
+        method: "POST",
+        url: RUNNER_ROUTES.metrics,
+        headers: { authorization: `Bearer ${runnerTokenOf(added)}` },
+        payload: { host: hostMetrics(), containers: usage(count) },
+      });
+      expect(sent.statusCode, sent.body).toBe(204);
+    }
+    const [carried, tooMany] = events.filter((event) => event.kind === LIVE_EVENT.metrics);
+    expect(carried?.kind === LIVE_EVENT.metrics && Object.keys(carried.containers ?? {})).toHaveLength(
+      LIVE_METRICS_CONTAINER_LIMIT,
+    );
+    expect(tooMany).toMatchObject({ hostId: added.host.id, containers: null });
+    expect(tooMany?.kind === LIVE_EVENT.metrics && tooMany.host).not.toBeNull();
   });
 
   it("closes existing streams during restore before generation invalidation", async () => {

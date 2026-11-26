@@ -6,7 +6,7 @@ import {
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   JOB_QUERY,
@@ -24,6 +24,7 @@ import {
   JOB_ANSWER_MILLISECONDS,
   JOB_EXPIRY_MILLISECONDS,
   JOB_OUTCOMES,
+  JOB_OUTPUT_EVENT_MILLISECONDS,
 } from "../../shared/constants.js";
 import {
   RUNNER_ROUTES,
@@ -321,6 +322,31 @@ describe("container actions", () => {
     ]);
   });
 
+  it("tells the dashboards a running job's output as it grows, at most once a second", async () => {
+    const heard: LiveEvent[] = [];
+    const job = (await ask("whoami", { action: "update" })).json<JobView>();
+    await takeWork();
+    controlPlane.services.live.subscribe((event) => heard.push(event));
+    const output = async (text: string) =>
+      (
+        await controlPlane.runnerApp.inject({
+          method: "POST",
+          url: apiPath(RUNNER_ROUTES.jobProgress, { jobId: job.id }),
+          payload: { output: text },
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).statusCode;
+    expect(await output("Reading package lists...")).toBe(204);
+    expect(await output("Reading package lists... Done")).toBe(204);
+    controlPlane.clock.now += JOB_OUTPUT_EVENT_MILLISECONDS;
+    expect(await output("Unpacking openssl")).toBe(204);
+    // Said to be output alone: nothing of where the job stands changed.
+    expect(heard).toEqual([
+      { kind: "job", hostId, jobId: job.id, output: true },
+      { kind: "job", hostId, jobId: job.id, output: true },
+    ]);
+  });
+
   it("lets a person start, stop or remove a copy an update kept aside, though Autoheal keeps its hands off it", async () => {
     const old = "paperless-autoheal-old";
     await report([
@@ -365,9 +391,7 @@ describe("container actions", () => {
     expect((await takeWork()).jobs.map((job) => job.action)).toEqual(["check_updates"]);
   });
 
-  it("refuses viewers, containers the host does not have, and updates a label turned off", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await ask("paperless", { action: "restart" }, viewer)).statusCode).toBe(403);
+  it("refuses containers the host does not have, and updates a label turned off", async () => {
     expect((await ask("ghost", { action: "restart" })).json()).toEqual({ error: "container_not_found" });
     expect((await ask("postgres", { action: "update" })).json()).toEqual({ error: "job_unavailable" });
     expect((await ask("paperless", { action: "check_updates" })).statusCode).toBe(400);

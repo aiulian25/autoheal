@@ -24,6 +24,7 @@ import {
   TASK_SHOW,
   TEXT,
 } from "../constants.js";
+import { liveAware } from "../live-health.js";
 import { bytes, decimal, precisePercent, rate } from "../format.js";
 import { enrolledHostsQuery } from "../queries.js";
 import { isAdmin, useSignedInSession } from "../session.js";
@@ -232,7 +233,7 @@ function ContainerList() {
   const containers = useQuery({
     queryKey: ["containers", query],
     queryFn: () => api<ContainerView[]>("GET", `${API_ROUTES.containers}?${query}`),
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+    refetchInterval: liveAware(INVENTORY_REFRESH_MILLISECONDS),
   });
   return (
     <div className="stack">

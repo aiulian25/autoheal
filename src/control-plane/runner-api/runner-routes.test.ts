@@ -8,7 +8,7 @@ import {
   type TestControlPlane,
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { RUNNER_BODY_LIMIT_BYTES, HOST_SILENT_AFTER_MILLISECONDS } from "../../shared/constants.js";
 import { decodeEnrolment } from "../../shared/join-code.js";
@@ -108,14 +108,6 @@ describe("host enrolment and the runner API", () => {
     expect((await sendHeartbeat(token, { ...heartbeat, dryRun: "yes" })).statusCode).toBe(400);
     const oversized = { ...heartbeat, runnerVersion: "x".repeat(RUNNER_BODY_LIMIT_BYTES) };
     expect((await sendHeartbeat(token, oversized)).statusCode).toBe(413);
-  });
-
-  it("lets viewers see the fleet but not change it", async () => {
-    const { host } = await enroll("HP");
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.hosts)).statusCode).toBe(200);
-    expect((await viewer.post(API_ROUTES.hosts, { label: "Alder" })).statusCode).toBe(403);
-    expect((await viewer.post(apiPath(API_ROUTES.hostRevoke, { hostId: host.id }))).statusCode).toBe(403);
   });
 
   describe("over real HTTPS", () => {

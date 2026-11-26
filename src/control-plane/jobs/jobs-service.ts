@@ -59,6 +59,7 @@ import {
   WHOLE_HOST_ACTIONS,
   UPDATE_POLICY,
   type JobAction,
+  JOB_OUTPUT_EVENT_MILLISECONDS,
   LIVE_EVENT,
 } from "../../shared/constants.js";
 import type { Job, JobProgress, JobResult, UpdateProgress } from "../../shared/protocol.js";
@@ -114,6 +115,8 @@ export class JobsService {
   private readonly finishedListeners: ((job: JobRow, succeeded: boolean) => void)[] = [];
   // Each update or recreate on its way: what its runner said of it last. Gone with the job's end, or a restart.
   private readonly progressOf = new Map<string, UpdateProgress>();
+  // When each running job's output was last told to the dashboards.
+  private readonly outputToldAt = new Map<string, number>();
 
   constructor(
     private readonly databaseHandle: DatabaseHandle,
@@ -501,11 +504,20 @@ export class JobsService {
     }
     if (progress.output !== undefined) {
       this.database.update(jobs).set({ output: progress.output }).where(eq(jobs.id, jobId)).run();
+      this.tellOutput(host.id, jobId);
     }
     if (progress.update !== undefined) {
       this.progressOf.set(jobId, progress.update);
       this.live.publish({ kind: LIVE_EVENT.progress, hostId: host.id, jobId, progress: progress.update });
     }
+  }
+
+  // A package job's output reaches the pages that show it as it runs, at most once a second however often it grows.
+  private tellOutput(hostId: string, jobId: string) {
+    const now = this.clock();
+    if (now - (this.outputToldAt.get(jobId) ?? 0) < JOB_OUTPUT_EVENT_MILLISECONDS) return;
+    this.outputToldAt.set(jobId, now);
+    this.live.publish({ kind: LIVE_EVENT.job, hostId, jobId, output: true });
   }
 
   /**
@@ -836,6 +848,7 @@ export class JobsService {
 
   private announce(job: JobRow, succeeded: boolean) {
     this.progressOf.delete(job.id);
+    this.outputToldAt.delete(job.id);
     this.live.publish({ kind: LIVE_EVENT.job, hostId: job.hostId, jobId: job.id });
     for (const listener of this.finishedListeners) {
       listener(job, succeeded);

@@ -220,7 +220,7 @@ describe("the settings page", () => {
     const router = renderSettings("admin");
     const section = (name: string) => screen.queryByRole("heading", { name, level: 2 });
     expect(await screen.findByRole("heading", { name: "Connections", level: 2 })).toBeTruthy();
-    for (const other of ["Notifications", "Schedules", "Backups", "People and keys", "System"]) {
+    for (const other of ["Notifications", "Schedules", "Backups", "Read-only integrations", "System"]) {
       expect(section(other)).toBeNull();
     }
     await act(() => router.navigate("#backups"));
@@ -263,7 +263,7 @@ describe("the settings page", () => {
     expect(data.open).toBe(false);
     await waitFor(() => expect(data.querySelector("summary")!.textContent).toContain(bytes(DATA.bytes)));
 
-    await act(() => router.navigate("#people"));
+    await act(() => router.navigate("#keys"));
     const keys = await fold("Widget and metrics keys");
     expect(keys.open).toBe(false);
     // A host's SSH key is set on that host's page: no list of them is kept here.

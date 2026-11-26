@@ -50,7 +50,9 @@ import {
   UPDATE_FIRST_CHECK_MILLISECONDS,
   UPDATE_NEW_IMAGE_CHECK_MILLISECONDS,
   WORK_POLL_INTERVAL_MILLISECONDS,
+  REPORT_SCOPE,
   RUNNER_CAPABILITY,
+  type ReportScope,
   type RunnerCapability,
 } from "../shared/constants.js";
 import { describeError } from "../shared/errors.js";
@@ -221,7 +223,13 @@ interface RunnerRuntime {
   hostFacts: HostFactsWatch;
   maintenance: MaintenanceGate | null;
   heartbeatRunning: boolean;
-  heartbeatAgain: boolean;
+  // A report asked for while one was being made: the next goes once that one is sent, as wide as the widest asked.
+  pendingReport: ReportScope | null;
+  // The checks a report gave, made beside the reports; one batch at a time.
+  probing: boolean;
+  // Results waiting for the control plane, sent after a report; and whether a report came while they were.
+  delivering: boolean;
+  deliverAgain: boolean;
   metricsRunning: boolean;
   // What went wrong with the last stats report, logged once rather than every few seconds.
   metricsProblem: string | null;
@@ -366,7 +374,10 @@ export async function createRuntime(
     policy: () => trust.policy,
     read: (reference, digest) => provenance.read(reference, digest),
   };
-  const updates = new ImageUpdateChecker(docker, provenanceRegistry, Date.now, provenanceSource);
+  // Called only once a check is under way, long after the runtime below exists.
+  const updates = new ImageUpdateChecker(docker, provenanceRegistry, Date.now, provenanceSource, () =>
+    reportSoon(runtime),
+  );
   const hostScript = ports.hostScript ?? hostScriptThroughDocker(docker, config.selfContainerName, sleep, Date.now);
   const registry = new RegistryClient(fetch, () => registries.allowed);
   const stackImageExists = imageExistsWith(
@@ -448,7 +459,10 @@ export async function createRuntime(
     hostFacts: new HostFactsWatch(config.hostRoot, ports.hostFiles),
     maintenance,
     heartbeatRunning: false,
-    heartbeatAgain: false,
+    pendingReport: null,
+    probing: false,
+    delivering: false,
+    deliverAgain: false,
     metricsRunning: false,
     metricsProblem: null,
     maintenanceProblem: null,
@@ -844,11 +858,13 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
   if (runtime.controlPlane === null) {
     return;
   }
+  const scope = containersOnly ? REPORT_SCOPE.containers : REPORT_SCOPE.full;
   if (runtime.heartbeatRunning) {
-    runtime.heartbeatAgain = true;
+    runtime.pendingReport = widestOf(runtime.pendingReport, scope);
     return;
   }
   runtime.heartbeatRunning = true;
+  let delivered = false;
   try {
     const full = !containersOnly;
     const [host, containers, unusedImages, networks, volumes, clockOffset, runnerUpdate] = await Promise.all([
@@ -865,6 +881,7 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
     const clockOffSeconds = runtime.maintenance?.clockOffSeconds ?? null;
     // The dashboard keeps these fields, and checks the same names on each request.
     const capabilities = new Set(runnerCapabilities(runtime.config));
+    const probeResults = runtime.serviceProbes.reports;
     const payload: Heartbeat = {
       applicationBackups: capabilities.has(RUNNER_CAPABILITY.applicationBackups),
       rollouts: capabilities.has(RUNNER_CAPABILITY.rollouts),
@@ -892,7 +909,7 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
       hostDeploy: runtime.config.hostDeploy,
       serviceProbes: true,
       probeAttempts: true,
-      ...(runtime.serviceProbes.reports.length === 0 ? {} : { probeResults: runtime.serviceProbes.reports }),
+      ...(probeResults.length === 0 ? {} : { probeResults }),
       ...(driftReport === null ? {} : { stackDrift: driftReport }),
       ...(clockOffSeconds === null ? {} : { clockSkewSeconds: clockOffSeconds }),
       ...(clockOffset === null ? {} : { hostClock: Date.now() + clockOffset }),
@@ -907,33 +924,74 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
     if (answer !== null) {
       runtime.registries.allowed = answer.registries ?? [];
       runtime.trust.policy = answer.imageTrust ?? EMPTY_TRUST_POLICY;
-      // What was reported has been taken; the checks this answer gives are made before the next report.
-      runtime.serviceProbes.reports = [];
-      const given = answer.probes ?? [];
-      if (given.length > 0) {
-        // The whole batch is bounded by the deadline the control plane waits for, each check by its own timeout.
-        const deadline = AbortSignal.timeout(PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND);
-        runtime.serviceProbes.reports = await runtime.serviceProbes.checks.run(given, deadline).catch(() => []);
-        runtime.heartbeatAgain = true;
-      }
+      // What was reported has been taken; results that came in since go with the next report.
+      runtime.serviceProbes.reports = runtime.serviceProbes.reports.filter((report) => !probeResults.includes(report));
+      startProbes(runtime, answer.probes ?? []);
     }
     // A reset it had not heard of: the dashboard learns at once, from the report that follows this one.
-    if (runtime.guard.resetRestarts(answer?.control?.restartsResetAt, Date.now())) runtime.heartbeatAgain = true;
+    if (runtime.guard.resetRestarts(answer?.control?.restartsResetAt, Date.now())) {
+      runtime.pendingReport = widestOf(runtime.pendingReport, REPORT_SCOPE.containers);
+    }
     if (!runtime.reachingControlPlane) {
       log(RUNNER_MESSAGES.reachedControlPlane(runtime.config.controlPlane?.url ?? ""));
     }
     runtime.reachingControlPlane = true;
-    await runtime.decider.flushOutbox();
-    await runtime.applicationBackups.flush();
+    delivered = true;
   } catch (error) {
     runtime.reachingControlPlane = false;
     log(RUNNER_MESSAGES.controlPlaneCall(CONTROL_PLANE_CALLS.heartbeat, describeError(error)));
   } finally {
     runtime.heartbeatRunning = false;
   }
-  if (runtime.heartbeatAgain && !runtime.lifecycle.stopping) {
-    runtime.heartbeatAgain = false;
-    await heartbeat(runtime);
+  if (delivered) void runtime.lifecycle.run(() => deliverResults(runtime));
+  const next = runtime.pendingReport;
+  if (next !== null && !runtime.lifecycle.stopping) {
+    runtime.pendingReport = null;
+    await heartbeat(runtime, { containersOnly: next === REPORT_SCOPE.containers });
+  }
+}
+
+// Everything when either asked for everything; the containers alone when only they were.
+export const widestOf = (pending: ReportScope | null, asked: ReportScope): ReportScope =>
+  pending === REPORT_SCOPE.full || asked === REPORT_SCOPE.full ? REPORT_SCOPE.full : REPORT_SCOPE.containers;
+
+/**
+ * The checks an answer gave, made beside the reports so a slow one never holds the next report back, a container's
+ * change included. Their results go with the report that follows them. A batch still running skips the next.
+ */
+function startProbes(runtime: RunnerRuntime, given: NonNullable<HeartbeatResponse["probes"]>) {
+  if (given.length === 0 || runtime.probing) return;
+  runtime.probing = true;
+  void runtime.lifecycle.run(async () => {
+    try {
+      // The whole batch is bounded by the deadline the control plane waits for, each check by its own timeout.
+      const deadline = AbortSignal.timeout(PROBE_LIMITS.vantageDeadlineSeconds * MILLISECONDS_PER_SECOND);
+      const reports = await runtime.serviceProbes.checks.run(given, deadline).catch(() => []);
+      runtime.serviceProbes.reports = [...runtime.serviceProbes.reports, ...reports];
+    } finally {
+      runtime.probing = false;
+    }
+    await heartbeat(runtime, { containersOnly: true });
+  });
+}
+
+/** Results waiting for the control plane, sent after a report rather than inside it: one delivery at a time. */
+async function deliverResults(runtime: RunnerRuntime) {
+  if (runtime.delivering) {
+    runtime.deliverAgain = true;
+    return;
+  }
+  runtime.delivering = true;
+  try {
+    do {
+      runtime.deliverAgain = false;
+      await runtime.decider.flushOutbox();
+      await runtime.applicationBackups.flush();
+    } while (runtime.deliverAgain && !runtime.lifecycle.stopping);
+  } catch (error) {
+    log(RUNNER_MESSAGES.controlPlaneCall(CONTROL_PLANE_CALLS.results, describeError(error)));
+  } finally {
+    runtime.delivering = false;
   }
 }
 

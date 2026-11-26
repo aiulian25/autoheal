@@ -1,34 +1,4 @@
-/* --- Attention's Updates: choosing, handing over, and the rows. */
-
-/* The Updates heading with its choosing and handing over on the right; they wrap under it on a phone. */
-.section-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-3);
-}
-
-.section-actions {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.section-actions > button.link {
-  color: var(--text-soft);
-  font-size: var(--text-small);
-}
-
-.decision.handable {
-  cursor: grab;
-}
-
-.decision-meta > .grip {
-  width: 16px;
-  height: 16px;
-  margin-right: -4px;
-}
+/* --- Attention: one card for each place with things for a person, their rows, and what waits for a look. */
 
 /* Whether the agent can take work now, beside what it has in hand. */
 .side-row {
@@ -57,9 +27,9 @@
   color: var(--danger);
 }
 
-/* In one column: the Ollama agent first, then the hosts, what needs you, and the side's own cards. With room for two,
-   the agent heads the side column in the hosts' corner, the column as tall as the page, so the agent stays in sight
-   however far down it goes: whatever is dragged can always reach it. */
+/* In one column: the Ollama agent first, then what needs you, and the side's own cards. With room for two, the agent
+   heads the side column, the column as tall as the page, so the agent stays in sight however far down it goes:
+   whatever is dragged can always reach it. */
 .attention-layout {
   display: flex;
   flex-direction: column;
@@ -102,15 +72,8 @@
   .attention-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--side-column-width);
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      "strip side"
-      "main side";
+    grid-template-areas: "main side";
     align-items: start;
-  }
-
-  .attention-layout > .status-strip {
-    grid-area: strip;
   }
 
   .attention-main {
@@ -166,156 +129,50 @@
   color: var(--text-faint);
 }
 
-.decision {
-  gap: 0;
-  padding: 20px 22px;
-}
-
-.decision.waiting {
-  border-color: var(--warning-border);
-}
-
-.decision-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-  font-size: var(--text-small);
-}
-
-.decision-name {
-  margin-top: 16px;
-  font-size: var(--text-name);
-  font-weight: var(--weight-strong);
-}
-
-.decision .reading {
-  margin-top: 4px;
-}
-
-.decision .chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: 12.5px;
-}
-
-.decision .card-actions {
-  margin-top: 12.5px;
-}
-
-.decision .chips + .card-actions {
-  margin-top: 13.5px;
-}
-
-/* A plain-text choice sits closer to the buttons before it than a button's own padding, as drawn. */
-.decision .card-actions button.quiet {
-  padding-inline: 12px;
-}
-
-/* Columns only for the cards there are: a lone one takes the whole row. */
-.fix-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: var(--space-3);
-}
-
-.fix {
-  gap: 0;
-  padding-bottom: 18px;
-}
-
-.fix-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.fix-head h3 {
-  font-size: var(--text-large);
-  font-weight: var(--weight-strong);
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-.fix-figure {
-  font-size: var(--text-figure);
-  font-weight: var(--weight-strong);
-  line-height: 1.2;
-}
-
-.fix .bar {
-  margin-top: 16px;
-}
-
-.fix > p {
-  margin-top: 13px;
-}
-
-.fix .card-actions {
-  margin-top: 11.5px;
-  gap: 10px;
-}
-
-/* How long to put it off, on its own row under the way there and Done. */
-.fix .card-actions .snooze-choices {
-  flex-basis: 100%;
-}
-
-/* The way to the host is a touch taller and tighter than a plain button, as drawn. */
-.fix .card-actions .button {
-  min-height: 46px;
-  padding-inline: 14px;
-}
-
-/* Nothing in it paints to its edges, so nothing is clipped: a row's Ignore menu opens past the card's foot. */
-.update-group {
+/* One place's card: its head, then rows. Nothing in it paints to its edges, so nothing is clipped: a row's Ignore
+   menu opens past the card's foot. */
+.place-card {
   background: var(--surface);
   border: var(--border-width) solid var(--border);
   border-radius: var(--radius-large);
 }
 
-.update-group > summary {
+.place-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  min-height: 56px;
-  padding: 4px 20px 0;
-  list-style: none;
-  cursor: pointer;
-  color: var(--text-muted);
-  font-size: var(--text-large);
-}
-
-.update-group > summary::-webkit-details-marker {
-  display: none;
-}
-
-/* Its head is drawn as its own row, with the group's count and actions: no chevron. */
-.update-group > summary::before {
-  content: none;
-}
-
-.update-group > summary strong {
-  color: var(--text);
-  font-weight: var(--weight-medium);
-}
-
-.update-group > summary a,
-.update-group > summary .accent {
-  font-size: var(--text-body);
-}
-
-.update-group[open] > summary {
+  gap: var(--space-2) 14px;
+  min-height: 52px;
+  padding: 8px 20px;
   border-bottom: var(--border-width) solid var(--border);
+}
+
+.place-head h3 {
+  font-size: var(--text-large);
+  font-weight: var(--weight-strong);
+}
+
+.place-facts {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+/* The way to the place's own page, at the head's far end; the foot's hand-over at its own. */
+.place-head > .push,
+.update-group-foot > .push,
+.look-row > .push {
+  margin-left: auto;
 }
 
 .update-rows {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+/* A place's problems, then its updates: one run of rows, ruled as one. */
+.place-card > .update-rows + .update-rows {
+  border-top: var(--border-width) solid var(--divider);
 }
 
 .update-row {
@@ -330,17 +187,18 @@
   border-top: var(--border-width) solid var(--divider);
 }
 
-/* On Attention a row starts with its handle and its tick, then a tile with what kind of update it is. */
-.update-group .update-row {
+/* On Attention a row starts with its handle and its tick, then a tile with what kind of thing it is. */
+.place-card .update-row {
+  position: relative;
   gap: 12px;
 }
 
-.update-group .update-row.handable {
+.place-card .update-row.handable {
   cursor: grab;
 }
 
-.update-group .update-row > .grip,
-.update-group .update-row > .grip-space {
+.place-card .update-row > .grip,
+.place-card .update-row > .grip-space {
   flex: none;
   width: 16px;
   height: 16px;
@@ -350,8 +208,8 @@
   color: var(--next-ring);
 }
 
-.update-group .update-row > input[type="checkbox"],
-.update-group .update-row > .tick-space {
+.place-card .update-row > input[type="checkbox"],
+.place-card .update-row > .tick-space {
   margin: 0 6px 0 4px;
 }
 
@@ -373,6 +231,82 @@
   height: 16px;
 }
 
+.update-tile.tone-danger {
+  border-color: var(--danger-ring);
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+.update-tile.tone-warning {
+  border-color: var(--warning-ring);
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+/* A problem's or a decision's row: a mark of its tone on the card's edge, its words over two lines, its buttons. */
+.place-row {
+  align-items: flex-start;
+  padding-block: 11px;
+}
+
+.place-row.tone-accent {
+  --tone: var(--accent);
+}
+
+.place-row::before {
+  content: "";
+  position: absolute;
+  inset: 9px auto 9px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--tone);
+}
+
+.place-row > .update-tile,
+.place-row > .grip,
+.place-row > .grip-space,
+.place-row > .tick-space {
+  margin-top: 1px;
+}
+
+.row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.row-title h3 {
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+  overflow-wrap: anywhere;
+}
+
+.row-tag {
+  padding: 0 7px;
+  border: var(--border-width) solid color-mix(in srgb, var(--tone) 45%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--tone);
+  font-size: var(--text-badge);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+}
+
+.row-detail {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.row-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .update-row > .badge {
   flex: none;
 }
@@ -382,7 +316,7 @@
   font-weight: var(--weight-medium);
 }
 
-/* Under the rows: the way to apply the ticked ones, one at a time. */
+/* Under the rows: the way to apply the ticked ones, one at a time, and to hand them to Ollama. */
 .update-group-foot {
   display: flex;
   flex-wrap: wrap;
@@ -477,4 +411,172 @@
 .side-facts dd {
   margin: 0;
   text-align: right;
+}
+
+.section-count {
+  padding: 0 7px;
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius-pill);
+  color: var(--text-soft);
+  font-size: var(--text-badge);
+  letter-spacing: normal;
+}
+
+/* How the fleet stands, under the title: what is fine counted, what is wrong named, each a small fact of its own. */
+.fleet-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  margin: 0 0 22px;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.fleet-line > span,
+.fleet-line > .fleet-wrong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fleet-line strong {
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+}
+
+.fleet-line strong.text-danger {
+  color: var(--danger);
+}
+
+.fleet-line .fleet-wrong,
+.fleet-line .fleet-wrong strong {
+  color: var(--danger);
+  text-decoration: none;
+}
+
+/* What waits for a look: the same cards, lighter, two to a row where there is room. */
+.look-at-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.place-card.light .place-head {
+  min-height: 44px;
+}
+
+.look-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.look-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 12px 4px 20px;
+  font-size: var(--text-small);
+}
+
+.look-row + .look-row {
+  border-top: var(--border-width) solid var(--divider);
+}
+
+.look-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.look-dot.quiet {
+  background: var(--text-faint);
+}
+
+.look-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.look-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.look-row > button.link {
+  font-size: var(--text-small);
+}
+
+/* Put off by a person: one quiet line, opened in place. */
+.snoozed-fold > summary {
+  gap: 10px;
+  color: var(--text-soft);
+  font-size: var(--text-small);
+}
+
+.snoozed-fold > summary > .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snoozed-fold > .look-rows {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface);
+}
+
+/* Nothing for a person at all: one calm card. */
+.all-clear {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 14px;
+  border-color: var(--good-ring);
+}
+
+.all-clear h2 {
+  margin-bottom: 3px;
+  font-size: var(--text-large);
+}
+
+.all-clear p {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  line-height: 1.55;
+}
+
+.all-clear-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: var(--border-width) solid var(--good-ring);
+  border-radius: 50%;
+  background: var(--good-wash);
+  color: var(--good);
+}
+
+.all-clear-mark .icon {
+  width: 17px;
+  height: 17px;
+}
+
+/* How long to put something off: a menu as tall as the buttons beside it. */
+.snooze-menu {
+  width: auto;
+  font-size: var(--text-small);
 }

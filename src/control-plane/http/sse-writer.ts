@@ -3,7 +3,13 @@ import type { FastifyReply } from "fastify";
 import { EVENT_STREAM_KEEPALIVE, SSE_BUFFER_LIMIT_BYTES } from "../../shared/constants.js";
 
 /** No secondary queue: a slow reader reconnects instead of holding producers or retaining output. */
-export function sseWriter(reply: FastifyReply, keepaliveMilliseconds: number, isLive = () => true) {
+export function sseWriter(
+  reply: FastifyReply,
+  keepaliveMilliseconds: number,
+  isLive = () => true,
+  // What keeps the stream alive: a comment by default; an event where the page must hear it.
+  keepalive: string = EVENT_STREAM_KEEPALIVE,
+) {
   // Room for the complete terminal replay before Fastify attaches its consumer.
   const stream = new PassThrough({ highWaterMark: SSE_BUFFER_LIMIT_BYTES / 2 });
   const cleanups = new Set<() => void>();
@@ -52,7 +58,7 @@ export function sseWriter(reply: FastifyReply, keepaliveMilliseconds: number, is
   });
   const timer = setInterval(() => {
     try {
-      if (isLive()) write(EVENT_STREAM_KEEPALIVE);
+      if (isLive()) write(keepalive);
       else end();
     } catch {
       close();

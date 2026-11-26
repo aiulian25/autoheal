@@ -6,7 +6,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
@@ -106,12 +106,6 @@ describe("how a host's stacks differ from their files", () => {
       stackDrift: { checkedAt: 200, stacks: [{ ...drift("wiki"), revision: "not-a-revision" }] },
     });
     expect(badRevision.statusCode).toBe(400);
-  });
-
-  it("is for those who run the host, not a viewer", async () => {
-    await report({ checkedAt: 100, stacks: [drift("wiki")] });
-    const viewer = await fullySignedInUser(plane, admin, "operator", "viewer");
-    expect((await viewer.client.get(path())).statusCode).toBe(403);
   });
 
   it("hands a reviewed recreate to the runner with what was reviewed, and refuses a malformed one", async () => {

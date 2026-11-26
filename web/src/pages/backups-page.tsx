@@ -29,8 +29,7 @@ function RestorePreview({ preview, onDone }: { preview: RestorePreviewView; onDo
     onSettled: onDone,
   });
   const warnings = [
-    preview.usersReactivated.length > 0 && TEXT.backups.reactivated(preview.usersReactivated),
-    preview.usersAdded.length > 0 && TEXT.backups.added(preview.usersAdded),
+    preview.ownerChanges && TEXT.backups.owner(preview.owner),
     preview.hostsRestored.length > 0 && TEXT.backups.hosts(preview.hostsRestored),
   ].filter((warning): warning is string => typeof warning === "string");
   return (

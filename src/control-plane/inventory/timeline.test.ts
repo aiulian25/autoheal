@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -18,7 +18,6 @@ import {
   INCIDENT_STATUS,
   JOB_ACTION,
   JOB_STATUS,
-  ROLE_VIEWER,
   TASK_ACTIVITY,
   TASK_PRIORITY,
   TASK_RESOURCE,
@@ -206,10 +205,9 @@ describe("a container's timeline", () => {
     expect(named(entries.at(-1)!)).toBe(`incident crash-${incidents + changes - CONTAINER_TIMELINE_ENTRIES + 1}`);
   });
 
-  it("is there for anyone fully signed in, and refuses an address that names no host", async () => {
+  it("is there fully signed in, and refuses an address that names no host", async () => {
     seed().incident("crash", "paperless", 1);
-    const viewer = (await fullySignedInUser(controlPlane, admin, "viewer", ROLE_VIEWER)).client;
-    expect((await timelineOf(viewer, "paperless")).json<ContainerTimelineEntry[]>()).toHaveLength(1);
+    expect((await timelineOf(admin, "paperless")).json<ContainerTimelineEntry[]>()).toHaveLength(1);
     expect((await timelineOf(admin, "nothing-here")).json<ContainerTimelineEntry[]>()).toEqual([]);
 
     expect((await timelineOf(controlPlane.client(), "paperless")).statusCode).toBe(HTTP_STATUS.unauthorized);

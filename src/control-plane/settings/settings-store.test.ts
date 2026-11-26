@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startTestControlPlane, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type SettingsView, type IntegrationView } from "../../shared/api.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -100,7 +100,7 @@ describe("invalid settings diagnostics and repair", () => {
   });
 });
 
-it("starts with corrupt persisted settings, exposes graceful fallback and gives only administrators a redacted repair notice", async () => {
+it("starts with corrupt persisted settings, exposes graceful fallback and a redacted repair notice", async () => {
   const printed = vi.spyOn(console, "log").mockImplementation(() => {});
   const directory = mkdtempSync(join(tmpdir(), "autoheal-invalid-settings-"));
   const databasePath = join(directory, "settings.sqlite");
@@ -127,7 +127,6 @@ it("starts with corrupt persisted settings, exposes graceful fallback and gives 
       homeAssistant: { url: "https://ha.test", token: "environment-token" },
     });
     const { client: admin } = await fullySignedInAdmin(cp);
-    const { client: viewer } = await fullySignedInUser(cp, admin, "reader", "viewer");
     const current = (await admin.get(API_ROUTES.settings)).json<SettingsView>();
     expect(current.invalidSettings?.sort()).toEqual([...keys].sort());
     expect(current.trustedProxies).toMatchObject({ source: null, addresses: [] });
@@ -149,9 +148,7 @@ it("starts with corrupt persisted settings, exposes graceful fallback and gives 
     const updates = await admin.get(API_ROUTES.hostUpdateSettings);
     expect(updates.statusCode).toBe(200);
     expect(updates.json()).toMatchObject({ windowStart: "03:00", windowEnd: "05:00" });
-    expect((await viewer.get(API_ROUTES.settings)).json()).not.toHaveProperty("invalidSettings");
     const path = apiPath(API_ROUTES.integration, { kind: "gotify" });
-    expect((await viewer.put(path, { url: "https://notify.test", token: "new-token" })).statusCode).toBe(403);
     expect((await admin.put(path, { url: "https://notify.test" })).json()).toEqual({
       error: "integration_token_required",
     });

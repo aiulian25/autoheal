@@ -16,7 +16,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
 import { AGENT_AUTOHEAL, JOB_ACTION } from "../../shared/constants.js";
 
@@ -43,13 +43,9 @@ describe("maintenance windows", () => {
     await plane.app.close();
     await plane.runnerApp.close();
   });
-  it("requires supported runners and authorized actors; persists scoped windows, expiry, extension and cancellation", async () => {
+  it("requires supported runners; persists scoped windows, expiry, extension and cancellation", async () => {
     expect((await create()).statusCode).toBe(409);
     await heartbeat();
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    expect(
-      (await viewer.post(route(), { containerName: null, reason: "No", expiresAt: plane.clock.now + 1000 })).statusCode,
-    ).toBe(403);
     const created = await create("paperless");
     expect(created.statusCode).toBe(200);
     const view = created.json<MaintenanceView>();

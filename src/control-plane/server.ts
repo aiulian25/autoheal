@@ -69,7 +69,6 @@ import {
 import { registerTerminalRoutes } from "./container-access/terminal-routes.js";
 import { arrivalOf } from "./http/request-context.js";
 import type { ControlPlaneServices } from "./services.js";
-import { registerUsersRoutes } from "./users/users-routes.js";
 import { registerJarvisRoutes } from "./jarvis/jarvis-routes.js";
 import { registerWidgetRoutes } from "./widget/widget-routes.js";
 
@@ -118,7 +117,6 @@ export async function buildUserInterfaceServer(options: UserInterfaceServerOptio
   registerStackRoutes(app, options.services.stackFiles);
   registerContainerBackupRoutes(app, options.services.containerBackups);
   registerInstallRoutes(app, options.services.installs);
-  registerUsersRoutes(app, options.services.usersService, options.services.resourcePermissions);
   registerHostsRoutes(app, options.services.hostsService, options.services.localHostService);
   registerSelfUpdateRoutes(app, options.services.selfUpdate);
   registerSshRoutes(

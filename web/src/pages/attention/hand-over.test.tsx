@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES, apiPath } from "../../../../src/shared/api.js";
+import { API_ROUTES } from "../../../../src/shared/api.js";
 import { AGENT_DRAG_TYPE, TEXT } from "../../constants.js";
 import {
   alder,
@@ -24,20 +24,18 @@ describe("handing work to the Ollama agent", () => {
     vi.unstubAllGlobals();
   });
 
-  it("ticks every update its runner would take, and dispatches the ticked ones to the agent", async () => {
+  it("ticks what its runner would take on a host's card, and hands the ticked ones to the agent from its foot", async () => {
     const fetch = serve("admin", board, { homeAssistant: null }, heldPackages);
     renderAttention("admin");
 
-    const all = await screen.findByRole("button", { name: "Select all (4)" });
-    expect(await screen.findByRole("checkbox", { name: "Update netdata-user" })).toBeTruthy();
-    expect(screen.getByText("Drag & drop active")).toBeTruthy();
-    expect(screen.getByText(/to run with LLM supervision/)).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Dispatch to Ollama Agent" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(all);
-    expect(screen.getAllByRole("checkbox").every((box) => (box as HTMLInputElement).checked)).toBe(true);
-    expect(screen.getByRole("button", { name: "Clear selection" })).toBeTruthy();
+    const hand = await screen.findByRole("button", { name: "Hand 0 to Ollama" });
+    expect((hand as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.attention.reviewCount(2) }));
+    for (const name of ["quantum", "radicale", "netdata-dashboard", "netdata-user"]) {
+      fireEvent.click(await screen.findByRole("checkbox", { name: `Update ${name}` }));
+    }
 
-    fireEvent.click(screen.getByRole("button", { name: "Dispatch to Ollama Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hand 4 to Ollama" }));
     await sentHandOver(fetch, {
       updates: ["task-quantum", "task-radicale"],
       packages: [{ hostId: "h1", names: ["netdata-dashboard", "netdata-user"] }],
@@ -100,7 +98,7 @@ describe("handing work to the Ollama agent", () => {
     expect(await screen.findByText("Newer version · 9.17.0 → 9.18.0, its tag changed in its files")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Ignore new versions of calibre" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("checkbox", { name: "Tick the new version of calibre" }));
-    fireEvent.click(screen.getByRole("button", { name: "Dispatch to Ollama Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hand 1 to Ollama" }));
     await sentHandOver(fetch, {
       updates: [],
       packages: [],
@@ -160,15 +158,14 @@ describe("handing work to the Ollama agent", () => {
     });
   });
 
-  it("keeps the agent's card at the head of the side column, where it stays in sight, and the hosts in their strip", async () => {
+  it("keeps the agent's card at the head of the side column, where it stays in sight, with no strip of hosts", async () => {
     serve("admin");
     renderAttention("admin");
     const agent = (await screen.findByText(TEXT.attention.agent.dropTarget)).closest("a")!;
     const side = agent.closest(".attention-side");
     expect(side?.firstElementChild).toBe(agent);
-    const strip = screen.getByRole("navigation", { name: TEXT.attention.services });
-    expect(strip.contains(agent)).toBe(false);
-    expect(strip.closest(".attention-layout")).toBe(side?.closest(".attention-layout"));
+    expect(screen.queryByRole("navigation", { name: TEXT.attention.services })).toBeNull();
+    expect(screen.getByLabelText(TEXT.attention.fleet.label).textContent).toContain("1 of 1 hosts");
   });
 
   it("shows one server just as before", async () => {
@@ -185,6 +182,7 @@ describe("handing work to the Ollama agent", () => {
     const fetch = serve("admin", board, { homeAssistant: null }, heldPackages);
     renderAttention("admin");
     const agent = (await screen.findByText("Drop Target")).closest("a")!;
+    fireEvent.click(await screen.findByRole("button", { name: TEXT.attention.reviewCount(2) }));
     const quantum = (await screen.findByRole("checkbox", { name: "Update quantum" })).closest("li")!;
     const user = (await screen.findByRole("checkbox", { name: "Update netdata-user" })).closest("li")!;
 
@@ -218,68 +216,36 @@ describe("handing work to the Ollama agent", () => {
     expect(fetch.mock.calls.filter(([url]) => url === API_ROUTES.agentDispatch)).toHaveLength(2);
   });
 
-  it("opens a host's updates once one of them is ticked, so nothing ticked is out of sight", async () => {
-    const rowan = { ...alder, id: "h2", label: "Rowan" };
-    serve(
-      "admin",
-      board,
-      { homeAssistant: null },
-      { packages: [], automatic: [] },
-      {
-        [API_ROUTES.hosts]: [alder, rowan],
-        [apiPath(API_ROUTES.hostPackages, { hostId: "h2" })]: heldPackages,
-      },
-    );
+  it("keeps a host's package list open while one of its packages is ticked, so nothing ticked is out of sight", async () => {
+    serve("admin", board, { homeAssistant: null }, heldPackages);
     renderAttention("admin");
-    // The folded group's summary says Review; each row's own link says it too.
-    const folded = (await screen.findByText("Review", { selector: "summary span" })).closest("details")!;
-    expect(folded.open).toBe(false);
+    expect(await screen.findByText(TEXT.attention.packageUpdates(2))).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Update netdata-user" })).toBeNull();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Select all (4)" }));
-    await waitFor(() => expect(folded.open).toBe(true));
-    // Its head follows: the way to the host's updates, as an open group's.
-    expect(await within(folded).findByRole("link", { name: "Review on Rowan" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: TEXT.attention.reviewCount(2) }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Update netdata-user" }));
+    fireEvent.click(screen.getByRole("button", { name: TEXT.attention.hideList }));
+    expect(screen.getByRole("checkbox", { name: "Update netdata-user" })).toBeTruthy();
+
+    // Unticked, the list it was asked to hide goes.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Update netdata-user" }));
+    expect(screen.queryByRole("checkbox", { name: "Update netdata-user" })).toBeNull();
+    expect(screen.getByRole("button", { name: TEXT.attention.reviewCount(2) })).toBeTruthy();
   });
 
-  it("says an open group is open in its head, though a person opened it and nothing is ticked", async () => {
-    const rowan = { ...alder, id: "h2", label: "Rowan" };
-    serve(
-      "admin",
-      board,
-      { homeAssistant: null },
-      { packages: [], automatic: [] },
-      {
-        [API_ROUTES.hosts]: [alder, rowan],
-        [apiPath(API_ROUTES.hostPackages, { hostId: "h2" })]: heldPackages,
-      },
-    );
-    renderAttention("admin");
-    const folded = (await screen.findByText("Review", { selector: "summary span" })).closest("details")!;
-
-    // As the browser does on a click on its summary.
-    folded.open = true;
-
-    expect(await within(folded).findByRole("link", { name: "Review on Rowan" })).toBeTruthy();
-    expect(within(folded).queryByText("Review", { selector: "summary span" })).toBeNull();
-  });
-
-  it("leads each update to its own place on the host: a container's row, the host's updates", async () => {
+  it("leads each update to its own place on the host, and its card's head to the host", async () => {
     serve("admin", needsYou);
     renderAttention("admin");
     const row = (await screen.findAllByText("quantum")).map((found) => found.closest("li")).find(Boolean)!;
     expect(within(row).getByRole("link", { name: "Review" }).getAttribute("href")).toBe("/hosts/h1?container=quantum");
-    const group = row.closest("details")!;
-    expect(
-      within(group)
-        .getByRole("link", { name: /^Review on / })
-        .getAttribute("href"),
-    ).toMatch(/#updates$/);
+    const card = row.closest("article")!;
+    expect(within(card).getByRole("link", { name: "Open Alder" }).getAttribute("href")).toBe("/hosts/h1");
   });
 
   it("hands an escalated incident over from its card, and offers a viewer none of it", async () => {
     const fetch = serve("admin", needsYou);
     renderAttention("admin");
-    const decision = (await screen.findByText("tika")).closest("article")!;
+    const decision = (await screen.findByText("tika")).closest("li")!;
     expect(decision.getAttribute("draggable")).toBe("true");
     fireEvent.click(within(decision).getByRole("button", { name: "Hand to Ollama" }));
     await sentHandOver(fetch, { updates: [], packages: [], incidents: ["i1"] });
@@ -287,11 +253,10 @@ describe("handing work to the Ollama agent", () => {
 
     serve("viewer", needsYou, { homeAssistant: null }, heldPackages);
     renderAttention("viewer");
-    expect(await screen.findByText("netdata-user")).toBeTruthy();
+    expect(await screen.findByText(TEXT.attention.packageUpdates(2))).toBeTruthy();
     expect(screen.queryByText("Drop Target")).toBeNull();
-    expect(screen.queryByRole("button", { name: /Dispatch to Ollama Agent|Hand to Ollama|Select all/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /to Ollama$/ })).toBeNull();
     expect(screen.queryAllByRole("checkbox")).toEqual([]);
-    expect(screen.queryByText("Drag & drop active")).toBeNull();
     expect(screen.getByText("Agent ready")).toBeTruthy();
   });
 });

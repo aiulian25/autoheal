@@ -11,7 +11,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 
 describe("deterministic recovery policy rehearsal API", () => {
@@ -75,13 +75,7 @@ describe("deterministic recovery policy rehearsal API", () => {
     expect(plane.services.databaseHandle.database.select().from(workItems).all()).toEqual([]);
     expect((await admin.get(controlPath())).json<HostControlView>().restartDefault).toBe("ask");
   });
-  it("requires normal administrator authorization and bounds the request before simulation", async () => {
-    const viewer = (await fullySignedInUser(plane, admin, "viewer", "viewer")).client;
-    expect((await viewer.get(apiPath(API_ROUTES.policyRehearsalContext, { hostId }))).statusCode).toBe(200);
-    expect(
-      (await viewer.post(API_ROUTES.policyRehearsal, { hostId, source: "history", proposedRestartDefault: "restart" }))
-        .statusCode,
-    ).toBe(403);
+  it("bounds the request before simulation", async () => {
     expect(
       (
         await run("synthetic", {

@@ -157,17 +157,27 @@ export class MetricsStore {
     return this.hosts.get(hostId)?.reportedAt ?? null;
   }
 
+  // A host's series for its latest values: each report trims it as it is kept, so nothing here filters the history.
+  private latestOf(hostId: string): HostSeries | undefined {
+    const series = this.hosts.get(hostId);
+    if (series !== undefined && !this.isActive(hostId)) {
+      this.remove(hostId);
+      return undefined;
+    }
+    return series;
+  }
+
   /** The host's latest stats, unless they are too old to stand for now. */
   latestHost(hostId: string): HostMetricsView | null {
     const now = this.clock();
-    const latest = this.current(hostId, now)?.host.at(-1);
+    const latest = this.latestOf(hostId)?.host.at(-1);
     return latest !== undefined && this.isFresh(latest.at, now) ? latest : null;
   }
 
   /** Usage of the containers in the host's latest report; one missing from it was not running. */
   latestContainers(hostId: string): Map<string, ContainerUsageView> {
     const now = this.clock();
-    const series = this.current(hostId, now);
+    const series = this.latestOf(hostId);
     if (series === undefined || !this.isFresh(series.reportedAt, now)) {
       return new Map();
     }

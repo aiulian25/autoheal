@@ -119,3 +119,8 @@ it("shows the same notice, never a stack trace, when a screen outside the dashbo
   expect(screen.queryByText(REACT_ROUTER_FALLBACK)).toBeNull();
   expect(document.querySelector("pre")).toBeNull();
 });
+
+it("leads nowhere from the address the Users page had: Autoheal is one person's", async () => {
+  show("/users", session);
+  expect(await screen.findByText(TEXT.notFound, {}, FIRST_PAGE_LOAD)).toBeTruthy();
+});

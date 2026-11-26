@@ -131,7 +131,6 @@ import { SettingsService } from "./container-access/settings-service.js";
 import { TerminalService } from "./container-access/terminal-service.js";
 import { WaitingRunners } from "./container-access/waiting-runners.js";
 import { SettingsStore } from "./settings/settings-store.js";
-import { UsersService } from "./users/users-service.js";
 
 /** Everything the control plane runs on, built once; the application and the tests share it. */
 export interface ControlPlaneServices {
@@ -168,7 +167,6 @@ export interface ControlPlaneServices {
   passkeys: PasskeyService;
   accountService: AccountService;
   viewPreferences: ViewPreferencesService;
-  usersService: UsersService;
   hostsService: HostsService;
   inventoryService: InventoryService;
   containerTimeline: ContainerTimeline;
@@ -453,9 +451,7 @@ export function createControlPlaneServices(
       (host) => power.powerOf(host),
     ),
   );
-  const resourcePermissions = tracked(
-    new ResourcePermissions(databaseHandle, auditLog, inventoryService, sessions, clock),
-  );
+  const resourcePermissions = tracked(new ResourcePermissions(databaseHandle, inventoryService, sessions, clock));
   const tasksService = tracked(new TasksService(databaseHandle, auditLog, inventoryService, clock));
   const resourceAdvisor = tracked(
     new ResourceAdvisor({ databaseHandle, metricsStore, owner: () => tasksService.owner(), clock }),
@@ -782,7 +778,6 @@ export function createControlPlaneServices(
     passkeys: tracked(new PasskeyService(databaseHandle, auditLog, sessions, publicBaseUrl, clock)),
     accountService: tracked(new AccountService(databaseHandle, auditLog, sessions, accountHost, throttle)),
     viewPreferences: tracked(new ViewPreferencesService(databaseHandle, clock)),
-    usersService: tracked(new UsersService(databaseHandle, auditLog, clock)),
     hostsService,
     inventoryService,
     metricsStore,

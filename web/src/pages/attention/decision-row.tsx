@@ -27,6 +27,7 @@ import { approvalOf, incidentLink, incidentQuery, useApproval, useLeaveIt } from
 import { TEXT } from "../../constants.js";
 import { timeAgo } from "../../format.js";
 import { type HandOver, Grip } from "./attention-parts.js";
+import { UpdateTile } from "./update-rows.js";
 
 // Why it waits for a person, in a sentence: the rule asked first, Ollama handed it over, or what went wrong.
 function reasonOf(incident: IncidentSummaryView, detail: IncidentDetailView | undefined): string {
@@ -64,7 +65,7 @@ function useStopWatching(incident: IncidentSummaryView) {
   return stop;
 }
 
-export function DecisionCard({
+export function DecisionRow({
   incident,
   host,
   container,
@@ -90,73 +91,65 @@ export function DecisionCard({
   const item = incidentItem(incident.id);
   const used = host?.restartBudget[incident.containerName] ?? 0;
   const approve = () => decide.mutate(approvalOf(incident));
-  const classes = ["card", "decision", escalated ? "" : "waiting", handable ? "handable" : ""];
+  const tone = escalated ? "danger" : "warning";
+  const facts = [
+    `${text.happened[incident.trigger]} ${timeAgo(incident.detectedAt)}`,
+    reasonOf(incident, detail.data),
+    escalated ? "" : text.restartsUsed(used),
+  ].filter(Boolean);
+  const classes = ["update-row", "place-row", `tone-${tone}`, handable ? "handable" : ""];
   return (
-    <article
+    <li
       className={classes.filter(Boolean).join(" ")}
       aria-labelledby={nameId}
       draggable={handable}
       onDragStart={handable ? (event) => startDrag(event, item, new Set()) : undefined}
     >
-      <p className="decision-meta">
-        {handable && <Grip />}
-        <span className={escalated ? "badge danger" : "badge warning"}>
-          {escalated ? text.escalated : text.awaiting}
-        </span>
-        <span>
+      {handable && <Grip />}
+      <UpdateTile icon="alert" tone={tone} />
+      <div className="update-what">
+        <div className="row-title">
+          <span className={`row-tag tone-${tone}`}>{escalated ? text.tags.escalated : text.tags.decide}</span>
+          <h3 id={nameId} className="mono">
+            {incident.containerName}
+          </h3>
           <MaintenanceBadge hostId={incident.hostId} containerName={incident.containerName} />
-          {incident.hostLabel}
+        </div>
+        <p className="row-detail">
+          {facts.join(TEXT.separator)}
           {TEXT.separator}
-          {text.happened[incident.trigger]} {timeAgo(incident.detectedAt)}
-        </span>
-      </p>
-      <h3 id={nameId} className="decision-name mono">
-        {incident.containerName}
-      </h3>
-      <p className="reading">{reasonOf(incident, detail.data)}</p>
-      {!escalated && (
-        <p className="chips">
-          <span className="chip">
-            <Icon name="check" />
-            {text.guardPasses}
-          </span>
-          <span className="chip">{text.restartsUsed(used)}</span>
+          <Link to={incidentLink(incident.id)}>{text.seeWhy}</Link>
         </p>
-      )}
-      <div className="card-actions">
-        {decidable && (
-          <>
-            <button type="button" className={escalated ? undefined : "primary"} disabled={busy} onClick={approve}>
-              {escalated ? text.restartIt : text.approve}
-            </button>
-            <button type="button" disabled={busy} onClick={leave.run}>
-              {leave.looping ? text.stopIt : text.leave}
-            </button>
-            {escalated && (
-              <button
-                type="button"
-                className="quiet"
-                disabled={stopWatching.isPending}
-                onClick={() => stopWatching.mutate()}
-              >
-                {text.stopWatching}
-              </button>
-            )}
-            {handable && (
-              <button type="button" className="agent-button" onClick={() => onHandOver([item])}>
-                <Icon name="zap" />
-                {text.agent.handOver}
-              </button>
-            )}
-          </>
-        )}
-        <Link className="push" to={incidentLink(incident.id)}>
-          {text.seeWhy}
-        </Link>
+        {leave.job !== undefined && <LatestJob job={leave.job} />}
+        {leave.question}
+        <ErrorNotice error={decide.error ?? leave.error ?? stopWatching.error} />
       </div>
-      {leave.job !== undefined && <LatestJob job={leave.job} />}
-      {leave.question}
-      <ErrorNotice error={decide.error ?? leave.error ?? stopWatching.error} />
-    </article>
+      {decidable && (
+        <span className="row-actions">
+          <button type="button" className={escalated ? undefined : "primary"} disabled={busy} onClick={approve}>
+            {escalated ? text.restartIt : text.approve}
+          </button>
+          <button type="button" disabled={busy} onClick={leave.run}>
+            {leave.looping ? text.stopIt : text.leave}
+          </button>
+          {escalated && (
+            <button
+              type="button"
+              className="quiet"
+              disabled={stopWatching.isPending}
+              onClick={() => stopWatching.mutate()}
+            >
+              {text.stopWatching}
+            </button>
+          )}
+          {handable && (
+            <button type="button" className="agent-button" onClick={() => onHandOver([item])}>
+              <Icon name="zap" />
+              {text.agent.handOver}
+            </button>
+          )}
+        </span>
+      )}
+    </li>
   );
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -143,13 +143,11 @@ describe("tasks", () => {
     expect((await admin.post(comments, { body: "   " })).statusCode).toBe(400);
   });
 
-  it("lets viewers follow tasks but not change them", async () => {
-    const task = await create({ title: "Read only" });
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.tasks)).statusCode).toBe(200);
-    expect((await viewer.get(apiPath(API_ROUTES.task, { taskId: task.id }))).statusCode).toBe(200);
-    expect((await viewer.post(API_ROUTES.tasks, { title: "Nope" })).statusCode).toBe(403);
-    expect((await change(task.id, { status: "done" }, viewer)).statusCode).toBe(403);
-    expect((await controlPlane.client().get(API_ROUTES.tasks)).statusCode).toBe(401);
+  it("is nobody's to read or change signed out", async () => {
+    const task = await create({ title: "Signed in only" });
+    const signedOut = controlPlane.client();
+    expect((await signedOut.get(API_ROUTES.tasks)).statusCode).toBe(401);
+    expect((await signedOut.get(apiPath(API_ROUTES.task, { taskId: task.id }))).statusCode).toBe(401);
+    expect((await change(task.id, { status: "done" }, signedOut)).statusCode).toBe(401);
   });
 });

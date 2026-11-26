@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { API_ROUTES, apiPath, CSRF_HEADER, type EnrolledHostView } from "../../shared/api.js";
 import type { DiagnosticBundle, DiagnosticPreview } from "../../shared/diagnostics.js";
 import { DIAGNOSTIC_TTL_MILLISECONDS } from "../../shared/diagnostics.js";
-import { INCIDENT_STATUS } from "../../shared/constants.js";
+import { INCIDENT_STATUS, MILLISECONDS_PER_SECOND, TOTP_PERIOD_SECONDS } from "../../shared/constants.js";
 import { sha256Hex } from "../../shared/hash.js";
 import {
   runnerTokenOf,
@@ -10,18 +10,19 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { currentCode, fullySignedInAdmin, NEW_ADMIN_PASSWORD } from "../../../test/support/second-factor.js";
 
 const SECRET = "opaque-synthetic-support-secret";
 describe("authenticated incident diagnostic exports", () => {
   let plane: TestControlPlane;
   let admin: TestClient;
+  let secret: string;
   let incidentId: string;
   const previewPath = () => apiPath(API_ROUTES.diagnosticsPreview, { incidentId });
   const downloadPath = (previewId: string) => apiPath(API_ROUTES.diagnosticsDownload, { incidentId, previewId });
   beforeEach(async () => {
     plane = await startTestControlPlane();
-    admin = (await fullySignedInAdmin(plane)).client;
+    ({ client: admin, secret } = await fullySignedInAdmin(plane));
     const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Lab" })).json<EnrolledHostView>();
     const host = plane.services.hostsService.authenticate(runnerTokenOf(enrolled))!;
     incidentId = plane.services.incidentsService.create(
@@ -46,7 +47,7 @@ describe("authenticated incident diagnostic exports", () => {
     await plane.app.close();
     await plane.runnerApp.close();
   });
-  it("preserves incident read access, authenticates both actions and binds the stream to its requesting session", async () => {
+  it("authenticates both actions and binds the stream to its requesting session", async () => {
     expect((await plane.client().post(previewPath(), { sections: ["facts"] })).statusCode).toBe(401);
     expect(
       (
@@ -58,15 +59,19 @@ describe("authenticated incident diagnostic exports", () => {
         })
       ).statusCode,
     ).toBe(403);
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    expect((await viewer.get(apiPath(API_ROUTES.incident, { incidentId }))).statusCode).toBe(200);
-    const response = await viewer.post(previewPath(), { sections: ["trace", "facts", "usage"] });
+    // The owner's other session, as on a second device: a preview is its own session's.
+    plane.clock.now += TOTP_PERIOD_SECONDS * MILLISECONDS_PER_SECOND;
+    const other = plane.client();
+    await other.signIn("admin", NEW_ADMIN_PASSWORD);
+    await other.post(API_ROUTES.secondFactor, { code: currentCode(secret, plane.clock.now) });
+    expect((await admin.get(apiPath(API_ROUTES.incident, { incidentId }))).statusCode).toBe(200);
+    const response = await admin.post(previewPath(), { sections: ["trace", "facts", "usage"] });
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.body).not.toContain(SECRET);
     const preview = response.json<DiagnosticPreview>();
-    expect((await admin.post(downloadPath(preview.id))).statusCode).toBe(404);
-    const download = await viewer.post(downloadPath(preview.id));
+    expect((await other.post(downloadPath(preview.id))).statusCode).toBe(404);
+    const download = await admin.post(downloadPath(preview.id));
     expect(download.statusCode).toBe(200);
     expect(download.headers["content-disposition"]).toContain(`autoheal-diagnostics-${preview.id}.json`);
     expect(download.headers["cache-control"]).toBe("no-store");
@@ -74,7 +79,7 @@ describe("authenticated incident diagnostic exports", () => {
     const bundle = download.json<DiagnosticBundle>();
     expect(bundle.manifest.sha256).toBe(sha256Hex(JSON.stringify(bundle.evidence)));
     expect(Buffer.byteLength(download.body)).toBe(preview.byteLength);
-    expect((await viewer.post(downloadPath(preview.id))).statusCode).toBe(404);
+    expect((await admin.post(downloadPath(preview.id))).statusCode).toBe(404);
     const audit = plane.stdout.filter((line) => line.includes("diagnostics.exported"));
     expect(audit).toHaveLength(1);
     expect(audit.join("")).not.toContain(SECRET);

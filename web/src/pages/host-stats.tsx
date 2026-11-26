@@ -1,20 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useState } from "react";
-import {
-  API_ROUTES,
-  apiPath,
-  type HostHealthView,
-  type HostMetricsView,
-  type HostView,
-} from "../../../src/shared/api.js";
+import { type HostHealthView, type HostMetricsView, type HostView } from "../../../src/shared/api.js";
 import { DETECTOR_THRESHOLDS, PERCENT, POWER_PHASE, RUNNER_GPU_COMMAND } from "../../../src/shared/constants.js";
 import type { MetricTrendView } from "../../../src/shared/metric-trends.js";
 import { trendQuery, trendReferences, TrendHistory } from "../components/anomaly-explanation.js";
-import { api } from "../api-client.js";
 import { powerAway } from "./host-power.js";
 import { Dial, TimeChart, type ChartSeries, type DialProps, type Tone } from "../components/charts.js";
 import { CopyButton, ErrorNotice, Loading } from "../components/common.js";
-import { DISK_FULL_DANGER_PERCENT, INVENTORY_REFRESH_MILLISECONDS, TEXT, POWER_TEXT } from "../constants.js";
+import { DISK_FULL_DANGER_PERCENT, TEXT, POWER_TEXT } from "../constants.js";
+import { hostMetricsQuery } from "../queries.js";
 import {
   bytes,
   celsius,
@@ -408,12 +402,7 @@ export function HostDials({ host }: { host: HostView }) {
 export function HostHistory({ host }: { host: HostView }) {
   const [open, setOpen] = useState(false);
   const trend = useQuery({ ...trendQuery(host.id, null), enabled: open });
-  const history = useQuery({
-    queryKey: ["host-metrics", host.id],
-    queryFn: () => api<HostMetricsView[]>("GET", apiPath(API_ROUTES.hostMetrics, { hostId: host.id })),
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
-    enabled: open,
-  });
+  const history = useQuery({ ...hostMetricsQuery(host.id), enabled: open });
   const points = history.data ?? [];
   const nothingYet = history.isSuccess && points.length === 0;
   const olderThanAsked = history.isError && points.length > 0;

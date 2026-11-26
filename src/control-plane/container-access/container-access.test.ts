@@ -8,12 +8,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import {
-  currentCode,
-  fullySignedInAdmin,
-  fullySignedInUser,
-  NEW_ADMIN_PASSWORD,
-} from "../../../test/support/second-factor.js";
+import { currentCode, fullySignedInAdmin, NEW_ADMIN_PASSWORD } from "../../../test/support/second-factor.js";
 import {
   API_ERRORS,
   API_ROUTES,
@@ -524,15 +519,11 @@ describe("reaching inside containers", () => {
       expect(audit).toContain('"action":"host.terminal_closed"');
     });
 
-    it("is refused where the host's .env turns it off, where its runner cannot open one, and to anyone not an admin", async () => {
+    it("is refused where the host's .env turns it off, and where its runner cannot open one", async () => {
       await reportHostTerminal(undefined);
       expect((await openOnHost()).json()).toEqual({ error: "host_terminal_off" });
       await reportHostTerminal(false);
       expect((await openOnHost()).json()).toEqual({ error: "host_terminal_off" });
-      await reportHostTerminal(true);
-      const viewer = await fullySignedInUser(controlPlane, admin, "viewer", "viewer");
-      // Hidden from a viewer's session, as every shell is.
-      expect((await openOnHost(viewer.client)).statusCode).toBe(404);
     });
   });
 

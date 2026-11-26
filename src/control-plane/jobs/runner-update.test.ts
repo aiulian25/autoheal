@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type ContainerView, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { HOST_KIND, HTTP_STATUS, JOB_ACTION } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
@@ -109,11 +109,5 @@ describe("updating a sidecar runner from the dashboard", () => {
       .where(eq(hosts.id, hostId))
       .run();
     expect(await own()).toEqual([]);
-  });
-
-  it("is a person's decision: one who may not change the host is refused", async () => {
-    const viewer = (await fullySignedInUser(controlPlane, admin, "mira", "viewer")).client;
-
-    expect((await ask(viewer)).statusCode).toBe(HTTP_STATUS.forbidden);
   });
 });

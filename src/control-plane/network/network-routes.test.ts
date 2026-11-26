@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAKE_UNIFI_LOGIN, FakeUnifi } from "../../../test/fakes/fake-unifi.js";
 import { FakeOllama } from "../../../test/fakes/fake-ollama.js";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES } from "../../shared/api.js";
 import { ROUTER_KIND, type RouterCertificateView, type RouterSettingsView } from "../../shared/network.js";
 import { settings } from "../database/schema.js";
@@ -43,24 +43,6 @@ describe("the router's settings and the network's pages", () => {
     const stopped = vi.spyOn(controlPlane.services.networkWatch, "cancelPoll");
     await controlPlane.services.databaseHandle.restore.exclusive(async () => undefined);
     expect(stopped).toHaveBeenCalledOnce();
-  });
-
-  it("keeps it all from viewers", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    for (const route of [
-      API_ROUTES.routerSettings,
-      API_ROUTES.network,
-      API_ROUTES.networkDevices,
-      API_ROUTES.networkInternet,
-      API_ROUTES.networkInternetReport,
-      API_ROUTES.networkFirewall,
-      API_ROUTES.networkMap,
-      API_ROUTES.networkReports,
-    ]) {
-      expect((await viewer.get(route)).statusCode, route).toBe(403);
-    }
-    expect((await viewer.put(API_ROUTES.routerSettings, body())).statusCode).toBe(403);
-    expect((await viewer.post(API_ROUTES.routerCertificate, { url: router.url() })).statusCode).toBe(403);
   });
 
   it("stores a router only once it signs in, with its password sealed and never given back", async () => {

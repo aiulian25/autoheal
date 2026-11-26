@@ -14,7 +14,7 @@ import type { FeatureUIContext } from "./feature-context.js";
 import { completeFirstSignIn, freshCode, signIn, usedSteps } from "./sign-in.js";
 import { sidewaysOverflow } from "./layout.js";
 import { verifyMaintenance, verifyDiagnostics, verifyTopology } from "./features-observability.js";
-import { verifyNotifications, verifySearch, verifyPermissions, verifyRehearsal } from "./features-operations.js";
+import { verifyNotifications, verifySearch, verifyRehearsal } from "./features-operations.js";
 import { verifyApplicationBackups, verifyTrends, verifyCanary } from "./features-recovery.js";
 import {
   CONTROL_PLANE_CONTAINER,
@@ -39,7 +39,6 @@ import {
 
 // Neither may contain its username: the password policy refuses that.
 const ADMIN_PASSWORD = "orbiting-tangerine-lantern-42";
-const VIEWER_PASSWORD = "quiet-harbour-lantern-57";
 const RUNNER = "autoheal-e2e-runner";
 const PACKAGE_RUNNER = "autoheal-e2e-package-runner";
 const FEDORA_RUNNER = "autoheal-e2e-fedora-runner";
@@ -1117,50 +1116,15 @@ test.describe("Autoheal, end to end on the real image", () => {
       await openHost("fedora-box");
     });
 
-    test("a viewer can follow everything but change nothing", async ({ browser }) => {
-      for (const other of [PACKAGE_RUNNER, FEDORA_RUNNER]) {
-        if (dockerOrEmpty("inspect", "-f", "{{.State.Running}}", other) === "true") docker("stop", other);
-      }
-      docker("start", RUNNER);
-      await expect.poll(() => docker("inspect", "-f", "{{.State.Running}}", RUNNER), { timeout: 30_000 }).toBe("true");
-      await expect
-        .poll(
-          async () => {
-            const hosts = (await (await admin.request.get(API_ROUTES.hosts)).json()) as HostView[];
-            const host = hosts.find((value) => value.label === "e2e-host");
-            return host?.lastHeartbeatAt ?? 0;
-          },
-          { timeout: 60_000 },
-        )
-        .toBeGreaterThan(Date.now() - 30_000);
-      await settingsSection(admin, "People and keys");
-      await admin.getByRole("link", { name: "Manage people" }).click();
-      await admin.getByLabel("Username").fill("partner");
-      await admin.getByRole("button", { name: "Add user" }).click();
-      const oneTimePassword = (await admin.locator(".notice span.secret").textContent())!.trim();
-
-      const { context, page: viewer } = await newTrackedPage(browser);
-      expect((await completeFirstSignIn(viewer, "partner", oneTimePassword, VIEWER_PASSWORD)).passphrase).toBeNull();
-      await rail(viewer, "Settings").click();
-      await expect(viewer.getByRole("navigation", { name: "Settings sections" }).getByRole("link")).toHaveText([
-        "Connections",
-        "Notifications",
-        "Schedules",
-        "System",
-        "Your account",
-      ]);
-      await viewer.goto("/users");
-      await expect(viewer.getByText("This page does not exist.")).toBeVisible();
-      await rail(viewer, "Fleet").click();
-      await viewer.getByRole("article", { name: "e2e-host", exact: true }).click();
-      await expect(viewer.getByRole("heading", { name: "e2e-host", exact: true, level: 1 })).toBeVisible();
-      await expect(viewer.getByRole("button", { name: "Rename", exact: true })).toHaveCount(0);
-      await rail(viewer, "Activity").click();
-      await viewer.getByRole("link", { name: VICTIM }).first().click();
-      await expect(viewer.getByText(DIAGNOSIS, { exact: true })).toBeVisible();
-      await expect(viewer.getByRole("button", { name: "Restart it" })).toHaveCount(0);
-      expect(await cspViolations(viewer)).toEqual([]);
-      await context.close();
+    test("is one person's: nobody else to add, and keys for what only reads", async () => {
+      await rail(admin, "Settings").click();
+      await expect(admin.getByRole("navigation", { name: "Settings sections" })).toContainText(
+        "Read-only integrations",
+      );
+      await expect(admin.getByRole("link", { name: "Manage people" })).toHaveCount(0);
+      await admin.goto("/users");
+      await expect(admin.getByText("This page does not exist.")).toBeVisible();
+      expect((await admin.request.get("/api/users")).status()).toBe(404);
     });
 
     test("a draft runbook is replayed against past incidents and against one from its own page, then published", async () => {
@@ -1189,19 +1153,15 @@ test.describe("Autoheal, end to end on the real image", () => {
     });
   });
 
-  const featureContext = (browser: Browser): FeatureUIContext => ({
+  const featureContext = (): FeatureUIContext => ({
     page: admin,
-    browser,
     adminSecret,
     docker,
     openHost,
-    freshCode,
-    completeFirstSignIn,
   });
   for (const [name, verify] of [
     ["FEATURE-001 maintenance lifecycle and runner acknowledgement", verifyMaintenance],
     ["FEATURE-002 redacted diagnostic preview and download", verifyDiagnostics],
-    ["FEATURE-009 scoped grant, real action and revocation", verifyPermissions],
     ["FEATURE-003 dependency/shared-data topology and navigation", verifyTopology],
     ["FEATURE-004 notification refusal, recovery, routing and acknowledgement", verifyNotifications],
     ["FEATURE-010 deterministic policy rehearsal and reviewed apply", verifyRehearsal],
@@ -1210,9 +1170,9 @@ test.describe("Autoheal, end to end on the real image", () => {
     ["FEATURE-008 durable trend evidence and feedback", verifyTrends],
     ["FEATURE-006 immutable canary observation and promotion", verifyCanary],
   ] as const) {
-    test(name, async ({ browser }) => {
+    test(name, async () => {
       test.setTimeout(10 * 60_000);
-      await verify(featureContext(browser));
+      await verify(featureContext());
       await admin.screenshot({
         path: test.info().outputPath(`${name.split(" ")[0]}.png`),
         fullPage: true,
@@ -1283,17 +1243,7 @@ test.describe("Autoheal, end to end on the real image", () => {
         await noSidewaysScrolling(link);
       }
       // And the pages they lead on to.
-      for (const path of [
-        "/board",
-        "/containers",
-        "/tasks",
-        "/home",
-        "/audit",
-        "/replays",
-        "/account",
-        "/users",
-        "/backups",
-      ]) {
+      for (const path of ["/board", "/containers", "/tasks", "/home", "/audit", "/replays", "/account", "/backups"]) {
         await admin.goto(path);
         await noSidewaysScrolling(path);
       }

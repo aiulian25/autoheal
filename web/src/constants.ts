@@ -94,7 +94,6 @@ export const PATHS = {
   replay: "/replays/:replayId",
   account: "/account",
   settings: "/settings",
-  users: "/users",
   backups: "/backups",
   audit: "/audit",
   prompt: "/prompts/:promptHash",
@@ -309,6 +308,13 @@ export const LIVE_INVENTORY_BATCH_MILLISECONDS = 250;
 export const LIVE_RECONNECT_MILLISECONDS = 5_000;
 // How long the live stream may be without contact before every page says so: a short drop passes without a word.
 export const LIVE_LOST_NOTICE_AFTER_MILLISECONDS = 10_000;
+// The stream says it is alive every 15 s: silent this long, it stopped telling without an error, and is opened again.
+export const LIVE_STALL_MILLISECONDS = 45_000;
+export const LIVE_STALL_CHECK_MILLISECONDS = 5_000;
+// What the live stream keeps current is read again this seldom while the stream is healthy: only for what it missed.
+export const LIVE_SAFETY_REFRESH_MILLISECONDS = 30_000;
+// Hosts' readings put in place together at most this often, however many hosts send them: the pages draw them once.
+export const LIVE_READINGS_BATCH_MILLISECONDS = 1_000;
 // How long a runner level with Autoheal still shows that its last update from here did not go through.
 export const RUNNER_UPDATE_SHOWN_MILLISECONDS = 24 * 60 * 60 * 1000;
 // Usage meters turn amber, then red, past these percentages.
@@ -442,12 +448,21 @@ export const CARD_PAGES = { attention: "attention", host: "host" } as const;
 export type CardPage = (typeof CARD_PAGES)[keyof typeof CARD_PAGES];
 // Each page's cards, by the id a choice about them is kept under; one that keeps its place among them, for that place.
 export const ATTENTION_CARDS = {
-  updates: "updates",
   onItNow: "on-it-now",
   healed: "healed",
   comingUp: "coming-up",
-  howFar: "how-far",
 } as const;
+// Where something for a person happens on Attention: a host, or what has no host of its own.
+export const ATTENTION_PLACE = {
+  host: "host",
+  homeAssistant: "home-assistant",
+  network: "network",
+  ollama: "ollama",
+  other: "other",
+} as const;
+export type AttentionPlaceKind = (typeof ATTENTION_PLACE)[keyof typeof ATTENTION_PLACE];
+// A place's things to look at show this many; the rest wait behind "n more".
+export const LOOK_AT_SHOWN = 3;
 export const HOST_CARDS = {
   dials: "dials",
   history: "history",

@@ -155,6 +155,9 @@ export const DELIBERATE_STOP_WINDOW_SECONDS = 60;
 export const HANDLE_COOLDOWN_SECONDS = 600;
 export const MAX_RESTARTS_PER_WINDOW = 2;
 export const HEARTBEAT_INTERVAL_MILLISECONDS = 30 * 1000;
+// What a report carries: the containers alone, made the moment they change, or everything, as every 30 seconds.
+export const REPORT_SCOPE = { containers: "containers", full: "full" } as const;
+export type ReportScope = (typeof REPORT_SCOPE)[keyof typeof REPORT_SCOPE];
 export const RESTART_WINDOW_SECONDS = 3600;
 // Why a runner restarts nothing on its own just now. No saved safety state yet (a new install, or erased state) ends
 // by itself one restart window later; a state it cannot save, or one too full to hold, ends once the runner is fixed.
@@ -586,6 +589,7 @@ export const CONTROL_PLANE_CALLS = {
   workResult: "approved work result",
   jobResult: "container action result",
   handled: "incident handled while it was away",
+  results: "results waiting to be sent",
   containerAccess: "shells and files",
 } as const;
 // A runner that could not ask for shells and file requests asks again after this long.
@@ -3489,6 +3493,8 @@ export const AUDIT_ACTIONS = {
   userPasswordReset: "user.password_reset",
   userTotpReset: "user.totp_reset",
   userDeleted: "user.deleted",
+  // Autoheal became one person's, or a restore brought others back: everyone but the owner kept from signing in.
+  oneOwnerKept: "user.one_owner_kept",
   hostEnrolled: "host.enrolled",
   hostJoinCodeMade: "host.join_code_made",
   hostRenamed: "host.renamed",
@@ -3608,6 +3614,20 @@ export const PASSWORD_MESSAGES = {
   common: "is one of the most common passwords",
   containsUsername: "must not contain the username",
   oneCharacter: "must not be one character repeated",
+} as const;
+
+// Autoheal is one person's: the admin it was set up with, who alone signs in. Never names anyone else.
+export const SINGLE_OWNER_MESSAGES = {
+  unclear: (admins: number) =>
+    `Autoheal is now one person's, and this one has ${admins} active admins, none of them the one it was set up ` +
+    "with, so it cannot tell whose it is. Nothing was changed. On the host, run reset-admin with the username of the " +
+    "one it is for (they get a one-time password and set up their authenticator again), or go back to the previous " +
+    "version and leave one admin active.",
+  kept: (usernames: readonly string[]) =>
+    `Autoheal is one person's: ${usernames.join(", ")} can no longer sign in, and stay in its history by name.`,
+  notOwner: (owner: string) => `reset-admin resets only "${owner}", the one this Autoheal is for.`,
+  unknown: (username: string) => `There is no "${username}" here.`,
+  chooseOne: "Autoheal cannot tell whose it is: run reset-admin with the username of the one it is for.",
 } as const;
 
 export const BOOTSTRAP_MESSAGES = {
@@ -5366,8 +5386,21 @@ export const PULL_PROGRESS_LIMITS = {
   reportMilliseconds: 500,
   rateWindowMilliseconds: 3_000,
 } as const;
-// What the dashboard's live stream says changed: a host's containers, a job, or an update's progress.
-export const LIVE_EVENT = { inventory: "inventory", job: "job", progress: "progress", board: "board" } as const;
+// What the dashboard's live stream says changed: a host's containers, a job, an update's progress, the board, a host's
+// latest readings; and that the stream is still alive, which a comment could not tell a page.
+export const LIVE_EVENT = {
+  inventory: "inventory",
+  job: "job",
+  progress: "progress",
+  board: "board",
+  metrics: "metrics",
+  alive: "alive",
+} as const;
+export const LIVE_ALIVE_MESSAGE = `event: ${LIVE_EVENT.alive}\ndata: {}\n\n`;
+// A host's readings go to the dashboards with its containers' usage; past this many containers, the pages read them.
+export const LIVE_METRICS_CONTAINER_LIMIT = 200;
+// A package job's output is told to the dashboards at most this often while it runs.
+export const JOB_OUTPUT_EVENT_MILLISECONDS = 1000;
 // How soon a change to the tasks or incidents reaches the dashboards open: one look at them this often.
 export const BOARD_CHANGE_CHECK_MILLISECONDS = 1000;
 export type LiveEventKind = (typeof LIVE_EVENT)[keyof typeof LIVE_EVENT];

@@ -1,16 +1,44 @@
-import { QueryClient, QueryClientProvider, useQuery, useQueries } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager, useQuery, useQueries } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES, type JobView } from "../../src/shared/api.js";
-import type { UpdateProgress } from "../../src/shared/protocol.js";
-import { containersQuery, hostContainersQuery, hostPackagesQuery, hostsQuery, localHostQuery } from "./queries.js";
 import {
+  API_ROUTES,
+  type ContainerUsageView,
+  type ContainerView,
+  type HostMetricsView,
+  type HostView,
+  type JobView,
+} from "../../src/shared/api.js";
+import {
+  CONTAINER_STATE_RUNNING,
+  LIVE_KEEPALIVE_MILLISECONDS,
+  METRICS_INTERVAL_MILLISECONDS,
+} from "../../src/shared/constants.js";
+import type { UpdateProgress } from "../../src/shared/protocol.js";
+import {
+  containersQuery,
+  hostContainersQuery,
+  hostMetricsQuery,
+  hostPackagesQuery,
+  hostsQuery,
+  localHostQuery,
+  overviewQuery,
+} from "./queries.js";
+import {
+  INVENTORY_REFRESH_MILLISECONDS,
   LIVE_INVENTORY_BATCH_MILLISECONDS,
   LIVE_LOST_NOTICE_AFTER_MILLISECONDS,
+  LIVE_READINGS_BATCH_MILLISECONDS,
   LIVE_RECONNECT_MILLISECONDS,
+  LIVE_SAFETY_REFRESH_MILLISECONDS,
+  LIVE_STALL_CHECK_MILLISECONDS,
+  LIVE_STALL_MILLISECONDS,
 } from "./constants.js";
+import { liveAware } from "./live-health.js";
 import { useLiveUpdates } from "./live.js";
+
+const MINUTE = 60_000;
 
 // The browser's EventSource, as much as the hook uses: the test sends what the control plane would.
 class FakeEventSource {
@@ -179,9 +207,8 @@ describe("the dashboard's live stream", () => {
     hook.unmount();
   });
 
-  it("does not restart a slow inventory request when another event batch arrives", async () => {
-    const query = hostContainersQuery("b");
-    queryClient.setQueryData(query.queryKey, ["old"]);
+  // A slow read, released by hand: what the page holds once it ends, and how many reads were made.
+  const slowRead = (queryKey: readonly unknown[]) => {
     let release!: (value: string[]) => void;
     const request = vi.fn(
       () =>
@@ -192,7 +219,7 @@ describe("the dashboard's live stream", () => {
     const hook = renderHook(
       () => {
         useLiveUpdates();
-        return useQuery({ ...query, queryFn: request, staleTime: Infinity });
+        return useQuery({ queryKey, queryFn: request, staleTime: Infinity });
       },
       {
         wrapper: ({ children }: { children: ReactNode }) => (
@@ -200,6 +227,13 @@ describe("the dashboard's live stream", () => {
         ),
       },
     );
+    return { hook, request, release: (value: string[]) => release(value) };
+  };
+
+  it("lets a slow inventory read finish through a burst, then reads once more for what came after it began", async () => {
+    const query = hostContainersQuery("b");
+    queryClient.setQueryData(query.queryKey, ["old"]);
+    const { hook, request, release } = slowRead(query.queryKey);
     const source = FakeEventSource.opened[0]!;
     act(() => source.send("inventory", { hostId: "b" }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
@@ -210,8 +244,204 @@ describe("the dashboard's live stream", () => {
       await new Promise((resolve) => setTimeout(resolve, LIVE_INVENTORY_BATCH_MILLISECONDS + 50));
     });
     expect(request).toHaveBeenCalledTimes(1);
+    // What it answers was read before the burst: shown, then read once more.
+    await act(async () => release(["before the burst"]));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     await act(async () => release(["current"]));
     await waitFor(() => expect(hook.result.current.data).toEqual(["current"]));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, LIVE_INVENTORY_BATCH_MILLISECONDS + 50));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  it("reads the board once more when it changes while a read of it is on its way, and no more", async () => {
+    queryClient.setQueryData(["board"], ["old"]);
+    const { hook, request, release } = slowRead(["board"]);
+    const source = FakeEventSource.opened[0]!;
+    act(() => source.send("board", {}));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    act(() => {
+      for (let index = 0; index < 10; index++) source.send("board", {});
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await act(async () => release(["missed the change"]));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await act(async () => release(["current"]));
+    await waitFor(() => expect(hook.result.current.data).toEqual(["current"]));
+    expect(request).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  it("puts hosts' readings in place without reading anything, together once a second, only where they belong", () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const alder = { id: "a", metrics: null } as HostView;
+    const cedar = { id: "b", metrics: null } as HostView;
+    queryClient.setQueryData(hostsQuery.queryKey, [alder, cedar]);
+    const web = { hostId: "a", name: "web", state: CONTAINER_STATE_RUNNING, usage: null } as ContainerView;
+    const db = { hostId: "a", name: "db", state: "exited", usage: null } as ContainerView;
+    // Running, but missing from the readings, and named like what every object has.
+    const named = { hostId: "a", name: "toString", state: CONTAINER_STATE_RUNNING, usage: null } as ContainerView;
+    const elsewhere = { hostId: "b", name: "web", state: CONTAINER_STATE_RUNNING, usage: null } as ContainerView;
+    queryClient.setQueryData(containersQuery.queryKey, [web, db, named, elsewhere]);
+    queryClient.setQueryData(hostContainersQuery("b").queryKey, [elsewhere]);
+    const cedarListAt = queryClient.getQueryState(hostContainersQuery("b").queryKey)!.dataUpdatedAt;
+    const earlier = { at: 1_000 } as HostMetricsView;
+    queryClient.setQueryData(hostMetricsQuery("a").queryKey, [earlier]);
+    const hook = listen();
+    const source = FakeEventSource.opened[0]!;
+    const reading = { at: 2_000 } as HostMetricsView;
+    const usage = { at: 2_000, cpuPercent: 3 } as ContainerUsageView;
+    act(() => source.send("metrics", { hostId: "a", host: earlier, containers: {} }));
+    act(() => source.send("metrics", { hostId: "a", host: reading, containers: { web: usage, db: usage } }));
+    expect(queryClient.getQueryData<HostView[]>(hostsQuery.queryKey)![0]!.metrics).toBeNull();
+
+    act(() => vi.advanceTimersByTime(LIVE_READINGS_BATCH_MILLISECONDS));
+    const hosts = queryClient.getQueryData<HostView[]>(hostsQuery.queryKey)!;
+    expect(hosts.map((host) => host.metrics)).toEqual([reading, null]);
+    expect(hosts[1]).toBe(cedar);
+    const listed = queryClient.getQueryData<ContainerView[]>(containersQuery.queryKey)!;
+    expect(listed.map((container) => container.usage)).toEqual([usage, null, null, null]);
+    expect(listed[3]).toBe(elsewhere);
+    expect(queryClient.getQueryState(hostContainersQuery("b").queryKey)!.dataUpdatedAt).toBe(cedarListAt);
+    expect(queryClient.getQueryData(hostMetricsQuery("a").queryKey)).toEqual([earlier, reading]);
+    expect(fetch).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("reads a host's container lists again when its readings are too many to carry, and no other host's", () => {
+    vi.useFakeTimers();
+    for (const queryKey of [hostContainersQuery("a").queryKey, hostContainersQuery("b").queryKey]) {
+      queryClient.setQueryData(queryKey, []);
+    }
+    queryClient.setQueryData(containersQuery.queryKey, []);
+    const hook = listen();
+    act(() => FakeEventSource.opened[0]!.send("metrics", { hostId: "a", host: null, containers: null }));
+    act(() => vi.advanceTimersByTime(LIVE_READINGS_BATCH_MILLISECONDS));
+    expect(stale(hostContainersQuery("a").queryKey)).toBe(true);
+    expect(stale(containersQuery.queryKey)).toBe(true);
+    expect(stale(hostContainersQuery("b").queryKey)).toBe(false);
+    hook.unmount();
+  });
+
+  it("reads what the stream keeps current seldom while it says it is alive, and every few seconds once it goes quiet", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(async (path: string) => {
+      const data = path === API_ROUTES.overview ? {} : [];
+      return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetch);
+    const hook = renderHook(
+      () => {
+        useLiveUpdates();
+        return useQueries({ queries: [hostsQuery, containersQuery, overviewQuery] });
+      },
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        ),
+      },
+    );
+    const source = FakeEventSource.opened[0]!;
+    // Reads of each path over a minute, the stream saying it is alive throughout or not at all.
+    const readsInAMinute = async (alive: boolean) => {
+      fetch.mockClear();
+      for (let elapsed = 0; elapsed < MINUTE; elapsed += LIVE_KEEPALIVE_MILLISECONDS) {
+        if (alive) act(() => source.send("alive", {}));
+        await act(() => vi.advanceTimersByTimeAsync(LIVE_KEEPALIVE_MILLISECONDS));
+      }
+      const paths = fetch.mock.calls.map(([path]) => path);
+      return [API_ROUTES.hosts, API_ROUTES.containers, API_ROUTES.overview].map(
+        (route) => paths.filter((path) => path === route).length,
+      );
+    };
+    await readsInAMinute(true);
+    const healthy = await readsInAMinute(true);
+    expect(healthy.every((reads) => reads >= 1 && reads <= MINUTE / LIVE_SAFETY_REFRESH_MILLISECONDS)).toBe(true);
+    // Quiet long enough to be found out, then every few seconds again.
+    await readsInAMinute(false);
+    const quiet = await readsInAMinute(false);
+    expect(quiet.every((reads) => reads >= MINUTE / INVENTORY_REFRESH_MILLISECONDS - 1)).toBe(true);
+    hook.unmount();
+  });
+
+  it("reads the lists readings go into now and then all the same, though each reading starts their own refresh over", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify([{ id: "a", metrics: null }]), { headers: { "content-type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const hook = renderHook(
+      () => {
+        useLiveUpdates();
+        return useQuery(hostsQuery);
+      },
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        ),
+      },
+    );
+    const source = FakeEventSource.opened[0]!;
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    // Reads over a minute of readings every few seconds.
+    const readsInAMinute = async () => {
+      fetch.mockClear();
+      for (let elapsed = 0; elapsed < MINUTE; elapsed += METRICS_INTERVAL_MILLISECONDS) {
+        act(() => {
+          source.send("alive", {});
+          source.send("metrics", { hostId: "a", host: { at: Date.now() }, containers: {} });
+        });
+        await act(() => vi.advanceTimersByTimeAsync(METRICS_INTERVAL_MILLISECONDS));
+      }
+      return fetch.mock.calls.length;
+    };
+    expect(await readsInAMinute()).toBe(MINUTE / LIVE_SAFETY_REFRESH_MILLISECONDS);
+    expect(hook.result.current.data?.[0]?.metrics).not.toBeNull();
+    // A page nobody looks at reads nothing on a timer.
+    focusManager.setFocused(false);
+    try {
+      expect(await readsInAMinute()).toBe(0);
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+    hook.unmount();
+  });
+
+  it("opens the stream again once it stops saying it is alive, and leaves one that keeps saying it", () => {
+    vi.useFakeTimers();
+    const hook = listen();
+    const first = FakeEventSource.opened[0]!;
+    act(() => first.send("open", {}));
+    for (let beat = 0; beat < 8; beat++) {
+      act(() => first.send("alive", {}));
+      act(() => vi.advanceTimersByTime(LIVE_KEEPALIVE_MILLISECONDS));
+    }
+    expect(FakeEventSource.opened).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(LIVE_STALL_MILLISECONDS - LIVE_KEEPALIVE_MILLISECONDS));
+    expect(FakeEventSource.opened).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(LIVE_STALL_CHECK_MILLISECONDS));
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.opened).toHaveLength(2);
+    hook.unmount();
+  });
+
+  it("does not take a stream that opens and passes nothing for a healthy one, and opens it again after the same wait", () => {
+    vi.useFakeTimers();
+    const hook = listen();
+    // As behind a proxy that holds the stream back.
+    act(() => FakeEventSource.opened[0]!.send("open", {}));
+    expect(liveAware(INVENTORY_REFRESH_MILLISECONDS)()).toBe(INVENTORY_REFRESH_MILLISECONDS);
+    act(() => vi.advanceTimersByTime(LIVE_STALL_MILLISECONDS));
+    expect(FakeEventSource.opened).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(LIVE_STALL_CHECK_MILLISECONDS));
+    expect(FakeEventSource.opened).toHaveLength(2);
+    act(() => FakeEventSource.opened[1]!.send("alive", {}));
+    expect(liveAware(INVENTORY_REFRESH_MILLISECONDS)()).toBe(LIVE_SAFETY_REFRESH_MILLISECONDS);
     hook.unmount();
   });
 
@@ -372,6 +602,14 @@ describe("the dashboard's live stream", () => {
 
     source!.send("job", { kind: "job", hostId: "h1", jobId: "j9" });
     expect([stale(["jobs", "h1"]), stale(["update-run", "h1"]), stale(["board"])]).toEqual([true, true, true]);
+
+    // What a running job wrote: the lists that show it, and nothing of the board.
+    for (const queryKey of [["jobs", "h1"], ["update-run", "h1"], ["board"], hostPackagesQuery("h1").queryKey]) {
+      queryClient.setQueryData(queryKey, []);
+    }
+    source!.send("job", { kind: "job", hostId: "h1", jobId: "j9", output: true });
+    expect([stale(["jobs", "h1"]), stale(hostPackagesQuery("h1").queryKey)]).toEqual([true, true]);
+    expect([stale(["update-run", "h1"]), stale(["board"])]).toEqual([false, false]);
 
     hook.unmount();
     expect(source!.closed).toBe(true);

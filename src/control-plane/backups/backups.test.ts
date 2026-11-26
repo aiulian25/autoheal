@@ -9,7 +9,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type BackupView } from "../../shared/api.js";
 import { BACKUP_RETENTION_COUNT } from "../../shared/constants.js";
 import { auditEvents } from "../database/schema.js";
@@ -87,7 +87,7 @@ describe("backups", () => {
     expect(await backupIfDue(backups(), controlPlane.clock.now)).toBe(true);
   });
 
-  it("downloads a backup as an attachment, admins only, by exact name only", async () => {
+  it("downloads a backup as an attachment, by exact name only", async () => {
     const backup = await create();
     const download = await admin.get(apiPath(API_ROUTES.backupDownload, { fileName: backup.fileName }));
     expect(download.statusCode).toBe(200);
@@ -95,8 +95,6 @@ describe("backups", () => {
     expect(download.rawPayload.length).toBe(backup.sizeBytes);
     const traversal = await admin.get(apiPath(API_ROUTES.backupDownload, { fileName: "../autoheal.sqlite" }));
     expect(traversal.json()).toEqual({ error: "backup_not_found" });
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.backups)).statusCode).toBe(403);
   });
 
   it("skips a manifest it cannot read instead of failing every backup", async () => {

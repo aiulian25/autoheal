@@ -5,30 +5,8 @@ import {
 } from "../../../src/shared/application-backups.js";
 import { MILLISECONDS_PER_MINUTE } from "../../../src/shared/constants.js";
 
-/** Users, the audit log, and backups. */
+/** The audit log, and backups. */
 export const ADMIN_TEXT = {
-  users: {
-    title: "Users",
-    lede: "Who can sign in. Admins change things; viewers only look.",
-    username: "Username",
-    role: "Role",
-    status: "Status",
-    totp: "Two-step",
-    lastLogin: "Last sign-in",
-    create: "Add user",
-    temporaryPassword: (username: string) => `One-time password for ${username}`,
-    temporaryExplanation:
-      "Give it to them privately. They must change it and set up two-step sign-in at first sign-in.",
-    makeAdmin: "Make admin",
-    makeViewer: "Make viewer",
-    deactivate: "Deactivate",
-    reactivate: "Reactivate",
-    resetPassword: "Reset password",
-    resetTotp: "Reset two-step",
-    remove: "Delete",
-    removeConfirm: (username: string) => `Delete ${username}? Only possible for accounts that never did anything.`,
-    you: " (you)",
-  },
   backups: {
     title: "Backups",
     explanation:
@@ -47,13 +25,16 @@ export const ADMIN_TEXT = {
     previewTitle: "Before you restore",
     previewFile: (name: string | null) => (name === null ? "An uploaded file" : name),
     dataAsOf: "Data as of",
-    contents: (counts: { users: number; hosts: number; incidents: number; runbooks: number }) =>
-      `${counts.users} users, ${counts.hosts} hosts, ${counts.incidents} incidents, ${counts.runbooks} runbooks`,
-    reactivated: (names: string[]) => `These deactivated accounts would be active again: ${names.join(", ")}.`,
-    added: (names: string[]) => `These accounts would come back: ${names.join(", ")}.`,
+    contents: (counts: { hosts: number; incidents: number; runbooks: number }) =>
+      `${counts.hosts} hosts, ${counts.incidents} incidents, ${counts.runbooks} runbooks`,
+    // Only when it is someone other than the one signed in now.
+    owner: (name: string | null) =>
+      name === null
+        ? "Nobody could sign in once it is restored: run reset-admin on the host to set the one it is for."
+        : `Only ${name} would sign in once it is restored.`,
     hosts: (names: string[]) => `These hosts' runner tokens would work again: ${names.join(", ")}.`,
     consequences:
-      "Everyone is signed out, and you will need the admin password that was valid when the backup was made. " +
+      "Everyone is signed out, and you will need the password that was valid when the backup was made. " +
       "Escalations and approved actions waiting at the time of the backup are cancelled. " +
       "A safety backup of the current data is made first. Work pauses during restore; host actions already handed to runners can continue and must be checked afterward.",
     restoring:

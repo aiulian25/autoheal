@@ -2,8 +2,10 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { containerQueryMatchesHosts, hostContainersQuery } from "./queries.js";
-import { INVENTORY_REFRESH_MILLISECONDS } from "./constants.js";
+import type { JobView } from "../../src/shared/api.js";
+import { containerQueryMatchesHosts, hostContainersQuery, hostJobsQuery } from "./queries.js";
+import { INVENTORY_REFRESH_MILLISECONDS, LIVE_SAFETY_REFRESH_MILLISECONDS } from "./constants.js";
+import { liveHeard, liveLost } from "./live-health.js";
 
 describe("inventory query scoping", () => {
   const changed = new Set(["b"]);
@@ -54,4 +56,22 @@ it("polls host containers after five seconds when no live stream is available", 
     hook.unmount();
     client.clear();
   }
+});
+
+describe("a host's jobs", () => {
+  const job = (status: JobView["status"]) => ({ status }) as JobView;
+  const interval = (jobs: JobView[]) => hostJobsQuery("a").refetchInterval({ state: { data: jobs } });
+  afterEach(() => liveLost());
+
+  it("are read every few seconds while one is on its way, whatever the stream says", () => {
+    liveHeard();
+    expect(interval([job("succeeded"), job("delivered")])).toBe(INVENTORY_REFRESH_MILLISECONDS);
+    expect(interval([job("pending")])).toBe(INVENTORY_REFRESH_MILLISECONDS);
+  });
+  it("are otherwise left to the stream while it is healthy, and read every few seconds while it is not", () => {
+    liveHeard();
+    expect(interval([job("succeeded"), job("failed"), job("expired")])).toBe(LIVE_SAFETY_REFRESH_MILLISECONDS);
+    liveLost();
+    expect(interval([])).toBe(INVENTORY_REFRESH_MILLISECONDS);
+  });
 });

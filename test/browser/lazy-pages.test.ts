@@ -27,7 +27,6 @@ const PAGES = [
   "/network",
   "/runbooks",
   "/replays",
-  "/users",
   "/backups",
   "/audit",
   "/account",

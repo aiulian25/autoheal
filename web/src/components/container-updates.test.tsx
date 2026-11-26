@@ -1,7 +1,15 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { API_ROUTES, apiPath, type HostView, type JobView, type TaskSummaryView } from "../../../src/shared/api.js";
+import {
+  API_ROUTES,
+  apiPath,
+  type ContainerView,
+  type HostView,
+  type JobView,
+  type TaskSummaryView,
+} from "../../../src/shared/api.js";
 import { PATHS, TEXT } from "../constants.js";
+import { timeAgo } from "../format.js";
 import { HostContainers } from "./host-containers.js";
 import { HostUpdates } from "../pages/host-updates.js";
 import { NO_LOCKS, alder, container, CONTAINERS, serve, show, sent } from "../test-support/host-table.js";
@@ -18,6 +26,71 @@ vi.mock("./shell-terminal.js", () => ({
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe("what the images card says of its last checks", () => {
+  const MINUTE = 60_000;
+  const checked = (name: string, update: Partial<ContainerView["update"]> = {}) =>
+    container({
+      name,
+      update: {
+        status: "current",
+        checkedAt: Date.now() - 40 * MINUTE,
+        policy: "ask",
+        remote: null,
+        reason: null,
+        ...update,
+      },
+    });
+  const card = (containers: ContainerView[]) => {
+    serve({ [API_ROUTES.containers]: containers });
+    // No packages reported: this is about the images card alone.
+    show(<HostUpdates host={{ ...alder(false), health: {} as HostView["health"] }} admin />);
+  };
+  const allCurrent = () => screen.queryByText(TEXT.containerImages.allCurrent, { exact: false });
+
+  it("calls every image up to date only when each was checked and found so, and says how long ago", async () => {
+    card([checked("attic"), checked("wiki", { checkedAt: Date.now() - 5 * MINUTE })]);
+
+    const line = await screen.findByText(TEXT.containerImages.allCurrent, { exact: false });
+    expect(line.textContent).toContain(timeAgo(Date.now() - 40 * MINUTE));
+  });
+  it("counts the images not checked yet and those whose last check got no answer, and claims nothing more", async () => {
+    card([
+      checked("attic", { status: null, checkedAt: null }),
+      checked("wiki", { status: "unknown", reason: "not public on Docker Hub: private, or built on this host" }),
+      checked("notes", { reason: "registry timed out" }),
+      checked("db"),
+    ]);
+
+    expect(await screen.findByText(TEXT.containerImages.notChecked(1))).toBeTruthy();
+    expect(screen.getByText(TEXT.containerImages.checkFailed(2))).toBeTruthy();
+    expect(allCurrent()).toBeNull();
+  });
+  it("does not call images up to date when the last check of one of them got no answer", async () => {
+    card([checked("attic"), checked("notes", { reason: "registry timed out" })]);
+
+    expect(await screen.findByText(TEXT.containerImages.checkFailed(1))).toBeTruthy();
+    expect(allCurrent()).toBeNull();
+  });
+  it("leaves the containers with updates off out, and says so when that is every one", async () => {
+    card([checked("attic", { policy: "off", status: null, checkedAt: null }), checked("wiki", { policy: "off" })]);
+
+    expect(await screen.findByText(TEXT.containerImages.allOff)).toBeTruthy();
+    expect(allCurrent()).toBeNull();
+  });
+  it("says there is nothing to check on a host without containers", async () => {
+    card([]);
+
+    expect(await screen.findByText(TEXT.containerImages.noContainers)).toBeTruthy();
+    expect(allCurrent()).toBeNull();
+  });
+  it("does not call images up to date while a new one is out", async () => {
+    card([checked("attic", { status: "available" }), checked("wiki")]);
+
+    expect(await screen.findByText(TEXT.containerImages.update(1))).toBeTruthy();
+    expect(allCurrent()).toBeNull();
+  });
 });
 
 describe("a newer version of a container's tag", () => {
@@ -77,7 +150,7 @@ describe("a host's containers and what each does", () => {
         "1 new image is out, but this host only watches. Set DRY_RUN=0 on it to update from here.",
       ),
     ).toBeTruthy();
-    expect(screen.queryByText("Every image here is up to date.")).toBeNull();
+    expect(screen.queryByText(TEXT.containerImages.allCurrent, { exact: false })).toBeNull();
   });
   it("says a new image Autoheal applies comes shortly, unless it waits for a person: then it leads to that task", async () => {
     const available = {
@@ -198,6 +271,16 @@ describe("a host's containers and what each does", () => {
     const notes = (await screen.findByRole("button", { name: "notes" })).closest("tr")!;
     expect(within(notes).getByRole("link", { name: "update ready" }).getAttribute("href")).toBe("#updates");
     expect(await within(notes).findByText("its data could not be copied first")).toBeTruthy();
+  });
+  it("says when a container's last check got no answer, and what the check before found", async () => {
+    const answered = { status: "current" as const, checkedAt: 1, policy: "ask" as const, remote: null };
+    serve({ [API_ROUTES.containers]: [container({ update: { ...answered, reason: "registry timed out" } })] });
+    show(<HostContainers host={alder(false)} admin />);
+
+    const attic = (await screen.findByRole("button", { name: "attic" })).closest("tr")!;
+    expect(within(attic).getByText(TEXT.hostContainers.wasUpToDate)).toBeTruthy();
+    expect(within(attic).getByText(TEXT.hostContainers.lastCheckFailed("registry timed out"))).toBeTruthy();
+    expect(within(attic).queryByText(TEXT.hostContainers.upToDate)).toBeNull();
   });
   it("says why a container's image could not be checked", async () => {
     serve({

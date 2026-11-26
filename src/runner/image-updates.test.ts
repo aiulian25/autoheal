@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { REGISTRY } from "../shared/constants.js";
 import type { ContainerSummary, ImageDetails } from "./docker-client.js";
 import { ImageUpdateChecker } from "./image-updates.js";
 import type { ContainerDetails } from "./incident-report.js";
@@ -471,4 +472,26 @@ describe("ImageUpdateChecker, for images no check has seen yet", () => {
     expect(checker.resultFor(imageId("c"), "redis")).toMatchObject({ status: "current", checkedAt: 4_000 });
     expect(checker.resultFor(imageId("a"), "nginx")).toBeNull();
   });
+});
+
+it("tells after each batch of a check but its last, so its first answers show while the rest are still asked", async () => {
+  const containers = Array.from({ length: REGISTRY.concurrency * 2 + 1 }, (_, index) =>
+    summary(`app${index}`, `ghcr.io/example/app${index}:1`, `sha256:${String(index).padStart(64, "0")}`),
+  );
+  const answeredWhenTold: number[] = [];
+  const answered = () => containers.filter(({ ImageID, Image }) => checker.resultFor(ImageID, Image!) !== null).length;
+  const checker = new ImageUpdateChecker(
+    {
+      containerSummaries: async () => containers,
+      inspect: async () => null,
+      inspectImage: async (reference) => ({ Id: reference, RepoDigests: [`${reference}@${digest("1")}`] }),
+    },
+    { tags: async () => [], digest: async () => digest("1"), labels: async () => labelled("1") },
+    Date.now,
+    null,
+    () => answeredWhenTold.push(answered()),
+  );
+  await checker.checkAll();
+  expect(answeredWhenTold).toEqual([REGISTRY.concurrency, REGISTRY.concurrency * 2]);
+  expect(answered()).toBe(containers.length);
 });

@@ -6,7 +6,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { RUNNER_ROUTES, type ContainerAccessWork, type WorkResponse } from "../../shared/protocol.js";
@@ -16,6 +16,8 @@ import {
   type OperationPreviewAnswer,
   type TopologyView,
 } from "../../shared/topology.js";
+import { users } from "../database/schema.js";
+
 const HASH = "a".repeat(64);
 const available = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"b".repeat(64)}` };
 describe("host topology and reviewed operation scope", () => {
@@ -102,19 +104,15 @@ describe("host topology and reviewed operation scope", () => {
   }
   it("returns scoped read-only links and marks dormant reports stale", async () => {
     const route = apiPath(API_ROUTES.topology, { hostId });
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    const view = (await viewer.get(route)).json<TopologyView>();
+    const view = (await admin.get(route)).json<TopologyView>();
     expect(view).toMatchObject({ available: true, stale: false });
     expect(view.snapshot!.edges[0]!.kind).toBe("compose_association");
-    expect((await viewer.post(impact(), { action: "update" })).statusCode).toBe(403);
     plane.clock.now += HOST_SILENT_AFTER_MILLISECONDS + 1;
-    expect((await viewer.get(route)).json<TopologyView>().stale).toBe(true);
+    expect((await admin.get(route)).json<TopologyView>().stale).toBe(true);
     expect((await admin.post(impact(), { action: "update" })).statusCode).toBe(409);
   });
   it("relays previews with inside access off and persists the reviewed fingerprint into the delivered job", async () => {
     const preview = await reviewed();
-    const other = (await fullySignedInUser(plane, admin, "another-admin", "admin")).client;
-    expect((await other.post(actionPath(), { action: "update", previewId: preview.id })).statusCode).toBe(409);
     const job = await admin.post(actionPath(), { action: "update", previewId: preview.id });
     expect(job.statusCode).toBe(200);
     const work = (
@@ -178,7 +176,7 @@ describe("host topology and reviewed operation scope", () => {
   it("bounds pending/ready reviews and clears them on restore or clock rollback", async () => {
     const service = plane.services.topology;
     const actor = {
-      userId: plane.services.usersService.list()[0]!.id,
+      userId: plane.services.databaseHandle.database.select({ id: users.id }).from(users).get()!.id,
       username: "admin",
       ip: "127.0.0.1",
       requestId: "fixture",

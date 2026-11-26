@@ -131,7 +131,6 @@ export function serve(role: "admin" | "viewer", extra: Record<string, unknown> =
     [`PUT ${API_ROUTES.hostUpdateSettings}`]: { securityInWindow: false, windowStart: "03:00", windowEnd: "05:00" },
     [API_ROUTES.backups]: [],
     [API_ROUTES.dataHousekeeping]: DATA,
-    [API_ROUTES.users]: [{ id: "u1", username: "admin", role: "admin" }],
     [API_ROUTES.widgetKeys]: [
       { id: "k1", name: "homepage", scope: "widget", hint: "abcd", createdBy: "admin", createdAt: 1, lastUsedAt: null },
     ],

@@ -13,6 +13,7 @@ import {
   TASK_SHOW,
   TEXT,
 } from "../constants.js";
+import { liveAware } from "../live-health.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { type Show, taskLink, listQuery } from "./task-queries.js";
 import { TaskPanel } from "./task-panel.js";
@@ -183,7 +184,7 @@ export function TasksPage() {
   const tasks = useQuery({
     queryKey: ["tasks", query],
     queryFn: () => api<TaskSummaryView[]>("GET", `${API_ROUTES.tasks}?${query}`),
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+    refetchInterval: liveAware(INVENTORY_REFRESH_MILLISECONDS),
   });
   const setParameter = (name: string, value: string | null) =>
     setParameters(

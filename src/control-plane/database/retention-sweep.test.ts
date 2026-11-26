@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { startTestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, DATA_KIND, type DataKind, type DataView } from "../../shared/api.js";
 import {
   ACTION_RESTART,
@@ -417,15 +417,14 @@ describe("the retention sweep", () => {
     expect(kind(after, DATA_KIND.auditEvents).rows).toBe(kind(before, DATA_KIND.auditEvents).rows + 1);
   });
 
-  it("shows administrators what the database holds, and nobody else", async () => {
+  it("shows its owner what the database holds, and nobody signed out", async () => {
     const controlPlane = await startTestControlPlane();
     const admin = (await fullySignedInAdmin(controlPlane)).client;
-    const viewer = (await fullySignedInUser(controlPlane, admin, "observer", "viewer")).client;
     controlPlane.services.retentionSweep.sweep();
     const answer = await admin.get(API_ROUTES.dataHousekeeping);
     expect(answer.statusCode).toBe(200);
     expect(answer.json<DataView>()).toMatchObject({ lastSweep: { at: controlPlane.clock.now, removed: 0 } });
-    expect((await viewer.get(API_ROUTES.dataHousekeeping)).statusCode).toBe(403);
+    expect((await controlPlane.client().get(API_ROUTES.dataHousekeeping)).statusCode).toBe(401);
     await controlPlane.app.close();
     await controlPlane.runnerApp.close();
   });

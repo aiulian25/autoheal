@@ -15,6 +15,7 @@ import {
   HTTP_HEADERS,
   JOB_ACTION,
   METRICS_INTERVAL_MILLISECONDS,
+  REPORT_SCOPE,
   RUNNER_UPDATE_REPORT,
   SELF_UPDATE,
   SELF_UPDATE_TEXT,
@@ -25,9 +26,10 @@ import {
   type FileRequest,
   type Heartbeat,
   type HostJob,
+  type ProbeReport,
 } from "../shared/protocol.js";
 import { ApplicationBackupJournal } from "./application-backup-journal.js";
-import { createRuntime, createContainerAccess, fitted, startRunner, watchEvents } from "./application.js";
+import { createRuntime, createContainerAccess, fitted, startRunner, watchEvents, widestOf } from "./application.js";
 import { DockerClient } from "./docker-client.js";
 import { ControlPlaneClient } from "./control-plane-client.js";
 
@@ -195,9 +197,14 @@ describe("what a runner says it can do", () => {
     dryRun: false,
   });
   // A dashboard of its own: it answers what a starting runner asks, and keeps what each heartbeat named and said.
-  async function dashboard() {
+  // `answer`: what each heartbeat is answered with, such as checks to make.
+  async function dashboard(answer: object = {}) {
     const material = ownCertificate(join(root, "tls"), ["127.0.0.1"], Date.now()).material;
     const heartbeats: { named: string[]; heartbeat: Heartbeat }[] = [];
+    const answerTo = (url: string | undefined) => {
+      if (url === RUNNER_ROUTES.work) return { items: [], jobs: [] };
+      return url === RUNNER_ROUTES.heartbeat ? answer : {};
+    };
     server = createServer({ key: material.key, cert: material.certificate }, (request, response) => {
       // Held, as a long poll is, until the runner stops.
       if (request.url === RUNNER_ROUTES.containerAccess) return;
@@ -210,13 +217,196 @@ describe("what a runner says it can do", () => {
           });
         }
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify(request.url === RUNNER_ROUTES.work ? { items: [], jobs: [] } : {}));
+        response.end(JSON.stringify(answerTo(request.url)));
       });
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     const url = `https://127.0.0.1:${(server!.address() as AddressInfo).port}`;
     return { connection: { url, token: "fixture", pin: material.pin }, heartbeats };
   }
+
+  it("reports a container's change while the checks a report gave are still being made", async () => {
+    engine.add(exitedContainer("paperless", { State: { Status: "running", Running: true, ExitCode: 0 } }));
+    const probe = { id: "p1", generation: "g1", body: {} };
+    const { connection, heartbeats } = await dashboard({ probes: [probe] });
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    let finishChecks!: () => void;
+    const checking = vi.spyOn(runtime.serviceProbes.checks, "run").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishChecks = () => resolve([]);
+        }),
+    );
+    const stop = await startRunner(runtime);
+    await vi.waitFor(() => expect(checking).toHaveBeenCalled(), { timeout: 5_000 });
+    await engine.waitForEventStream();
+    const reportedBefore = heartbeats.length;
+    engine.emit({ Type: "container", Action: "die", Actor: { Attributes: { name: "paperless" } } });
+
+    // The checks still run: the containers go on their own report all the same.
+    await vi.waitFor(
+      () => expect(heartbeats.slice(reportedBefore).some(({ heartbeat }) => heartbeat.host === null)).toBe(true),
+      { timeout: 3_000 },
+    );
+    finishChecks();
+    await stop();
+  });
+
+  type Runtime = Awaited<ReturnType<typeof createRuntime>>;
+  // From `hold` on, the runner's reports wait on their way until let go; each is answered once it goes.
+  function holdReports(runtime: Runtime) {
+    const controlPlane = runtime.controlPlane!;
+    const send = controlPlane.heartbeat.bind(controlPlane);
+    let gate: Promise<void> | null = null;
+    let open = () => undefined as void;
+    let waiting = 0;
+    vi.spyOn(controlPlane, "heartbeat").mockImplementation(async (payload) => {
+      if (gate !== null) {
+        waiting++;
+        await gate;
+      }
+      return send(payload);
+    });
+    return {
+      hold: () => {
+        gate = new Promise<void>((resolve) => {
+          open = resolve;
+        });
+      },
+      release: () => {
+        gate = null;
+        open();
+      },
+      waiting: () => waiting,
+    };
+  }
+  const running = () => exitedContainer("paperless", { State: { Status: "running", Running: true, ExitCode: 0 } });
+  const died = { Type: "container", Action: "die", Actor: { Attributes: { name: "paperless" } } };
+  // Started, with its first report and the one that says Docker's events reach it both sent.
+  const settled = async (heartbeats: { heartbeat: Heartbeat }[]) => {
+    await engine.waitForEventStream();
+    await vi.waitFor(
+      () => {
+        expect(heartbeats.length).toBeGreaterThanOrEqual(2);
+        expect(heartbeats.at(-1)?.heartbeat.eventStreamConnected).toBe(true);
+      },
+      { timeout: 5_000 },
+    );
+  };
+
+  it("sends a container's change asked for while a report is on its way right after it, still on its own", async () => {
+    engine.add(running());
+    const { connection, heartbeats } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    const reports = holdReports(runtime);
+    const stop = await startRunner(runtime);
+    await settled(heartbeats);
+    reports.hold();
+    engine.emit(died);
+    await vi.waitFor(() => expect(reports.waiting()).toBe(1), { timeout: 3_000 });
+    engine.emit({ ...died, Action: "start" });
+    await vi.waitFor(() => expect(runtime.pendingReport).toBe(REPORT_SCOPE.containers), { timeout: 3_000 });
+    const reportedBefore = heartbeats.length;
+    reports.release();
+
+    await vi.waitFor(() => expect(heartbeats.length).toBe(reportedBefore + 2), { timeout: 3_000 });
+    expect(heartbeats.slice(reportedBefore).map(({ heartbeat }) => heartbeat.host)).toEqual([null, null]);
+    await stop();
+  });
+
+  it("delivers the results waiting after each report, one delivery at a time", async () => {
+    engine.add(running());
+    const { connection, heartbeats } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    let holding = true;
+    let finish = () => undefined as void;
+    const delivering = vi.spyOn(runtime.decider, "flushOutbox").mockImplementation(() =>
+      holding
+        ? new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(),
+    );
+    const stop = await startRunner(runtime);
+    await vi.waitFor(() => expect(delivering).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await settled(heartbeats);
+    const reportedBefore = heartbeats.length;
+    engine.emit(died);
+    await vi.waitFor(() => expect(heartbeats.length).toBeGreaterThan(reportedBefore), { timeout: 3_000 });
+    // Reported again while the first delivery runs: one more after it, never one beside it.
+    expect(delivering).toHaveBeenCalledTimes(1);
+    holding = false;
+    finish();
+
+    await vi.waitFor(() => expect(delivering).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await stop();
+  });
+
+  it("sends what the checks found while a report was on its way with the report after it", async () => {
+    engine.add(running());
+    const probe = { id: "p1", generation: "g1", body: {} };
+    const { connection, heartbeats } = await dashboard({ probes: [probe] });
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    let finishFirst = (_found: ProbeReport[]) => undefined as void;
+    let finishLater = () => undefined as void;
+    const later = new Promise<ProbeReport[]>((resolve) => {
+      finishLater = () => resolve([]);
+    });
+    const checking = vi.spyOn(runtime.serviceProbes.checks, "run").mockImplementation(() =>
+      checking.mock.calls.length === 1
+        ? new Promise((resolve) => {
+            finishFirst = resolve;
+          })
+        : later,
+    );
+    const reports = holdReports(runtime);
+    const stop = await startRunner(runtime);
+    await vi.waitFor(() => expect(checking).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    await settled(heartbeats);
+    reports.hold();
+    engine.emit(died);
+    await vi.waitFor(() => expect(reports.waiting()).toBe(1), { timeout: 3_000 });
+    const found = { id: probe.id, generation: probe.generation } as ProbeReport;
+    finishFirst([found]);
+    await vi.waitFor(() => expect(runtime.serviceProbes.reports).toEqual([found]), { timeout: 3_000 });
+    reports.release();
+
+    await vi.waitFor(
+      () =>
+        expect(heartbeats.some(({ heartbeat }) => heartbeat.probeResults?.some(({ id }) => id === probe.id))).toBe(
+          true,
+        ),
+      { timeout: 3_000 },
+    );
+    finishLater();
+    await stop();
+  });
+
+  it("reports what a check of images found so far while the rest of them are still asked", async () => {
+    const { connection, heartbeats } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    const stop = await startRunner(runtime);
+    await settled(heartbeats);
+    const reportedBefore = heartbeats.length;
+    // What the checker is told as a batch of its registry questions is answered.
+    (runtime.updates as unknown as { batchChecked: () => void }).batchChecked();
+
+    await vi.waitFor(
+      () => expect(heartbeats.slice(reportedBefore).some(({ heartbeat }) => heartbeat.host === null)).toBe(true),
+      { timeout: 3_000 },
+    );
+    await stop();
+  });
+
+  it.each([
+    [null, REPORT_SCOPE.containers, REPORT_SCOPE.containers],
+    [null, REPORT_SCOPE.full, REPORT_SCOPE.full],
+    [REPORT_SCOPE.containers, REPORT_SCOPE.containers, REPORT_SCOPE.containers],
+    [REPORT_SCOPE.containers, REPORT_SCOPE.full, REPORT_SCOPE.full],
+    [REPORT_SCOPE.full, REPORT_SCOPE.containers, REPORT_SCOPE.full],
+  ] as const)("waiting for %s, asked for %s: the next report covers %s", (pending, asked, next) => {
+    expect(widestOf(pending, asked)).toBe(next);
+  });
 
   it("reports a reboot the host now needs within seconds, not at its next full report", async () => {
     const { connection, heartbeats } = await dashboard();

@@ -47,8 +47,8 @@ describe("dashboard HTTP security", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
   });
 
-  // The router decodes the address before matching it: these reach /api/users and /api/audit.
-  it.each(["/%61pi/users", "/api/%75sers", "/%61%70%69/audit"])(
+  // The router decodes the address before matching it: these reach /api/hosts and /api/audit.
+  it.each(["/%61pi/hosts", "/api/%68osts", "/%61%70%69/audit"])(
     "guards an API route however its address is encoded: %s",
     async (url) => {
       const response = await controlPlane.client().get(url);

@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
-import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
+import { currentCode, fullySignedInAdmin, NEW_ADMIN_PASSWORD } from "../../../test/support/second-factor.js";
+import { API_ROUTES, apiPath } from "../../shared/api.js";
 import { TOTP_PERIOD_SECONDS } from "../../shared/constants.js";
 import { VIEW_LIMITS, type BoardArrangement, type ViewPreferences } from "../../shared/view-preferences.js";
 import { userViewPreferences } from "../database/schema.js";
@@ -13,6 +13,7 @@ const ARRANGED: BoardArrangement = { order: ["needsYou", "noticed", "autoheal", 
 describe("a person's own views and board", () => {
   let plane: TestControlPlane;
   let admin: TestClient;
+  let secret: string;
   const stored = async (client = admin) =>
     (await client.get(API_ROUTES.accountViewPreferences)).json<ViewPreferences>();
   const save = (body: object = VIEW, client = admin) => client.post(API_ROUTES.accountSavedViews, body);
@@ -22,7 +23,7 @@ describe("a person's own views and board", () => {
 
   beforeEach(async () => {
     plane = await startTestControlPlane();
-    ({ client: admin } = await fullySignedInAdmin(plane));
+    ({ client: admin, secret } = await fullySignedInAdmin(plane));
   });
   afterEach(async () => {
     await plane.app.close();
@@ -50,41 +51,17 @@ describe("a person's own views and board", () => {
   });
 
   it("survives signing out and back in", async () => {
-    const operator = await fullySignedInUser(plane, admin, "operator", "viewer");
-    await save(VIEW, operator.client);
-    await operator.client.put(API_ROUTES.accountBoardArrangement, ARRANGED);
-    await operator.client.post(API_ROUTES.logout);
-    expect((await operator.client.get(API_ROUTES.accountViewPreferences)).statusCode).toBe(401);
+    await save(VIEW);
+    await admin.put(API_ROUTES.accountBoardArrangement, ARRANGED);
+    await admin.post(API_ROUTES.logout);
+    expect((await admin.get(API_ROUTES.accountViewPreferences)).statusCode).toBe(401);
 
     plane.clock.now += TOTP_PERIOD_SECONDS * 1000;
-    await operator.client.signIn("operator", operator.password);
-    await operator.client.post(API_ROUTES.secondFactor, { code: currentCode(operator.secret, plane.clock.now) });
-    const after = await stored(operator.client);
+    await admin.signIn("admin", NEW_ADMIN_PASSWORD);
+    await admin.post(API_ROUTES.secondFactor, { code: currentCode(secret, plane.clock.now) });
+    const after = await stored();
     expect(after.views).toHaveLength(1);
     expect(after.board).toEqual(ARRANGED);
-  });
-
-  it("is private to its owner, whatever anyone else asks", async () => {
-    await save();
-    const viewer = await fullySignedInUser(plane, admin, "operator", "viewer");
-    expect(await stored(viewer.client)).toEqual({ views: [], board: null });
-    const [view] = (await stored()).views;
-    expect((await viewer.client.delete(apiPath(API_ROUTES.accountSavedView, { viewId: view!.id }))).statusCode).toBe(
-      404,
-    );
-    expect((await stored()).views).toHaveLength(1);
-    await viewer.client.delete(API_ROUTES.accountBoardArrangement);
-    expect((await stored()).views).toHaveLength(1);
-  });
-
-  it("lets a viewer keep their own, and that grants them nothing", async () => {
-    const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
-    const viewer = await fullySignedInUser(plane, admin, "operator", "viewer");
-    const hostId = enrolled.host.id;
-    expect((await save({ ...VIEW, hostId }, viewer.client)).statusCode).toBe(200);
-    const denied = await viewer.client.post(apiPath(API_ROUTES.hostActions, { hostId }), { action: "reboot" });
-    expect(denied.statusCode).toBe(403);
-    expect((await viewer.client.get(API_ROUTES.hosts)).statusCode).toBe(200);
   });
 
   it("refuses anything but the few settings allowed, and keeps to its bounds", async () => {

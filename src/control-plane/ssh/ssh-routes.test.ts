@@ -2,7 +2,7 @@ import { utils } from "ssh2";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeSshServer } from "../../../test/fakes/fake-ssh-server.js";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -16,7 +16,6 @@ import { HOST_KIND, SSH_READINESS } from "../../shared/constants.js";
 import { DEFAULT_SSH_HOST_SETTINGS } from "../../shared/ssh-hosts.js";
 
 const USER = "alex";
-const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 
 describe("the SSH keys and SSH hosts API", () => {
   let controlPlane: TestControlPlane;
@@ -141,31 +140,6 @@ describe("the SSH keys and SSH hosts API", () => {
     expect((await admin.post(API_ROUTES.sshKeys, { name: "public", privateKey: "ssh-ed25519 AAAA" })).json()).toEqual({
       error: "ssh_key_unreadable",
     });
-    expect(server.commands).toEqual([]);
-  });
-
-  it("gives a viewer none of it", async () => {
-    const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
-    const hostId = UNKNOWN_ID;
-    const calls = [
-      () => viewer.get(API_ROUTES.sshKeys),
-      () => viewer.post(API_ROUTES.sshKeys, { name: "laptop", privateKey: key }),
-      () => viewer.post(API_ROUTES.sshKeysMake, { name: "made" }),
-      () => viewer.delete(apiPath(API_ROUTES.sshKey, { keyId: UNKNOWN_ID })),
-      () => addHost(UNKNOWN_ID, viewer),
-      () => viewer.post(apiPath(API_ROUTES.sshHostConfirm, { pendingId: UNKNOWN_ID })),
-      () => viewer.get(apiPath(API_ROUTES.sshHost, { hostId })),
-      () => viewer.post(apiPath(API_ROUTES.sshHostTrustHostKey, { hostId }), { fingerprint: "SHA256:x" }),
-      () => viewer.put(apiPath(API_ROUTES.sshHostConnection, { hostId }), { keyId: UNKNOWN_ID }),
-      () => viewer.put(apiPath(API_ROUTES.sshHostSettings, { hostId }), DEFAULT_SSH_HOST_SETTINGS),
-      () => viewer.put(apiPath(API_ROUTES.sshHostRoot, { hostId }), { password: "pw" }),
-      () => viewer.delete(apiPath(API_ROUTES.sshHostRoot, { hostId })),
-      () => viewer.delete(apiPath(API_ROUTES.sshHostInterrupted, { hostId })),
-    ];
-    expect(calls).toHaveLength(13);
-    for (const call of calls) {
-      expect((await call()).statusCode).toBe(403);
-    }
     expect(server.commands).toEqual([]);
   });
 });

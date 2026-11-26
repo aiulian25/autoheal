@@ -1,3 +1,4 @@
+import { withoutOnePersonRule } from "../../../test/support/legacy-people.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,6 +43,8 @@ const settingOf = (sqlite: Database.Database, key: string) =>
 describe("the secrets the database keeps", () => {
   it("seals plain authenticator seeds and integration tokens once, and leaves everything else as it was", () => {
     const handle = new DatabaseHandle(IN_MEMORY_DATABASE);
+    // As an older build left it: several people, from before Autoheal was one person's.
+    withoutOnePersonRule(handle);
     const sqlite = handle.sqlite;
     const plain = addUser(sqlite, SEED, PENDING_SEED);
     const withoutCode = addUser(sqlite, null);

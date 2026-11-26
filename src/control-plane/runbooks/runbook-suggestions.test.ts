@@ -6,7 +6,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -153,7 +153,7 @@ describe("runbook drafts from recurring escalations", () => {
     expect(await suggested()).toEqual([]);
   });
 
-  it("counts only the matches with the fix that held, sets a case aside when its draft is archived, and is for admins", async () => {
+  it("counts only the matches with the fix that held, sets a case aside when its draft is archived", async () => {
     for (const days of [6, 4, 1]) await settle("paperless", days, { choice: "restart" });
     const [suggestion] = await suggested();
     // The model escalates each time: about paperless, as the fix was, but not to restart it.
@@ -162,9 +162,6 @@ describe("runbook drafts from recurring escalations", () => {
     await controlPlane.services.replayService.whenFinished(view.replay!.id);
     expect((await suggested())[0]!.replay).toMatchObject({ status: "finished", matched: 0, incidents: 3 });
 
-    const viewer = (await fullySignedInUser(controlPlane, admin, "observer", "viewer")).client;
-    expect((await viewer.get(API_ROUTES.runbookSuggestions)).statusCode).toBe(403);
-    expect((await viewer.post(draftPath(suggestion!.key))).statusCode).toBe(403);
     expect((await admin.post(draftPath("0".repeat(64)))).json()).toEqual({ error: "runbook_suggestion_not_found" });
 
     await admin.post(apiPath(API_ROUTES.runbookArchive, { runbookId: view.runbookId! }));

@@ -5,7 +5,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, type SettingsView, type TrustedProxiesView } from "../../shared/api.js";
 
 // inject() connects from 127.0.0.1; the client a proxy would pass on:
@@ -57,7 +57,7 @@ describe("trusted proxies", () => {
     expect(await throughProxy(admin)).toMatchObject({ source: "dashboard", addresses: [], seenAs: "127.0.0.1" });
   });
 
-  it("refuses what is not a proxy: a name, a range too wide, too many, and anyone but an admin", async () => {
+  it("refuses what is not a proxy: a name, a range too wide, too many", async () => {
     controlPlane = await startTestControlPlane({ trustedProxyAddresses: [] });
     const { client: admin } = await fullySignedInAdmin(controlPlane);
     const tooMany = Array.from({ length: 33 }, (_, index) => `10.0.0.${index}`);
@@ -67,23 +67,13 @@ describe("trusted proxies", () => {
       expect(refused.json()).toEqual({ error: "trusted_proxy_invalid" });
     }
     expect((await save(admin, ["10.0.0.0/8", "fd00::/16"])).statusCode).toBe(200);
-
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await save(viewer, [])).statusCode).toBe(403);
     expect(controlPlane.services.trustedProxies.addresses()).toEqual(["10.0.0.0/8", "fd00::/16"]);
   });
 
-  it("tells only an admin whose word on a client counts, and how the request arrived", async () => {
+  it("tells its owner whose word on a client counts, and how the request arrived", async () => {
     controlPlane = await startTestControlPlane({ trustedProxyAddresses: [] });
     const { client: admin } = await fullySignedInAdmin(controlPlane);
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
     expect(await throughProxy(admin)).toMatchObject({ peer: "127.0.0.1", forwardedFor: CLIENT });
-
-    // A viewer is told everything else an admin is.
-    const { trustedProxies: _adminOnly, ...forEveryone } = (await admin.get(API_ROUTES.settings)).json<SettingsView>();
-    const seen = (await viewer.get(API_ROUTES.settings)).json<SettingsView>();
-    expect(seen).not.toHaveProperty("trustedProxies");
-    expect(seen).toEqual(forEveryone);
   });
 
   it("leaves the proxies the .env names to the .env", async () => {

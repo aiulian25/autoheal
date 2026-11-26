@@ -5,7 +5,7 @@
 }
 
 .attention .page-header {
-  margin-bottom: 26px;
+  margin-bottom: 10px;
 }
 
 /* Hosts in even cards, however many; the Ollama agent beside them as tall as their rows, so it stretches none of them.
@@ -215,8 +215,7 @@
   height: 12px;
 }
 
-/* Handing work to the agent: its button, filled with the agent's indigo, and the one-line tip that says how to
-   drag. The tip shows where a pointer can drag: not on a touch screen. */
+/* Handing work to the agent: its button, filled with the agent's indigo. */
 button.agent-button {
   display: inline-flex;
   align-items: center;
@@ -235,47 +234,8 @@ button.agent-button .icon {
   height: 14px;
 }
 
-.drag-tip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border: var(--border-width) solid var(--agent-tip-border);
-  border-radius: var(--radius-medium);
-  background: var(--agent-tip);
-  color: var(--text-muted);
-  font-size: var(--text-small);
-}
-
-.drag-tip > .icon {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  color: var(--warning);
-}
-
-.drag-tip strong {
-  color: var(--agent-text);
-}
-
-.drag-badge {
-  flex: none;
-  margin-left: auto;
-  padding: 3px 8px;
-  border-radius: var(--radius-small);
-  background: var(--agent-chip);
-  color: var(--agent-text);
-  font-family: var(--font-mono);
-  font-size: var(--text-badge);
-  letter-spacing: var(--label-tracking);
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-/* Dragging needs a pointer: a touch screen is told neither how to drag nor where to drop. */
+/* Dragging needs a pointer: a touch screen is not told where to drop. */
 @media (hover: none) and (pointer: coarse) {
-  .drag-tip,
   .drop-chip {
     display: none;
   }

@@ -1,14 +1,8 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { API_ROUTES, type SessionView, type ContainerView } from "../../src/shared/api.js";
+import { API_ROUTES, type SessionView } from "../../src/shared/api.js";
 import { HTTP_STATUS, ROLE_ADMIN } from "../../src/shared/constants.js";
 import { ApiError, api, rememberCsrfToken } from "./api-client.js";
-import {
-  resourceAllowed,
-  resourceGrantsSchema,
-  type ResourceAction,
-  type ResourcePermissionsView,
-} from "../../src/shared/resource-permissions.js";
-import { INVENTORY_REFRESH_MILLISECONDS, PATHS, SESSION_QUERY_KEY } from "./constants.js";
+import { PATHS, SESSION_QUERY_KEY } from "./constants.js";
 
 /** Every query but the session: what one person's sign-in fetched, which nobody signed in after them may see. */
 export const forgetPrivateData = (queryClient: QueryClient) =>
@@ -65,26 +59,3 @@ export const isAdmin = (session: SessionView | null | undefined) => session?.use
 
 /** The session inside the signed-in app, where the router guarantees there is one. */
 export const useSignedInSession = (): SessionView => useSession().data!;
-
-/** Current delegated capabilities. A missing/failed response never grants an action. */
-export function useResourcePermissions() {
-  // The signed-in router owns session loading; subscribe without an extra sign-in request.
-  const session = useQuery({ queryKey: SESSION_QUERY_KEY, queryFn: loadSession, enabled: false }).data;
-  const permissions = useQuery({
-    queryKey: ["resource-permissions", session?.user.id],
-    queryFn: async () => {
-      const view = await api<ResourcePermissionsView>("GET", API_ROUTES.accountPermissions);
-      return { revision: view.revision, grants: resourceGrantsSchema.parse(view.grants) };
-    },
-    enabled: session != null && !isAdmin(session),
-    retry: false,
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
-  });
-  const grants = session != null && !isAdmin(session) && permissions.isSuccess ? (permissions.data?.grants ?? []) : [];
-  const allowed = (action: ResourceAction, container: Pick<ContainerView, "hostId" | "name" | "composeProject">) =>
-    resourceAllowed(grants, action, container);
-  return {
-    allowed,
-    hasDelegatedActions: !isAdmin(session) && grants.some((grant) => grant.actions.some((action) => action !== "read")),
-  };
-}

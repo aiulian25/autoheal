@@ -64,7 +64,6 @@ import {
   type UpdatePolicy,
   type UpdateRunStatus,
   type UpdateStatus,
-  type UserStatus,
   type WatchedProblem,
   type ZigbeeProblem,
   type ZigbeeRole,
@@ -138,12 +137,6 @@ export const API_ROUTES = {
   search: "/api/search",
   topology: "/api/inventory/hosts/:hostId/topology",
   operationPreview: "/api/inventory/hosts/:hostId/containers/:containerName/impact",
-  userGrants: "/api/users/:userId/grants",
-  accountPermissions: "/api/account/permissions",
-  users: "/api/users",
-  user: "/api/users/:userId",
-  userResetPassword: "/api/users/:userId/reset-password",
-  userResetTotp: "/api/users/:userId/reset-totp",
   hosts: "/api/hosts",
   host: "/api/hosts/:hostId",
   hostRevoke: "/api/hosts/:hostId/revoke",
@@ -379,8 +372,6 @@ export const API_ERRORS = {
   storedSecretUnreadable: "stored_secret_unreadable",
   userNotFound: "user_not_found",
   usernameTaken: "username_taken",
-  lastAdmin: "last_admin",
-  deactivateInstead: "deactivate_instead",
   anomalyNotFound: "anomaly_not_found",
   anomalyChanged: "anomaly_changed",
   rolloutUnavailable: "rollout_unavailable",
@@ -584,6 +575,7 @@ export const API_ERRORS = {
   notAutohealDatabase: "not_an_autoheal_database",
   backupTooNew: "backup_too_new",
   backupSecretsUnreadable: "backup_secrets_unreadable",
+  backupOwnerUnclear: "backup_owner_unclear",
   restoreDrainBusy: "restore_drain_busy",
   restoreBusy: "restore_busy",
   restoreMaintenance: "restore_maintenance",
@@ -650,20 +642,6 @@ export interface OwnAccountView {
   authenticatorName: string;
   recoveryCodesLeft: number;
   sessions: AccountSessionView[];
-}
-
-export interface AccountView extends UserView {
-  status: UserStatus;
-  createdAt: number;
-  lastLoginAt: number | null;
-}
-
-export interface TemporaryPasswordView {
-  temporaryPassword: string;
-}
-
-export interface CreatedAccountView extends TemporaryPasswordView {
-  account: AccountView;
 }
 
 export interface DiskUsageView {
@@ -1643,9 +1621,11 @@ export interface RestorePreviewView {
   fileName: string | null;
   schemaVersion: number;
   dataAsOf: number | null;
-  counts: { users: number; hosts: number; incidents: number; runbooks: number };
-  usersReactivated: string[];
-  usersAdded: string[];
+  counts: { hosts: number; incidents: number; runbooks: number };
+  // The one person who signs in once it is restored: null when no admin is active in it.
+  owner: string | null;
+  // Someone other than the owner now: another install's backup, or one from before Autoheal was one person's.
+  ownerChanges: boolean;
   hostsRestored: string[];
   expiresAt: number;
 }

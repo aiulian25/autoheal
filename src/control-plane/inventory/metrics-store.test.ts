@@ -110,6 +110,21 @@ describe("metrics retention and fleet limits", () => {
     expect(store.retained).toEqual({ hosts: 0, points: 0 });
   });
 
+  it("drops a revoked host's latest readings at the next read, before any sweep, and its series with them", () => {
+    const active = new Set(["a"]);
+    const store = new MetricsStore(
+      () => 1_800_000,
+      undefined,
+      (id) => active.has(id),
+    );
+    store.record("a", report());
+    expect(store.latestHost("a")).not.toBeNull();
+    active.delete("a");
+    expect(store.latestHost("a")).toBeNull();
+    expect(store.latestContainers("a").size).toBe(0);
+    expect(store.retained).toEqual({ hosts: 0, points: 0 });
+  });
+
   it("does not retain empty host metadata or treat future samples after clock rollback as current", () => {
     let now = 1_800_000;
     const store = new MetricsStore(() => now);

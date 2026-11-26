@@ -6,7 +6,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type AuditEventView, type EnrolledHostView, type HostView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, HTTP_STATUS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type HeartbeatResponse } from "../../shared/protocol.js";
@@ -139,18 +139,6 @@ describe("credentials for private registries", () => {
     expect((await add({ registry: "ghcr.io", repository: "Owner/App", username: "o", password: "p" })).statusCode).toBe(
       HTTP_STATUS.badRequest,
     );
-  });
-
-  it("is for admins only: another user may not read, add or remove one", async () => {
-    const id = await added({ registry: "ghcr.io", repository: "owner/app", username: "owner", password: PASSWORD });
-    const other = (await fullySignedInUser(controlPlane, admin, "mira", "viewer")).client;
-
-    expect((await other.get(API_ROUTES.registryCredentials)).statusCode).toBe(HTTP_STATUS.forbidden);
-    expect(
-      (await other.post(API_ROUTES.registryCredentials, { registry: "ghcr.io", username: "a", password: "b" }))
-        .statusCode,
-    ).toBe(HTTP_STATUS.forbidden);
-    expect((await other.delete(credentialPath(id))).statusCode).toBe(HTTP_STATUS.forbidden);
   });
 
   it("records every change and every test in the audit log, with the scope and never the password", async () => {

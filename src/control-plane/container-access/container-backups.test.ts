@@ -10,7 +10,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type JobView } from "../../shared/api.js";
 import { JOB_ACTION, JOB_STATUS } from "../../shared/constants.js";
 import { BACKUP_ASK, CONTAINER_BACKUP, backupJobSchema } from "../../shared/container-backups.js";
@@ -52,18 +52,6 @@ describe("container backups", () => {
   const route = (template: string) => apiPath(template, { hostId });
   const start = (client = admin) => client.post(route(API_ROUTES.hostBackupStart), { target: TARGET });
   const delivered = async () => (await runner("GET", RUNNER_ROUTES.work)).json<WorkResponse>().jobs;
-
-  it("is an admin's", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect(
-      (await viewer.post(route(API_ROUTES.hostBackupAsk), { kind: BACKUP_ASK.list, target: TARGET })).statusCode,
-    ).toBe(403);
-    expect((await start(viewer)).statusCode).toBe(403);
-    expect(
-      (await viewer.post(route(API_ROUTES.hostBackupRestore), { target: TARGET, id: "20261101T000000Z" })).statusCode,
-    ).toBe(403);
-    expect((await viewer.get(API_ROUTES.containerBackupSettings)).statusCode).toBe(403);
-  });
 
   it("hands the runner a job with a sealed key, and no key that opens anything", async () => {
     const job = (await start()).json<JobView>();

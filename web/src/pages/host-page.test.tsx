@@ -137,7 +137,7 @@ it("lists a newer version than a container's tag apart, as the person's to take,
   expect(await screen.findByRole("heading", { name: TEXT.containerImages.newerTitle })).toBeTruthy();
   expect(screen.getByText(TEXT.updates.versions("2.13", "2.14"))).toBeTruthy();
   expect(screen.queryByText(TEXT.updates.versions("7.2", "7.4"))).toBeNull();
-  expect(screen.queryByText(TEXT.containerImages.allCurrent)).toBeNull();
+  expect(screen.queryByText(TEXT.containerImages.allCurrent, { exact: false })).toBeNull();
   expect(screen.queryByRole("checkbox", { name: TEXT.containerImages.selectOne("paperless") })).toBeNull();
 });
 

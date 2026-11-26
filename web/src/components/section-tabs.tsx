@@ -47,7 +47,7 @@ const SETTINGS_ITEMS: readonly { section: SettingsSection; adminOnly: boolean }[
   { section: SETTINGS_SECTIONS.notifications, adminOnly: false },
   { section: SETTINGS_SECTIONS.schedules, adminOnly: false },
   { section: SETTINGS_SECTIONS.backups, adminOnly: true },
-  { section: SETTINGS_SECTIONS.people, adminOnly: true },
+  { section: SETTINGS_SECTIONS.keys, adminOnly: true },
   { section: SETTINGS_SECTIONS.system, adminOnly: false },
   { section: SETTINGS_SECTIONS.account, adminOnly: false },
 ];

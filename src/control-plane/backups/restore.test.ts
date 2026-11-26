@@ -13,7 +13,8 @@ import {
   type TestControlPlane,
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { addLegacyPeople } from "../../../test/support/legacy-people.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -71,6 +72,12 @@ describe("restore", () => {
     });
   const confirm = (preview: RestorePreviewView) =>
     admin.post(apiPath(API_ROUTES.restoreConfirm, { restoreId: preview.restoreId }));
+  const hostLabels = () =>
+    database()
+      .select()
+      .from(hosts)
+      .all()
+      .map((host) => host.label);
   const usernames = () =>
     database()
       .select()
@@ -210,7 +217,7 @@ describe("restore", () => {
     const restores = controlPlane.services.restoreService;
     const actor = { userId: "first", username: "first", ip: "127.0.0.1", requestId: "first" };
     const backup = await backups.create("manual", null);
-    await fullySignedInUser(controlPlane, admin, "keep-me", "viewer");
+    await admin.post(API_ROUTES.hosts, { label: "Keep" });
     const preview = await restores.prepareStored(actor, backup.fileName);
     const lifecycle = controlPlane.services.databaseHandle.restore;
     let first = true;
@@ -221,7 +228,7 @@ describe("restore", () => {
       }
     });
     await expect(restores.confirm(actor, preview.restoreId)).rejects.toThrow("post-swap failure");
-    expect(usernames()).toContain("keep-me");
+    expect(hostLabels()).toContain("Keep");
     expect(controlPlane.services.databaseHandle.sqlite.pragma("integrity_check", { simple: true })).toBe("ok");
     expect(lifecycle.busy).toBe(false);
     expect((await backups.list()).some(({ origin }) => origin === "pre_restore")).toBe(true);
@@ -229,13 +236,9 @@ describe("restore", () => {
 
   it("brings the data back, cancels what was waiting, and signs everyone out", async () => {
     await seedFleet();
-    await fullySignedInUser(controlPlane, admin, "partner", "viewer");
     const backup = (await admin.post(API_ROUTES.backups)).json<BackupView>();
 
-    const partner = database().select().from(users).where(eq(users.username, "partner")).get()!;
-    database().update(users).set({ status: "deactivated" }).where(eq(users.id, partner.id)).run();
     database().update(hosts).set({ status: "revoked" }).run();
-    await admin.post(API_ROUTES.users, { username: "later", role: "viewer" });
 
     const preview = (
       await admin.post(apiPath(API_ROUTES.backupRestore, { fileName: backup.fileName }))
@@ -243,15 +246,15 @@ describe("restore", () => {
     expect(preview).toMatchObject({
       source: "stored",
       fileName: backup.fileName,
-      usersReactivated: ["partner"],
-      usersAdded: [],
+      owner: "admin",
+      ownerChanges: false,
       hostsRestored: ["HP"],
-      counts: { users: 2, hosts: 1, incidents: 1 },
+      counts: { hosts: 1, incidents: 1 },
     });
 
     const result = (await confirm(preview)).json<RestoreResultView>();
     expect(result.cancelledIncidents).toBe(1);
-    expect(usernames()).toEqual(["admin", "partner"]);
+    expect(usernames()).toEqual(["admin"]);
     expect(database().select().from(incidents).get()!.status).toBe("cancelled");
     expect((await admin.get(API_ROUTES.session)).statusCode).toBe(401);
     const backups = await controlPlane.services.backupService.list();
@@ -437,7 +440,7 @@ describe("restore", () => {
         .all()
         .map((host) => host.label),
     ).toEqual(["HP"]);
-    expect((await admin.get(API_ROUTES.users)).statusCode).toBe(200);
+    expect((await admin.get(API_ROUTES.hosts)).statusCode).toBe(200);
   });
 
   it("keeps one restore in preparation per person", async () => {
@@ -464,14 +467,11 @@ describe("restore", () => {
     expect((await confirm(preview)).json()).toEqual({ error: "restore_not_found" });
   });
 
-  it("only lets the person who prepared a restore confirm or cancel it", async () => {
+  it("confirms nothing once the restore it prepared is cancelled", async () => {
     const backup = (await admin.post(API_ROUTES.backups)).json<BackupView>();
     const preview = (
       await admin.post(apiPath(API_ROUTES.backupRestore, { fileName: backup.fileName }))
     ).json<RestorePreviewView>();
-    const { client: otherAdmin } = await fullySignedInUser(controlPlane, admin, "backup-admin", "admin");
-    const stolen = await otherAdmin.post(apiPath(API_ROUTES.restoreConfirm, { restoreId: preview.restoreId }));
-    expect(stolen.json()).toEqual({ error: "restore_not_found" });
     const cancelled = await admin.request({
       method: "DELETE",
       url: apiPath(API_ROUTES.restore, { restoreId: preview.restoreId }),
@@ -560,24 +560,57 @@ describe("restore", () => {
       expect(usernames()).toEqual(["admin"]);
     });
 
-    it("restores a backup made by another instance with the same passphrase", async () => {
+    it("restores a backup made by another instance with the same passphrase, and its owner with it", async () => {
       const other = await startTestControlPlane({ databasePath: databaseFile() });
       const otherAdmin = (await fullySignedInAdmin(other)).client;
-      await otherAdmin.post(API_ROUTES.users, { username: "from-elsewhere", role: "viewer" });
+      other.services.databaseHandle.database.update(users).set({ username: "from-elsewhere" }).run();
       const otherBackup = (await otherAdmin.post(API_ROUTES.backups)).json<BackupView>();
       const bytes = readFileSync(join(other.services.backupService.backupsDirectory, otherBackup.fileName));
       await other.app.close();
       await other.runnerApp.close();
 
       const preview = (await upload(bytes)).json<RestorePreviewView>();
-      expect(preview).toMatchObject({ source: "uploaded", usersAdded: ["from-elsewhere"] });
+      expect(preview).toMatchObject({ source: "uploaded", owner: "from-elsewhere", ownerChanges: true });
       expect((await confirm(preview)).statusCode).toBe(200);
-      expect(usernames()).toEqual(["admin", "from-elsewhere"]);
+      expect(usernames()).toEqual(["from-elsewhere"]);
+    });
+
+    it("keeps one owner when a backup from before Autoheal was one person's comes back", async () => {
+      await addLegacyPeople(controlPlane.services.databaseHandle, [
+        { username: "cedar", role: "admin" },
+        { username: "rowan" },
+      ]);
+      const backup = (await admin.post(API_ROUTES.backups)).json<BackupView>();
+      const preview = (
+        await admin.post(apiPath(API_ROUTES.backupRestore, { fileName: backup.fileName }))
+      ).json<RestorePreviewView>();
+      expect(preview).toMatchObject({ owner: "admin", ownerChanges: false });
+      expect((await confirm(preview)).statusCode).toBe(200);
+      const people = database().select({ username: users.username, status: users.status }).from(users).all();
+      expect(people.sort((one, other) => one.username.localeCompare(other.username))).toEqual([
+        { username: "admin", status: "active" },
+        { username: "cedar", status: "deactivated" },
+        { username: "rowan", status: "deactivated" },
+      ]);
+      expect(controlPlane.stdout.join("")).toContain('"action":"user.one_owner_kept"');
+    });
+
+    it("is refused when it cannot say whose it is, and nothing changes", async () => {
+      const crafted = sqliteBytes((sqlite) => {
+        sqlite.exec(identityMigration.sql);
+        sqlite.pragma("user_version = 1");
+        sqlite.prepare(ADD_ENROLLED_ADMIN).run(randomUUID(), "cedar", SEED);
+        sqlite.prepare(ADD_ENROLLED_ADMIN).run(randomUUID(), "rowan", SEED);
+      });
+      const refused = await upload(await encryptBackup(crafted, TEST_BACKUP_PASSPHRASE));
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json()).toEqual({ error: "backup_owner_unclear" });
+      expect(usernames()).toEqual(["admin"]);
     });
   });
 
   it("puts the previous database back when a command-line restore will not open", async () => {
-    await admin.post(API_ROUTES.users, { username: "after-backup", role: "viewer" });
+    await admin.post(API_ROUTES.hosts, { label: "After-backup" });
     const crafted = sqliteBytes((sqlite) => {
       sqlite.exec(identityMigration.sql);
       sqlite.exec("CREATE TABLE incidents (id TEXT PRIMARY KEY)");
@@ -602,11 +635,10 @@ describe("restore", () => {
     expect(
       intact.database
         .select()
-        .from(users)
+        .from(hosts)
         .all()
-        .map((user) => user.username)
-        .sort(),
-    ).toEqual(["admin", "after-backup"]);
+        .map((host) => host.label),
+    ).toEqual(["After-backup"]);
     intact.close();
     controlPlane = await startTestControlPlane({ databasePath: databaseFile() });
   });
@@ -641,7 +673,7 @@ describe("restore", () => {
   it("restores from the command line with the control plane stopped, keeping the old file", async () => {
     const backup = (await admin.post(API_ROUTES.backups)).json<BackupView>();
     const backupPath = join(controlPlane.services.backupService.backupsDirectory, backup.fileName);
-    await admin.post(API_ROUTES.users, { username: "after-backup", role: "viewer" });
+    await admin.post(API_ROUTES.hosts, { label: "After-backup" });
     const databasePath = controlPlane.services.databaseHandle.path;
     await controlPlane.app.close();
     controlPlane.services.databaseHandle.close();
@@ -664,6 +696,7 @@ describe("restore", () => {
         .all()
         .map((user) => user.username),
     ).toEqual(["admin"]);
+    expect(restored.database.select().from(hosts).all()).toEqual([]);
     // The old file is kept as long as the local backups reach back, and the daily sweep lets it go after.
     const sweptAt = (moment: number) =>
       new RetentionSweep(restored, new AuditLog(restored, () => undefined), () => moment).sweep();

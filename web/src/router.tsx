@@ -29,7 +29,6 @@ const RunbooksPage = pageFrom(() => import("./pages/runbooks-page.js"), "Runbook
 const RunbookDetailPage = pageFrom(() => import("./pages/runbooks-page.js"), "RunbookDetailPage");
 const ReplaysPage = pageFrom(() => import("./pages/replays-page.js"), "ReplaysPage");
 const ReplayDetailPage = pageFrom(() => import("./pages/replays-page.js"), "ReplayDetailPage");
-const UsersPage = pageFrom(() => import("./pages/users-page.js"), "UsersPage");
 const BackupsPage = pageFrom(() => import("./pages/backups-page.js"), "BackupsPage");
 const AuditLogPage = pageFrom(() => import("./pages/audit-page.js"), "AuditLogPage");
 const AccountPage = pageFrom(() => import("./pages/account-page.js"), "AccountPage");
@@ -137,14 +136,6 @@ export const routes: RouteObject[] = [
               { path: PATHS.runbook, element: <RunbookDetailPage /> },
               { path: PATHS.replays, element: <ReplaysPage /> },
               { path: PATHS.replay, element: <ReplayDetailPage /> },
-              {
-                path: PATHS.users,
-                element: (
-                  <AdminOnly>
-                    <UsersPage />
-                  </AdminOnly>
-                ),
-              },
               {
                 path: PATHS.backups,
                 element: (

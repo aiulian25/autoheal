@@ -1,5 +1,5 @@
-import type { BoardCardView, TaskSummaryView } from "../../src/shared/api.js";
-import { BOARD_CARD, TASK_ABOUT, TASK_LABEL } from "../../src/shared/constants.js";
+import { hasUpdate, type BoardCardView, type ContainerView, type TaskSummaryView } from "../../src/shared/api.js";
+import { BOARD_CARD, TASK_ABOUT, TASK_LABEL, TASK_RESOURCE } from "../../src/shared/constants.js";
 
 export type IncidentCard = Extract<BoardCardView, { kind: typeof BOARD_CARD.incident }>;
 export type TaskCard = Extract<BoardCardView, { kind: typeof BOARD_CARD.task }>;
@@ -30,3 +30,13 @@ export function whatNeedsYou(needsYou: readonly BoardCardView[]) {
     problems: needsYou.filter(isTask).filter((card) => !drawnUnderUpdates(card.task)),
   };
 }
+
+// The container an update task is about: the one a run updates.
+export const containerOf = (task: TaskSummaryView) =>
+  task.resource?.kind === TASK_RESOURCE.container ? task.resource.id : null;
+
+// As its host last reported it, the container still has its new image waiting: its task is no history.
+export const stillWaits = (task: TaskSummaryView, containers: readonly ContainerView[]) =>
+  containers.some(
+    (container) => container.hostId === task.hostId && container.name === containerOf(task) && hasUpdate(container),
+  );

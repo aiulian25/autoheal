@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, type AuditEventView, type EnrolledHostView, type OllamaSettingsView } from "../../shared/api.js";
 import { RUNNER_ROUTES, type HeartbeatResponse, type IncidentSubmission } from "../../shared/protocol.js";
 
@@ -110,15 +110,6 @@ describe("the Ollama Autoheal asks, chosen in the dashboard", () => {
     chosen.models["qwen3:30b-a3b"] = thinking(40_960);
     expect((await asking({ contextTokens: 65_536 })).json()).toEqual({ error: "context_too_large" });
     expect((await asking({ contextTokens: 3 })).statusCode).toBe(400);
-    expect((await view()).source).toBe("environment");
-  });
-
-  it("is read by everyone signed in and changed by admins only", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.ollamaSettings)).statusCode).toBe(200);
-    const saved = { url: chosen.url(), model: "qwen3:30b-a3b", contextTokens: 16_384 };
-    expect((await viewer.put(API_ROUTES.ollamaSettings, saved)).statusCode).toBe(403);
-    expect((await viewer.delete(API_ROUTES.ollamaSettings)).statusCode).toBe(403);
     expect((await view()).source).toBe("environment");
   });
 });

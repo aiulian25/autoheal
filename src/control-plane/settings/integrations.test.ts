@@ -9,7 +9,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -141,10 +141,8 @@ describe("notification channels and Home Assistant, set in the dashboard", () =>
     expect(controlPlane.services.integrationsService.gotify()).toEqual(gotify.settings);
   });
 
-  it("lets viewers see where things point but not change them, and leaves .env settings fixed", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect(await viewOf(viewer, "homeAssistant")).toMatchObject({ source: "environment", tokenSet: true });
-    expect((await viewer.put(integration("ntfy"), { url: "https://ntfy.sh", topic: "home" })).statusCode).toBe(403);
+  it("shows where things point, and leaves .env settings fixed", async () => {
+    expect(await viewOf(admin, "homeAssistant")).toMatchObject({ source: "environment", tokenSet: true });
     expect((await admin.delete(integration("homeAssistant"))).json()).toEqual({
       error: "integration_from_environment",
     });
@@ -174,7 +172,7 @@ describe("notification channels and Home Assistant, set in the dashboard", () =>
     expect(everything).not.toContain("address-marker");
   });
 
-  it("shows viewers an address saved before with its user part left out", async () => {
+  it("shows an address saved before with its user part left out", async () => {
     await admin.put(integration("ntfy"), { url: "https://ntfy.example.test/base", topic: "home" });
     controlPlane.services.databaseHandle.database
       .update(settings)
@@ -187,11 +185,9 @@ describe("notification channels and Home Assistant, set in the dashboard", () =>
       })
       .where(eq(settings.key, SETTING_KEYS.ntfy))
       .run();
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-
-    const shown = await viewOf(viewer, "ntfy");
+    const shown = await viewOf(admin, "ntfy");
     expect(shown).toMatchObject({ source: "dashboard", url: "https://ntfy.example.test/base", topic: "home" });
-    expect(JSON.stringify((await viewer.get(API_ROUTES.integrations)).json())).not.toContain("address-marker");
+    expect(JSON.stringify((await admin.get(API_ROUTES.integrations)).json())).not.toContain("address-marker");
   });
 
   it("takes an open ntfy topic over plain http, and says it is plain http", async () => {
@@ -291,8 +287,7 @@ describe("a webhook", () => {
     const address = `${receiver.origin}/api/webhooks/1/secret-key`;
     expect((await admin.put(integration("webhook"), { url: address })).statusCode).toBe(400);
     expect((await admin.put(integration("webhook"), { url: address, format: "discord" })).statusCode).toBe(204);
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect(await viewOf(viewer, "webhook")).toMatchObject({
+    expect(await viewOf(admin, "webhook")).toMatchObject({
       source: "dashboard",
       url: `${receiver.origin}/…`,
       format: "discord",

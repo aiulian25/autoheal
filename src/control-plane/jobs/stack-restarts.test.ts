@@ -10,11 +10,10 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import { currentCode, fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type StackRestartView } from "../../shared/api.js";
 import { HTTP_HEADERS, STACK_RESTARTS_KEPT, STACK_RESTART_INTERRUPTED } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
-import type { ResourceGrant, ResourcePermissionsView } from "../../shared/resource-permissions.js";
 import type { TopologySnapshot } from "../../shared/topology.js";
 import { restartOrder } from "./stack-restarts-service.js";
 
@@ -149,31 +148,6 @@ describe("restarting a Compose stack one container at a time", () => {
     const busy = await admin.post(restartPath());
     expect(busy.statusCode).toBe(409);
     expect(busy.json()).toEqual({ error: "stack_restart_busy" });
-  });
-
-  it("lets a viewer restart a stack only when grants cover every container it would restart", async () => {
-    const viewer = await fullySignedInUser(plane, admin, "operator", "viewer");
-    async function grant(grants: ResourceGrant[]) {
-      const path = apiPath(API_ROUTES.userGrants, { userId: viewer.userId });
-      const current = (await admin.get(path)).json<ResourcePermissionsView>();
-      expect((await admin.put(path, { revision: current.revision, grants })).statusCode).toBe(200);
-      // Saving grants ends the person's sessions.
-      plane.clock.now += 30_000;
-      await viewer.client.signIn("operator", viewer.password);
-      await viewer.client.post(API_ROUTES.secondFactor, { code: currentCode(viewer.secret, plane.clock.now) });
-      await report();
-    }
-    expect((await viewer.client.post(restartPath())).statusCode).toBe(403);
-    await grant([{ hostId, scope: "container", resource: "musicbox-pg", actions: ["lifecycle"] }]);
-    expect((await viewer.client.post(restartPath())).statusCode).toBe(403);
-    expect(await takeWork()).toEqual([]);
-
-    await grant([{ hostId, scope: "stack", resource: STACK, actions: ["lifecycle"] }]);
-    const started = await viewer.client.post(restartPath());
-    expect(started.statusCode, started.body).toBe(200);
-    expect(await takeWork()).toEqual([
-      expect.objectContaining({ action: "restart", containerName: "musicbox-pg", requestedBy: "operator" }),
-    ]);
   });
 });
 

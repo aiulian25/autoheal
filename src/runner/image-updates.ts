@@ -86,6 +86,8 @@ export class ImageUpdateChecker {
     private readonly clock: () => number = Date.now,
     // Who published a newer image, read only for the scopes a trust rule covers.
     private readonly provenance: ProvenanceSource | null = null,
+    // Told as each batch of a check but its last is answered, so what is found shows while the rest are still asked.
+    private readonly batchChecked: () => void = () => undefined,
   ) {}
 
   /** Null until checked, and for images that can't be: built here, pinned to a digest, or labelled off. */
@@ -179,6 +181,7 @@ export class ImageUpdateChecker {
           return this.checkOne(key, imageId, reference, budget, digests);
         }),
       );
+      if (start + REGISTRY.concurrency < entries.length) this.batchChecked();
     }
   }
 

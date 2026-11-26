@@ -9,7 +9,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { AGENT_AUTOHEAL, DETECTOR_KEYS, HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
@@ -147,14 +147,6 @@ describe("a host's service checks", () => {
     expect(await refused(web("http://127.0.0.1/?token=secret"), PROBE_SCOPE.thisMachine)).toBe(400);
     expect(await refused(web("file:///etc/passwd"), PROBE_SCOPE.thisMachine)).toBe(400);
     expect((await admin.get(route())).json()).toEqual([]);
-  });
-
-  it("is for admins: reading, adding and removing", async () => {
-    const id = await add();
-    const viewer = await fullySignedInUser(plane, admin, "operator", "viewer");
-    expect((await viewer.client.get(route())).statusCode).toBe(403);
-    expect((await viewer.client.post(route(), bodyWith(web()))).statusCode).toBe(403);
-    expect((await viewer.client.delete(apiPath(API_ROUTES.hostProbe, { hostId, probeId: id }))).statusCode).toBe(403);
   });
 
   it("sees a service answer, and shows how available and how fast it was", async () => {

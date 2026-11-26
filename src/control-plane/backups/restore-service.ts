@@ -27,8 +27,6 @@ import {
   SQLITE_SIDE_FILES,
   SYSTEM_ACTOR_LABEL,
   TARGET_BACKUP,
-  USER_STATUS_ACTIVE,
-  USER_STATUS_DEACTIVATED,
   WORK_ITEM_STATUS,
   UPDATE_RUN_STATUS,
 } from "../../shared/constants.js";
@@ -38,6 +36,7 @@ import { LATEST_SCHEMA_VERSION } from "../database/migrations/index.js";
 import { jobs, sessions, workItems, stackRestarts } from "../database/schema.js";
 import { SecretBox } from "../database/secret-box.js";
 import { sealStoredSecrets, unreadableSecrets } from "../database/stored-secrets.js";
+import { keepOneOwner, ownerOf, ownerOfFile } from "../auth/single-owner.js";
 import { DomainError } from "../domain-error.js";
 import { decryptBackup } from "./backup-crypto.js";
 import { inspectSnapshot, type BackupService } from "./backup-service.js";
@@ -74,6 +73,10 @@ async function validatedSnapshot(
     // Restoring it would bring back sign-in codes nobody can check and tokens nothing can send with.
     if (unreadableSecretsIn(snapshotPath, secretBox) > 0) {
       throw new DomainError(API_ERRORS.backupSecretsUnreadable);
+    }
+    // Autoheal is one person's: a backup that cannot say whose it is would not know who may sign in.
+    if (ownerOfFile(snapshotPath).kind === "unclear") {
+      throw new DomainError(API_ERRORS.backupOwnerUnclear);
     }
     return schemaVersion;
   } catch (error) {
@@ -113,7 +116,12 @@ function applicationWorkInFlight(handle: DatabaseHandle) {
     .all();
 }
 
-function settleAfterRestore(databaseHandle: DatabaseHandle, secretBox: SecretBox, now: number): number {
+function settleAfterRestore(
+  databaseHandle: DatabaseHandle,
+  secretBox: SecretBox,
+  auditLog: AuditLog,
+  now: number,
+): number {
   // An older backup brings its secrets back in plain text: they are sealed before anything reads them.
   sealStoredSecrets(databaseHandle.sqlite, secretBox);
   const cancelledIncidents = settleDispatchedWork(databaseHandle, now, JOB_CANCELLED_BY_RESTORE);
@@ -124,6 +132,8 @@ function settleAfterRestore(databaseHandle: DatabaseHandle, secretBox: SecretBox
     )
     .run(now);
   databaseHandle.database.delete(sessions).run();
+  // An older backup may hold people from before Autoheal was one person's: its owner alone signs in.
+  keepOneOwner(databaseHandle, auditLog);
   return cancelledIncidents;
 }
 
@@ -216,7 +226,7 @@ export class RestoreService {
         record.phase = "settling";
         this.journal.save(record);
         cancelledIncidents = this.databaseHandle.database.transaction(() =>
-          settleAfterRestore(this.databaseHandle, this.secretBox, this.clock()),
+          settleAfterRestore(this.databaseHandle, this.secretBox, this.auditLog, this.clock()),
         );
         if (this.databaseHandle.sqlite.pragma("integrity_check", { simple: true }) !== INTEGRITY_OK)
           throw new Error(RESTORE_MESSAGES.integrityFailed);
@@ -305,13 +315,10 @@ export class RestoreService {
       const tables = readTableNames(snapshotPath);
       const countIfPresent = (table: string) =>
         tables.has(table) ? count(`select count(*) as total from ${table}`) : 0;
-      const liveUsers = new Map(
-        rows<{ username: string; status: string }>(live, "select username, status from users").map((user) => [
-          user.username,
-          user.status,
-        ]),
-      );
-      const backupUsers = rows<{ username: string; status: string }>(backup, "select username, status from users");
+      const backupOwner = ownerOf(backup);
+      const liveOwner = ownerOf(live);
+      const sameOwner =
+        backupOwner.kind === "owner" && liveOwner.kind === "owner" && backupOwner.person.id === liveOwner.person.id;
       const liveHosts = new Map(
         rows<{ label: string; status: string }>(live, "select label, status from hosts").map((host) => [
           host.label,
@@ -328,17 +335,12 @@ export class RestoreService {
       return {
         dataAsOf,
         counts: {
-          users: backupUsers.length,
           hosts: backupHosts.length,
           incidents: countIfPresent("incidents"),
           runbooks: countIfPresent("runbooks"),
         },
-        usersReactivated: backupUsers
-          .filter(
-            (user) => user.status === USER_STATUS_ACTIVE && liveUsers.get(user.username) === USER_STATUS_DEACTIVATED,
-          )
-          .map((user) => user.username),
-        usersAdded: backupUsers.filter((user) => !liveUsers.has(user.username)).map((user) => user.username),
+        owner: backupOwner.kind === "owner" ? backupOwner.person.username : null,
+        ownerChanges: !sameOwner,
         hostsRestored: backupHosts
           .filter((host) => host.status === HOST_STATUS_ACTIVE && liveHosts.get(host.label) !== HOST_STATUS_ACTIVE)
           .map((host) => host.label),
@@ -441,8 +443,9 @@ export async function restoreOffline(
   }
   try {
     const snapshotApplicationBackups = applicationWorkInFlight(handle);
-    const cancelledIncidents = handle.database.transaction(() => settleAfterRestore(handle, secretBox, now));
-    auditLogFactory(handle).record({
+    const auditLog = auditLogFactory(handle);
+    const cancelledIncidents = handle.database.transaction(() => settleAfterRestore(handle, secretBox, auditLog, now));
+    auditLog.record({
       actorKind: ACTOR_SYSTEM,
       actorLabel: SYSTEM_ACTOR_LABEL,
       action: AUDIT_ACTIONS.restoreCompleted,

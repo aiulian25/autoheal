@@ -1,6 +1,4 @@
 import { OperationImpactReview } from "./dependency-map.js";
-import { actionPermission } from "../../../src/shared/resource-permissions.js";
-import { useResourcePermissions } from "../session.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, type ReactNode } from "react";
 import {
@@ -138,17 +136,14 @@ export function ContainerActions({
 }) {
   const queryClient = useQueryClient();
   const asking = useAskInPlace();
-  const permissions = useResourcePermissions();
-  const allowed = (action: ContainerAction) => {
-    const permission = actionPermission(action);
-    return canAct || (permission !== null && permissions.allowed(permission, container));
-  };
   const inPanel = tools !== undefined;
-  const actions = (inPanel ? panelActionsFor(container, parked) : actionsFor(container, parked)).filter(allowed);
+  const listed = inPanel ? panelActionsFor(container, parked) : actionsFor(container, parked);
+  // Autoheal is one person's: its owner acts, and nobody else signs in.
+  const actions = canAct ? listed : [];
   const [reviewing, setReviewing] = useState<typeof JOB_ACTION.update | typeof JOB_ACTION.rollBack | null>(null);
   useEffect(() => {
-    if (reviewing && !allowed(reviewing)) setReviewing(null);
-  }, [reviewing, canAct, permissions.allowed]);
+    if (reviewing && !canAct) setReviewing(null);
+  }, [reviewing, canAct]);
   const jobs = useQuery({
     ...jobsQuery(container.hostId, container.name),
     refetchInterval: (query) => (query.state.data?.some(isWaiting) ? JOB_REFRESH_MILLISECONDS : false),

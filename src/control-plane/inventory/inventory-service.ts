@@ -5,6 +5,7 @@ import {
   API_ERRORS,
   UNKNOWN_HOME_ASSISTANT_SYSTEM,
   hasUpdate,
+  type ContainerUsageView,
   type ContainerView,
   type HomeAssistantView,
   type HostChangeView,
@@ -38,7 +39,7 @@ import type { SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import { jobViews } from "../jobs/job-views.js";
 import { changedForDetectors, changesBetween } from "./host-changes.js";
-import { containerViewsOf, isCounted, toHostView } from "./host-views.js";
+import { containerViewsOf, hostStateOf, isCounted, toHostView } from "./host-views.js";
 import type { MetricsStore } from "./metrics-store.js";
 
 interface ContainerFilter {
@@ -59,6 +60,25 @@ const byProblemThenName = (first: ContainerView, second: ContainerView) =>
   first.name.localeCompare(second.name);
 
 const countOf = <Item>(items: readonly Item[], predicate: (item: Item) => boolean) => items.filter(predicate).length;
+
+const NOTHING_SAVED: ReadonlyMap<string, SavedControl> = new Map();
+const NOTHING_IGNORED: ReadonlyMap<string, string> = new Map();
+const NO_USAGE: ReadonlyMap<string, ContainerUsageView> = new Map();
+
+// The rows of a table kept for each container, as one map for each host.
+function groupedByHost<Row extends { hostId: string }, Value>(
+  rows: readonly Row[],
+  entryOf: (row: Row) => [string, Value],
+): Map<string, Map<string, Value>> {
+  const byHost = new Map<string, Map<string, Value>>();
+  for (const row of rows) {
+    const [name, value] = entryOf(row);
+    const forHost = byHost.get(row.hostId) ?? new Map<string, Value>();
+    forHost.set(name, value);
+    byHost.set(row.hostId, forHost);
+  }
+  return byHost;
+}
 
 // What the host's runner said last time, to compare the new report with.
 const previousReportOf = (host: HostRow) => ({
@@ -323,18 +343,15 @@ export class InventoryService {
 
   hosts(): HostView[] {
     const now = this.clock();
-    return this.allHosts().map((host) => {
-      const view = toHostView(
-        host,
-        now,
-        this.metrics.latestHost(host.id),
-        this.savedControls(host.id),
-        this.sshConnectionOf(host.id),
-      );
-      const inPlace = this.inPlaceOf(host.id);
-      const power = this.powerOf(host);
-      return { ...view, ...(inPlace === null ? {} : { inPlace }), ...(power === null ? {} : { power }) };
-    });
+    const controls = this.savedControlsByHost();
+    return this.allHosts().map((host) => this.hostViewOf(host, now, controls.get(host.id) ?? NOTHING_SAVED));
+  }
+
+  private hostViewOf(host: HostRow, now: number, saved: ReadonlyMap<string, SavedControl>): HostView {
+    const view = toHostView(host, now, this.metrics.latestHost(host.id), saved, this.sshConnectionOf(host.id));
+    const inPlace = this.inPlaceOf(host.id);
+    const power = this.powerOf(host);
+    return { ...view, ...(inPlace === null ? {} : { inPlace }), ...(power === null ? {} : { power }) };
   }
 
   /** Each enrolled SSH host's session, for the self-test command. */
@@ -348,16 +365,19 @@ export class InventoryService {
   containers(filter: ContainerFilter = {}): ContainerView[] {
     const now = this.clock();
     const search = filter.search?.toLowerCase();
-    return this.allHosts()
+    // One host's list reads that host's row alone; the fleet's reads each table once.
+    const rows = filter.hostId === undefined ? this.allHosts() : this.hostRows(filter.hostId);
+    const controls = this.savedControlsByHost(filter.hostId);
+    const ignored = this.ignoredVersionsByHost(filter.hostId);
+    return rows
       .filter((host) => host.status !== HOST_STATUS_REVOKED)
-      .filter((host) => filter.hostId === undefined || host.id === filter.hostId)
       .flatMap((host) =>
         containerViewsOf(
           host,
           now,
           this.metrics.latestContainers(host.id),
-          this.savedControls(host.id),
-          this.ignoredVersionsOf(host.id),
+          controls.get(host.id) ?? NOTHING_SAVED,
+          ignored.get(host.id) ?? NOTHING_IGNORED,
         ),
       )
       .filter((container) => !filter.problemsOnly || container.problem !== null)
@@ -365,29 +385,35 @@ export class InventoryService {
       .sort(byProblemThenName);
   }
 
-  // The ticks someone set on the host's page; a container without any takes the host's default.
-  private savedControls(hostId: string): Map<string, SavedControl> {
+  // The ticks someone set on hosts' pages, by host and container; a container without any takes its host's default.
+  private savedControlsByHost(hostId?: string): Map<string, Map<string, SavedControl>> {
     const rows = this.databaseHandle.database
       .select()
       .from(containerControls)
-      .where(eq(containerControls.hostId, hostId))
+      .where(hostId === undefined ? undefined : eq(containerControls.hostId, hostId))
       .all();
-    return new Map(rows.map((row) => [row.containerName, { restart: row.restartChoice, update: row.updateChoice }]));
+    return groupedByHost(rows, (row) => [row.containerName, { restart: row.restartChoice, update: row.updateChoice }]);
   }
 
-  // The newer version a person ignores for each container of the host, by its name.
-  private ignoredVersionsOf(hostId: string): Map<string, string> {
+  // The newer version a person ignores for each container, by host and container.
+  private ignoredVersionsByHost(hostId?: string): Map<string, Map<string, string>> {
     const rows = this.databaseHandle.database
-      .select({ containerName: ignoredVersions.containerName, version: ignoredVersions.version })
+      .select({
+        hostId: ignoredVersions.hostId,
+        containerName: ignoredVersions.containerName,
+        version: ignoredVersions.version,
+      })
       .from(ignoredVersions)
-      .where(eq(ignoredVersions.hostId, hostId))
+      .where(hostId === undefined ? undefined : eq(ignoredVersions.hostId, hostId))
       .all();
-    return new Map(rows.map(({ containerName, version }) => [containerName, version]));
+    return groupedByHost(rows, (row) => [row.containerName, row.version]);
   }
 
   /** A host's address on its network, as it last said: how the router's records are matched to it. */
   hostAddress(hostId: string): string | null {
-    return this.hosts().find(({ id }) => id === hostId)?.health?.address ?? null;
+    const [host] = this.hostRows(hostId);
+    if (host === undefined) return null;
+    return this.hostViewOf(host, this.clock(), NOTHING_SAVED).health?.address ?? null;
   }
 
   homeAssistant(): HomeAssistantView {
@@ -396,15 +422,30 @@ export class InventoryService {
 
   /** Everything on the overview but the tasks, which the tasks service counts. */
   overview(): Omit<OverviewView, "tasks"> {
-    const enrolled = this.hosts().filter((host) => host.state !== HOST_STATE.revoked);
-    const containers = this.containers().filter(isCounted);
+    const now = this.clock();
+    const enrolled = this.allHosts().filter((host) => host.status !== HOST_STATUS_REVOKED);
+    const controls = this.savedControlsByHost();
+    const ignored = this.ignoredVersionsByHost();
+    // Counts need no readings: each host's containers are read once, without their usage.
+    const containers = enrolled
+      .flatMap((host) =>
+        containerViewsOf(
+          host,
+          now,
+          NO_USAGE,
+          controls.get(host.id) ?? NOTHING_SAVED,
+          ignored.get(host.id) ?? NOTHING_IGNORED,
+        ),
+      )
+      .filter(isCounted);
     const running = countOf(containers, (container) => container.state === CONTAINER_STATE_RUNNING);
+    const states = enrolled.map((host) => hostStateOf(host, now));
     return {
       hosts: {
         total: enrolled.length,
-        online: countOf(enrolled, (host) => host.state === HOST_STATE.online),
-        silent: countOf(enrolled, (host) => host.state === HOST_STATE.silent),
-        neverSeen: countOf(enrolled, (host) => host.state === HOST_STATE.neverSeen),
+        online: countOf(states, (state) => state === HOST_STATE.online),
+        silent: countOf(states, (state) => state === HOST_STATE.silent),
+        neverSeen: countOf(states, (state) => state === HOST_STATE.neverSeen),
       },
       containers: {
         total: containers.length,
@@ -419,5 +460,9 @@ export class InventoryService {
 
   private allHosts(): HostRow[] {
     return this.databaseHandle.database.select().from(hosts).orderBy(asc(hosts.label)).all();
+  }
+
+  private hostRows(hostId: string): HostRow[] {
+    return this.databaseHandle.database.select().from(hosts).where(eq(hosts.id, hostId)).all();
   }
 }

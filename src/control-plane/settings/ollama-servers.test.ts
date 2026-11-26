@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -170,22 +170,6 @@ describe("several Ollama servers, each watching chosen hosts", () => {
     expect(takenByServer.json()).toEqual({ error: "ollama_server_name_taken" });
     await admin.put(API_ROUTES.ollamaDefaultName, { name: "  " });
     expect((await servers()).defaultName).toBeNull();
-    const viewer = (await fullySignedInUser(controlPlane, admin, "namer", "viewer")).client;
-    expect((await viewer.put(API_ROUTES.ollamaDefaultName, { name: "x" })).statusCode).toBe(403);
-  });
-
-  it("shows a viewer the servers, and refuses every change", async () => {
-    const id = await added();
-    const viewer = (await fullySignedInUser(controlPlane, admin, "viewer", "viewer")).client;
-    expect((await viewer.get(API_ROUTES.ollamaServers)).statusCode).toBe(200);
-    const refused = [
-      await viewer.post(API_ROUTES.ollamaServers, body()),
-      await viewer.put(apiPath(API_ROUTES.ollamaServer, { serverId: id }), body()),
-      await viewer.delete(apiPath(API_ROUTES.ollamaServer, { serverId: id })),
-      await viewer.put(apiPath(API_ROUTES.ollamaServerHosts, { serverId: id }), { hostIds: [] }),
-      await viewer.put(API_ROUTES.ollamaReviewServer, { serverId: null }),
-    ];
-    expect(refused.map(({ statusCode }) => statusCode)).toEqual([403, 403, 403, 403, 403]);
   });
 
   it("opens a warning naming the hosts when one is down, and closes it once it answers", async () => {

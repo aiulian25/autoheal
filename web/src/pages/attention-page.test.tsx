@@ -36,7 +36,7 @@ describe("updates on the attention page", () => {
     renderAttention("admin");
 
     const quantum = await screen.findByRole("checkbox", { name: "Update quantum" });
-    const group = quantum.closest("details")!;
+    const group = quantum.closest("article")!;
     const radicale = within(group).getByRole("checkbox", { name: "Update radicale" });
     expect((quantum as HTMLInputElement).checked).toBe(false);
     expect(within(quantum.closest("li")!).getByText("Ollama: safe to apply")).toBeTruthy();
@@ -81,7 +81,7 @@ describe("updates on the attention page", () => {
 
     expect(await screen.findByRole("checkbox", { name: "Update quantum" })).toBeTruthy();
     expect(screen.queryByText("radicale")).toBeNull();
-    expect(screen.getByRole("button", { name: "Select all (1)" })).toBeTruthy();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
   });
 
   it("says what each update brings where its images say, and what updating does where they do not", async () => {
@@ -116,9 +116,9 @@ describe("updates on the attention page", () => {
     });
     renderAttention("admin");
     const group = (await screen.findByText("Install it in Home Assistant: Settings → System → Updates.")).closest(
-      "details",
+      "article",
     )!;
-    expect(group.querySelector("summary")!.textContent).toContain("1 waiting");
+    expect(within(group).getByRole("heading", { name: "Home Assistant" })).toBeTruthy();
     expect(within(group).getByText("Home Assistant Core")).toBeTruthy();
     expect(within(group).getByText(/2026\.10\.2 → 2026\.10\.3/)).toBeTruthy();
     expect(within(group).getByRole("link", { name: "release notes" }).getAttribute("href")).toBe(
@@ -164,7 +164,9 @@ describe("updates on the attention page", () => {
     const sent = (method: string, path: string) =>
       fetch.mock.calls.filter(([url, init]) => url === path && init?.method === method).map(([, init]) => init?.body);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Snooze a day" }));
+    fireEvent.change(await screen.findByRole("combobox", { name: TEXT.tasks.snooze.label }), {
+      target: { value: "day" },
+    });
     await waitFor(() =>
       expect(sent("PATCH", apiPath(API_ROUTES.task, { taskId: "task-disk" }))).toEqual(['{"snoozed":"day"}']),
     );
@@ -180,17 +182,16 @@ describe("updates on the attention page", () => {
     ]);
   });
 
-  it("offers a problem's actions as buttons: its way there and Done on one row, then how long to put it off", async () => {
+  it("offers a problem's actions in its row: its way there, Done as a button, then how long to put it off", async () => {
     serve("admin", needsYou);
     renderAttention("admin");
-    const card = (await screen.findByText("Alder's disk is 97% full")).closest("article")!;
-    const open = within(card).getByRole("link", { name: /^Open / });
-    const done = within(card).getByRole("button", { name: "Done" });
-    const snooze = within(card).getByRole("group", { name: TEXT.tasks.snooze.label });
+    const row = (await screen.findByText("Alder's disk is 97% full")).closest("li")!;
+    const open = within(row).getByRole("link", { name: /^Open / });
+    const done = within(row).getByRole("button", { name: "Done" });
+    const snooze = within(row).getByRole("combobox", { name: TEXT.tasks.snooze.label });
     expect([...open.parentElement!.children]).toEqual([open, done, snooze]);
-    for (const button of [done, ...within(snooze).getAllByRole("button")]) {
-      expect(button.classList.contains("quiet"), button.textContent!).toBe(false);
-    }
+    expect(done.classList.contains("quiet")).toBe(false);
+    expect(within(row).getByText(TEXT.attention.tags.fix)).toBeTruthy();
   });
 
   it("leaves a stopped container stopped, and stops one Docker keeps starting again, following its stop", async () => {
@@ -258,9 +259,10 @@ describe("updates on the attention page", () => {
     expect(screen.getByRole("heading", { name: "tika" })).toBeTruthy();
     expect(screen.queryByRole("checkbox", { name: "Update quantum" })).toBeNull();
     expect(screen.queryByRole("button", { name: /containers? now$/ })).toBeNull();
-    for (const action of ["Restart it", "Leave it stopped", "Stop watching this container", "Snooze a day", "Done"]) {
+    for (const action of ["Restart it", "Leave it stopped", "Stop watching this container", "Done"]) {
       expect(screen.queryByRole("button", { name: action })).toBeNull();
     }
+    expect(screen.queryByRole("combobox", { name: TEXT.tasks.snooze.label })).toBeNull();
   });
 });
 
@@ -301,6 +303,8 @@ describe("a host whose runner is held back, on the attention page", () => {
     const card = (await screen.findByText(TASK_TEXT.runnerHeldBack("Alder"))).closest("article")!;
     expect(within(card).getByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toBeTruthy();
     expect(screen.getAllByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toHaveLength(1);
+    // The way to the host is its card's head: the row about the host itself says it no second time.
+    expect(within(card).getAllByRole("link", { name: "Open Alder" })).toHaveLength(1);
     expect(screen.getByRole("link", { name: new RegExp(TEXT.hosts.heldBack) })).toBeTruthy();
     fireEvent.click(within(card).getByRole("button", { name: TEXT.heldBack.clear }));
     fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
@@ -331,6 +335,7 @@ describe("what a host's packages ask of a person, on the attention page", () => 
     title,
     labels: ["packages"],
     priority: "low",
+    resource: null,
     about,
   });
   const reboot = packageTask("reboot", "Alder needs a reboot", TASK_ABOUT.reboot);
@@ -348,12 +353,15 @@ describe("what a host's packages ask of a person, on the attention page", () => 
     renderAttention("admin");
     expect(await screen.findByText(reboot.title)).toBeTruthy();
     expect(screen.getByText(release.title)).toBeTruthy();
-    expect(screen.getByText(TEXT.attention.lede(2))).toBeTruthy();
+    expect(screen.getByText(TEXT.attention.lede(2, 1, 0))).toBeTruthy();
   });
 
   it("lets a host's package list stand for its updates task, and shows that task itself while the list is empty", async () => {
     serve("admin", needing(upgrades), undefined, heldPackages);
     renderAttention("admin");
+    expect(await screen.findByText(TEXT.attention.packageUpdates(2))).toBeTruthy();
+    expect(screen.queryByText("netdata-dashboard")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: TEXT.attention.reviewCount(2) }));
     expect(await screen.findByText("netdata-dashboard")).toBeTruthy();
     expect(screen.queryByText(upgrades.title)).toBeNull();
     cleanup();
@@ -366,8 +374,8 @@ describe("what a host's packages ask of a person, on the attention page", () => 
   it("puts a package task no group draws among the problems to fix", async () => {
     serve("admin", needing(stray));
     renderAttention("admin");
-    const card = (await screen.findByText(stray.title)).closest("article")!;
-    expect(card.closest(".fix-grid")).toBeTruthy();
+    const row = (await screen.findByText(stray.title)).closest("li")!;
+    expect(within(row).getByText(TEXT.attention.tags.fix)).toBeTruthy();
   });
 });
 
@@ -378,8 +386,7 @@ describe("arranging the attention page", () => {
     window.localStorage.clear();
   });
 
-  const { onItNow, healed, comingUp, howFar } = TEXT.attention;
-  const updates = TEXT.attention.sections.updates.label;
+  const { onItNow, healed, comingUp } = TEXT.attention;
   const sideCards = () => [...document.querySelectorAll(".attention-side h2")].map((heading) => heading.textContent);
 
   it("hides a card for this browser alone, and brings it back from the hidden cards line", async () => {
@@ -407,19 +414,136 @@ describe("arranging the attention page", () => {
     serve("admin", needsYou);
     renderAttention("admin");
     await screen.findByRole("heading", { name: comingUp });
-    expect(sideCards()).toEqual([onItNow, healed, comingUp, howFar]);
+    expect(sideCards()).toEqual([onItNow, healed, comingUp]);
     fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.start }));
-    // The updates and the four cards beside them; what to decide and fix has no controls.
-    expect(screen.getAllByRole("group", { name: /^Arrange / })).toHaveLength(5);
+    // The three cards beside what needs a person; what needs a person has no controls.
+    expect(screen.getAllByRole("group", { name: /^Arrange / })).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: TEXT.arrange.pinCard(comingUp) }));
-    expect(sideCards()).toEqual([comingUp, onItNow, healed, howFar]);
-    // Alone in its column, the updates have nothing to come before.
-    expect(screen.getByRole("button", { name: TEXT.arrange.hideCard(updates) })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: TEXT.arrange.pinCard(updates) })).toBeNull();
+    expect(sideCards()).toEqual([comingUp, onItNow, healed]);
 
     cleanup();
     renderAttention("admin");
     await screen.findByRole("heading", { name: comingUp });
-    expect(sideCards()).toEqual([comingUp, onItNow, healed, howFar]);
+    expect(sideCards()).toEqual([comingUp, onItNow, healed]);
+  });
+});
+
+describe("what waits for a look, what was put off, and a quiet day, on the attention page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const device = (id: string, label: string): TaskSummaryView => ({
+    ...diskNearlyFull,
+    id: `task-${id}`,
+    title: `${label} is unavailable`,
+    priority: "medium",
+    hostId: null,
+    hostLabel: null,
+    resource: { kind: "watched", id, label },
+  });
+  const devices = [
+    device("garage", "Garage door sensor"),
+    device("kitchen", "Kitchen light strip"),
+    device("office", "Office air monitor"),
+    device("porch", "Porch light"),
+  ];
+  const sent = (fetch: ReturnType<typeof serve>, taskId: string) =>
+    fetch.mock.calls
+      .filter(([url, init]) => url === apiPath(API_ROUTES.task, { taskId }) && init?.method === "PATCH")
+      .map(([, init]) => init?.body);
+
+  it("lists what waits for a look by place, three at a time, with Done and Snooze in each row", async () => {
+    const fetch = serve("admin", { ...board, noticed: devices.map((task) => ({ kind: "task" as const, task })) });
+    renderAttention("admin");
+    const card = (await screen.findByRole("heading", { name: "Home Assistant" })).closest("article")!;
+    expect(within(card).getAllByRole("link", { name: /is unavailable$/ })).toHaveLength(3);
+    fireEvent.click(within(card).getByRole("button", { name: TEXT.attention.lookAt.more(1, "Porch light") }));
+    expect(within(card).getAllByRole("link", { name: /is unavailable$/ })).toHaveLength(4);
+    expect(screen.getByText(TEXT.attention.lede(0, 0, 4))).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: TEXT.attention.allClear.title })).toBeNull();
+
+    const garage = within(card).getByRole("link", { name: "Garage door sensor is unavailable" }).closest("li")!;
+    fireEvent.click(within(garage).getByRole("button", { name: TEXT.attention.done }));
+    await waitFor(() => expect(sent(fetch, "task-garage")).toEqual(['{"status":"done"}']));
+    const porch = within(card).getByRole("link", { name: "Porch light is unavailable" }).closest("li")!;
+    fireEvent.change(within(porch).getByRole("combobox", { name: TEXT.tasks.snooze.label }), {
+      target: { value: "1_month" },
+    });
+    await waitFor(() => expect(sent(fetch, "task-porch")).toEqual(['{"snoozed":"1_month"}']));
+  });
+
+  it("folds what was put off into one line, opened in place to wake one", async () => {
+    const snoozed = { ...devices[0]!, snoozedUntil: Date.UTC(2027, 4, 2) };
+    const fetch = serve("admin", { ...board, noticed: [{ kind: "task", task: snoozed }] });
+    renderAttention("admin");
+    const fold = (await screen.findByText(TEXT.attention.snoozed(1))).closest("details")!;
+    expect(fold.open).toBe(false);
+    expect(screen.queryByRole("heading", { name: "Home Assistant" })).toBeNull();
+    fold.open = true;
+    fireEvent.click(within(fold).getByRole("button", { name: TEXT.tasks.wake }));
+    await waitFor(() => expect(sent(fetch, "task-garage")).toEqual(['{"snoozed":false}']));
+  });
+
+  it("says all is clear on one calm card when nothing needs a person and nothing waits for a look", async () => {
+    serve("viewer", { needsYou: [], autoheal: [], noticed: [], done: [] }, undefined, undefined, {
+      [API_ROUTES.containers]: [TIKA],
+    });
+    renderAttention("viewer");
+    const clear = (await screen.findByRole("heading", { name: TEXT.attention.allClear.title })).closest("section")!;
+    expect(clear.textContent).toContain(TEXT.attention.allClear.nothing);
+    expect(clear.textContent).toContain("host packages tonight at 03:00");
+    expect(screen.queryByText(TEXT.attention.needsYou.label)).toBeNull();
+  });
+});
+
+describe("a host's reboot and packages, from their rows on the attention page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const reboot: TaskSummaryView = {
+    ...diskNearlyFull,
+    id: "task-reboot",
+    title: "Alder needs a reboot",
+    labels: ["packages"],
+    priority: "low",
+    resource: null,
+    about: TASK_ABOUT.reboot,
+  };
+  const askedFor = (fetch: ReturnType<typeof serve>) =>
+    fetch.mock.calls
+      .filter(([url, init]) => url === apiPath(API_ROUTES.hostActions, { hostId: "h1" }) && init?.method === "POST")
+      .map(([, init]) => init?.body);
+  const shown = { ...board, needsYou: [{ kind: "task" as const, task: reboot }] };
+
+  it("reboots a host from its row once a person says yes, where its .env allows it, and offers a viewer none", async () => {
+    const fetch = serve("admin", shown, undefined, heldPackages);
+    renderAttention("admin");
+    fireEvent.click(await screen.findByRole("button", { name: TEXT.hostPackages.rebootNow }));
+    expect(askedFor(fetch)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: TEXT.yes }));
+    await waitFor(() => expect(askedFor(fetch)).toEqual(['{"action":"reboot","packages":[]}']));
+    cleanup();
+
+    serve("viewer", shown, undefined, heldPackages);
+    renderAttention("viewer");
+    expect(await screen.findByText(reboot.title)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: TEXT.hostPackages.rebootNow })).toBeNull();
+    expect(screen.getByText(TEXT.attention.packageUpdates(2))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: TEXT.hostPackages.installNow })).toBeNull();
+  });
+
+  it("installs every package its host lists from the packages' row", async () => {
+    const fetch = serve("admin", board, undefined, heldPackages);
+    renderAttention("admin");
+    fireEvent.click(await screen.findByRole("button", { name: TEXT.hostPackages.installNow }));
+    await waitFor(() =>
+      expect(askedFor(fetch)).toEqual([
+        '{"action":"upgrade_packages","packages":["netdata-dashboard","netdata-user"]}',
+      ]),
+    );
   });
 });

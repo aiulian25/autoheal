@@ -5,8 +5,12 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { loadControlPlaneConfig } from "../config/control-plane-config.js";
 import type { ControlPlaneConfig } from "../config/control-plane-config.js";
-import { DETECTOR_SOON_MILLISECONDS, LIVE_EVENT, TLS_MESSAGES } from "../shared/constants.js";
-import { eachApart, lookSoonAfterChanges, renewWhenDue } from "./application.js";
+import { addLegacyPeople, withoutOnePersonRule } from "../../test/support/legacy-people.js";
+import { DETECTOR_SOON_MILLISECONDS, LIVE_EVENT, SINGLE_OWNER_MESSAGES, TLS_MESSAGES } from "../shared/constants.js";
+import { eachApart, lookSoonAfterChanges, openOwnedDatabase, renewWhenDue } from "./application.js";
+import { AuditLog } from "./audit/audit-log.js";
+import { openReadOnly, type DatabaseHandle } from "./database/connection.js";
+import { users } from "./database/schema.js";
 import { LiveEvents } from "./live/live-events.js";
 import { providedCertificate, tlsOptionsOf } from "./tls/certificate.js";
 
@@ -147,6 +151,11 @@ describe("tasks following what changed, between the detectors' passes", () => {
     vi.advanceTimersByTime(1);
     expect(look).toHaveBeenCalledTimes(1);
 
+    // What a running job writes changes nothing tasks are opened from.
+    live.publish({ kind: LIVE_EVENT.job, hostId: "alder", jobId: "install", output: true });
+    vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
+    expect(look).toHaveBeenCalledTimes(1);
+
     live.publish({ kind: LIVE_EVENT.job, hostId: "alder", jobId: "check" });
     vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
     expect(look).toHaveBeenCalledTimes(2);
@@ -156,5 +165,70 @@ describe("tasks following what changed, between the detectors' passes", () => {
     live.publish({ kind: LIVE_EVENT.inventory, hostId: "alder", changed: true });
     vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
     expect(look).toHaveBeenCalledTimes(2);
+  });
+});
+
+// The schema of the version before Autoheal was one person's.
+const LEGACY_SCHEMA_VERSION = 78;
+
+describe("the database the control plane starts on", () => {
+  let directory: string;
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), "autoheal-owned-"));
+  });
+  afterEach(() => {
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const quiet = (handle: DatabaseHandle) => new AuditLog(handle, () => undefined);
+  const open = (lines: string[]) =>
+    openOwnedDatabase(join(directory, "autoheal.db"), (line) => lines.push(line), Date.now, quiet);
+  const peopleIn = (handle: DatabaseHandle) =>
+    handle.database
+      .select({ username: users.username, status: users.status })
+      .from(users)
+      .all()
+      .sort((one, other) => one.username.localeCompare(other.username));
+
+  it("gets its one person when new, and no other when started again", async () => {
+    const lines: string[] = [];
+    const first = await open(lines);
+    first.databaseHandle.close();
+    const again = await open(lines);
+    expect(peopleIn(again.databaseHandle)).toEqual([{ username: "admin", status: "active" }]);
+    expect(lines.filter((line) => line.includes("one-time password"))).toHaveLength(1);
+    again.databaseHandle.close();
+  });
+
+  it("keeps only its owner able to sign in when more people come with it, and says who no longer can", async () => {
+    const lines: string[] = [];
+    const first = await open(lines);
+    await addLegacyPeople(first.databaseHandle, [{ username: "cedar", role: "admin" }, { username: "rowan" }]);
+    first.databaseHandle.close();
+
+    const again = await open(lines);
+    expect(peopleIn(again.databaseHandle)).toEqual([
+      { username: "admin", status: "active" },
+      { username: "cedar", status: "deactivated" },
+      { username: "rowan", status: "deactivated" },
+    ]);
+    expect(lines).toContain(SINGLE_OWNER_MESSAGES.kept(["cedar", "rowan"]));
+    again.databaseHandle.close();
+  });
+
+  it("does not open one that cannot say whose it is, and leaves it for the version it came from", async () => {
+    const first = await open([]);
+    first.databaseHandle.database.update(users).set({ status: "deactivated" }).run();
+    await addLegacyPeople(first.databaseHandle, [
+      { username: "cedar", role: "admin" },
+      { username: "rowan", role: "admin" },
+    ]);
+    withoutOnePersonRule(first.databaseHandle);
+    first.databaseHandle.sqlite.pragma(`user_version = ${LEGACY_SCHEMA_VERSION}`);
+    first.databaseHandle.close();
+
+    await expect(open([])).rejects.toThrow(SINGLE_OWNER_MESSAGES.unclear(2));
+    const left = openReadOnly(join(directory, "autoheal.db"));
+    expect(left.pragma("user_version", { simple: true })).toBe(LEGACY_SCHEMA_VERSION);
+    left.close();
   });
 });

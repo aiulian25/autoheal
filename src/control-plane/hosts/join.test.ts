@@ -11,7 +11,7 @@ import {
   type TestClient,
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -165,8 +165,7 @@ describe("joining runners", () => {
   it("renames a host as an admin asks, by the rules of adding one: unique, audited, and never by its runner", async () => {
     const alder = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
     const pending = (await admin.post(API_ROUTES.hosts, {})).json<EnrolledHostView>();
-    const rename = (hostId: string, label: string, client = admin) =>
-      client.patch(apiPath(API_ROUTES.host, { hostId }), { label });
+    const rename = (hostId: string, label: string) => admin.patch(apiPath(API_ROUTES.host, { hostId }), { label });
 
     const renamed = await rename(alder.host.id, "Alder-NAS");
     expect(renamed.statusCode).toBe(200);
@@ -179,8 +178,6 @@ describe("joining runners", () => {
     expect((await rename(alder.host.id, "Rowan")).json()).toEqual({ error: "host_label_taken" });
     expect((await rename(alder.host.id, "two words")).statusCode).toBe(400);
     expect((await rename(randomUUID(), "Elsewhere")).statusCode).toBe(404);
-    const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
-    expect((await rename(alder.host.id, "Mine", viewer)).statusCode).toBe(403);
     expect((await labels()).sort()).toEqual(["Alder-NAS", "Rowan"]);
 
     const audited = controlPlane.services.databaseHandle.database
@@ -280,14 +277,11 @@ describe("joining runners", () => {
     expect(audited).toMatchObject({ actorLabel: "admin", targetKind: "host", targetId: host!.id });
   });
 
-  it("says there is no runner of this machine to add again where none joined through the volume, and lets only an admin try", async () => {
+  it("says there is no runner of this machine to add again where none joined through the volume", async () => {
     expect((await admin.get(API_ROUTES.localHost)).json()).toEqual({ hostId: null, revoked: false });
     const refused = await admin.post(API_ROUTES.localHostReenroll);
     expect(refused.statusCode).toBe(409);
     expect(refused.json()).toEqual({ error: "not_local_runner" });
-    const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
-    expect((await viewer.get(API_ROUTES.localHost)).statusCode).toBe(200);
-    expect((await viewer.post(API_ROUTES.localHostReenroll)).statusCode).toBe(403);
   });
 
   describe("closing Add a host", () => {
@@ -418,11 +412,9 @@ describe("joining runners", () => {
       expect((await redeem(renewed.joinCode, newToken())).statusCode).toBe(204);
     });
 
-    it("is made only by an admin, for an enrolled runner container's host on another machine", async () => {
+    it("is made for an enrolled runner container's host on another machine", async () => {
       const enrolled = (await admin.post(API_ROUTES.hosts, { label: "Alder" })).json<EnrolledHostView>();
-      const make = (hostId: string, client = admin) => client.post(apiPath(API_ROUTES.hostJoinCode, { hostId }), {});
-      const viewer = (await fullySignedInUser(controlPlane, admin, "partner", "viewer")).client;
-      expect((await make(enrolled.host.id, viewer)).statusCode).toBe(403);
+      const make = (hostId: string) => admin.post(apiPath(API_ROUTES.hostJoinCode, { hostId }), {});
       expect((await make(randomUUID())).statusCode).toBe(404);
 
       // Moved to SSH, its embedded runner's token stays its own: a code left from before opens nothing.

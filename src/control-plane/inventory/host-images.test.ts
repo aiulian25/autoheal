@@ -8,7 +8,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type HostImagesView, type JobView } from "../../shared/api.js";
 import { RUNNER_ROUTES, type Heartbeat, type UnusedImage, type WorkResponse } from "../../shared/protocol.js";
 import { hosts } from "../database/schema.js";
@@ -109,16 +109,14 @@ describe("a host's old images", () => {
     expect((await images()).images).toEqual([{ ...KEPT, unusedSince: null }]);
   });
 
-  it("removes the ones ticked, once, only ones the host reported, and only for an admin", async () => {
+  it("removes the ones ticked, once, and only ones the host reported", async () => {
     await report({ unusedImages: [KEPT, NAMELESS] });
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
 
     const asked = (await remove([NAMELESS.id, KEPT.id])).json<JobView>();
     expect(asked).toMatchObject({ action: "remove_images", containerName: "", status: "pending" });
     expect((await remove([KEPT.id, NAMELESS.id])).json<JobView>().id).toBe(asked.id);
     expect((await remove([digest("9")])).json()).toMatchObject({ error: "image_not_found" });
     expect((await remove(["latest"])).statusCode).toBe(400);
-    expect((await remove([KEPT.id], viewer)).statusCode).toBe(403);
     // Every unused image goes only on the host's schedule, which keeps the ones updates kept.
     expect((await admin.post(apiPath(API_ROUTES.hostActions, { hostId }), { action: "prune_images" })).statusCode).toBe(
       400,

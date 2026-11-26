@@ -11,7 +11,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { heartbeatWith, hostHealth, hostMetrics } from "../../../test/support/inventory.js";
 describe("metric trend read and review API", () => {
   let plane: TestControlPlane, admin: TestClient, hostId: string, anomalyId: string;
@@ -55,14 +55,12 @@ describe("metric trend read and review API", () => {
     await plane.runnerApp.close();
     plane.services.databaseHandle.close();
   });
-  it("allows ordinary authenticated reads but reserves feedback for an administrator", async () => {
-    const viewer = (await fullySignedInUser(plane, admin, "viewer", "viewer")).client;
-    const read = await viewer.get(apiPath(API_ROUTES.hostTrends, { hostId }));
+  it("reads trends and takes feedback on them, and starts no work", async () => {
+    const read = await admin.get(apiPath(API_ROUTES.hostTrends, { hostId }));
     expect(read.statusCode).toBe(200);
     expect(read.json()).toMatchObject({ hostId, status: "learning", retention: TREND.retention });
-    expect((await viewer.get(`${API_ROUTES.metricAnomalies}?hostId=${hostId}`)).json()).toHaveLength(1);
+    expect((await admin.get(`${API_ROUTES.metricAnomalies}?hostId=${hostId}`)).json()).toHaveLength(1);
     const path = apiPath(API_ROUTES.metricAnomalyFeedback, { anomalyId });
-    expect((await viewer.post(path, { observedAt: plane.clock.now, assessment: "useful" })).statusCode).toBe(403);
     expect((await admin.post(path, { observedAt: plane.clock.now - 1, assessment: "useful" })).statusCode).toBe(409);
     expect((await admin.post(path, { observedAt: plane.clock.now, assessment: "expected" })).statusCode).toBe(200);
     expect((await admin.post(path, { observedAt: plane.clock.now, assessment: "restart" })).statusCode).toBe(400);

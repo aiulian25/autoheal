@@ -13,7 +13,7 @@ export const SETTINGS_SECTIONS = {
   notifications: "notifications",
   schedules: "schedules",
   backups: "backups",
-  people: "people",
+  keys: "keys",
   system: "system",
   account: "account",
 } as const;

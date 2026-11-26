@@ -15,6 +15,7 @@ import {
   type BoardView,
   type ContainerView,
   type HomeAssistantView,
+  type HostMetricsView,
   type HostPackagesView,
   type HostUpdateSettingsView,
   type HostView,
@@ -32,9 +33,10 @@ import {
   type SshHostDetailsView,
   type SshKeyView,
 } from "../../src/shared/api.js";
-import { HOST_STATE, POWER_SETTLED } from "../../src/shared/constants.js";
+import { HOST_STATE, JOB_STATUS, POWER_SETTLED } from "../../src/shared/constants.js";
 import type { NetworkOverviewView, RouterSettingsView } from "../../src/shared/network.js";
 import { api } from "./api-client.js";
+import { liveAware } from "./live-health.js";
 import {
   BOARD_SAFETY_REFRESH_MILLISECONDS,
   INVENTORY_REFRESH_MILLISECONDS,
@@ -42,10 +44,25 @@ import {
   REFRESH_MILLISECONDS,
 } from "./constants.js";
 
+// The first part of the keys the live stream puts readings into, or refreshes when a host reports.
+export const QUERY_KEYS = {
+  hosts: "hosts",
+  overview: "overview",
+  containers: "containers",
+  hostPackages: "host-packages",
+  hostMetrics: "host-metrics",
+} as const;
+
+// Read again every few seconds while the live stream is down; seldom while it tells each change as it comes.
+const inventoryRefresh = liveAware(INVENTORY_REFRESH_MILLISECONDS);
+
+// What a page no longer shows stops being read: its request is called off, not left to finish for nothing.
+type Read = { signal: AbortSignal };
+
 // The live stream says when it changes; reading it now and then only covers a stream that missed it.
 export const boardQuery = {
   queryKey: ["board"],
-  queryFn: () => api<BoardView>("GET", API_ROUTES.board),
+  queryFn: ({ signal }: Read) => api<BoardView>("GET", API_ROUTES.board, undefined, signal),
   refetchInterval: BOARD_SAFETY_REFRESH_MILLISECONDS,
 } as const;
 
@@ -56,13 +73,13 @@ export const passkeyStatusQuery = {
 } as const;
 
 export const hostsQuery = {
-  queryKey: ["hosts"],
-  queryFn: () => api<HostView[]>("GET", API_ROUTES.hosts),
+  queryKey: [QUERY_KEYS.hosts],
+  queryFn: ({ signal }: Read) => api<HostView[]>("GET", API_ROUTES.hosts, undefined, signal),
   // Every 2 s while a host is being rebooted or shut down: the page follows it down and back as it happens.
   refetchInterval: (query: { state: { data?: HostView[] } }) =>
     (query.state.data ?? []).some((host) => host.power !== undefined && !POWER_SETTLED.includes(host.power.phase))
       ? POWER_REFRESH_MILLISECONDS
-      : INVENTORY_REFRESH_MILLISECONDS,
+      : inventoryRefresh(),
 } as const;
 
 // Whether the runner on the dashboard's own machine was revoked: an admin can add it again in one click.
@@ -90,9 +107,9 @@ export const homeAssistantQuery = {
 } as const;
 
 export const overviewQuery = {
-  queryKey: ["overview"],
-  queryFn: () => api<OverviewView>("GET", API_ROUTES.overview),
-  refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+  queryKey: [QUERY_KEYS.overview],
+  queryFn: ({ signal }: Read) => api<OverviewView>("GET", API_ROUTES.overview, undefined, signal),
+  refetchInterval: inventoryRefresh,
 } as const;
 
 export const ollamaQuery = {
@@ -176,15 +193,24 @@ export const integrationsQuery = {
 
 // Every container on every host, as their runners last reported them.
 export const containersQuery = {
-  queryKey: ["containers", ""],
-  queryFn: () => api<ContainerView[]>("GET", API_ROUTES.containers),
-  refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+  queryKey: [QUERY_KEYS.containers, ""],
+  queryFn: ({ signal }: Read) => api<ContainerView[]>("GET", API_ROUTES.containers, undefined, signal),
+  refetchInterval: inventoryRefresh,
 } as const;
 
 // A host's own packages: what its files say, its last check, who takes care of what, its package jobs.
 export const hostPackagesQuery = (hostId: string) => ({
-  queryKey: ["host-packages", hostId],
-  queryFn: () => api<HostPackagesView>("GET", apiPath(API_ROUTES.hostPackages, { hostId })),
+  queryKey: [QUERY_KEYS.hostPackages, hostId],
+  queryFn: ({ signal }: Read) =>
+    api<HostPackagesView>("GET", apiPath(API_ROUTES.hostPackages, { hostId }), undefined, signal),
+});
+
+// A host's last half hour of readings: read once as its chart opens, then each new reading comes by the live stream.
+export const hostMetricsQuery = (hostId: string) => ({
+  queryKey: [QUERY_KEYS.hostMetrics, hostId],
+  queryFn: ({ signal }: Read) =>
+    api<HostMetricsView[]>("GET", apiPath(API_ROUTES.hostMetrics, { hostId }), undefined, signal),
+  refetchInterval: inventoryRefresh,
 });
 
 // Each host's nightly window, and whether Autoheal takes security fixes in it.
@@ -199,12 +225,17 @@ export const backupsQuery = {
   queryFn: () => api<BackupView[]>("GET", API_ROUTES.backups),
 } as const;
 
+// A job on its way, waiting or delivered.
+const isOpenJob = (job: JobView) => job.status === JOB_STATUS.pending || job.status === JOB_STATUS.delivered;
+
 // A host's latest jobs, the ones on their way with their progress: what its containers' rows are doing now. The live
-// stream refreshes them as they move; this refresh covers a dropped stream.
+// stream refreshes them as they move. While one is on its way they are read every few seconds all the same: a restore
+// ends open jobs without a word.
 export const hostJobsQuery = (hostId: string) => ({
   queryKey: ["jobs", hostId],
   queryFn: () => api<JobView[]>("GET", `${API_ROUTES.jobs}?${new URLSearchParams({ [JOB_QUERY.hostId]: hostId })}`),
-  refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+  refetchInterval: (query: { state: { data?: JobView[] } }) =>
+    (query.state.data ?? []).some(isOpenJob) ? INVENTORY_REFRESH_MILLISECONDS : inventoryRefresh(),
 });
 
 // What is open on one host: its page lists it, and its containers' rows say when an update waits for a person.
@@ -221,16 +252,16 @@ export const hostTasksQuery = (hostId: string) => {
 export const hostContainersQuery = (hostId: string) => {
   const query = new URLSearchParams({ [CONTAINER_QUERY.hostId]: hostId }).toString();
   return {
-    queryKey: ["containers", query],
-    queryFn: () => api<ContainerView[]>("GET", `${API_ROUTES.containers}?${query}`),
+    queryKey: [QUERY_KEYS.containers, query],
+    queryFn: ({ signal }: Read) => api<ContainerView[]>("GET", `${API_ROUTES.containers}?${query}`, undefined, signal),
     staleTime: INVENTORY_REFRESH_MILLISECONDS,
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+    refetchInterval: inventoryRefresh,
   };
 };
 
 /** Match the list's serialized filters and the task page's existing host key without touching other hosts. */
 export function containerQueryMatchesHosts(queryKey: readonly unknown[], hostIds: ReadonlySet<string>): boolean {
-  if (queryKey[0] !== "containers" || hostIds.size === 0) return false;
+  if (queryKey[0] !== QUERY_KEYS.containers || hostIds.size === 0) return false;
   if (queryKey[1] === "host" && typeof queryKey[2] === "string") return hostIds.has(queryKey[2]);
   // Unknown key shapes are conservatively treated as shared lists.
   if (typeof queryKey[1] !== "string") return true;

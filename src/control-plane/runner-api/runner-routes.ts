@@ -21,6 +21,7 @@ import {
   HTTP_HEADERS,
   NO_STORE,
   LIVE_EVENT,
+  LIVE_METRICS_CONTAINER_LIMIT,
   RUNNER_CAPABILITY,
   TERMINAL_INPUT_WAIT_MILLISECONDS,
 } from "../../shared/constants.js";
@@ -199,8 +200,17 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
     return reply.code(HTTP_STATUS.noContent).send();
   });
 
+  // The dashboards open get the host's new readings as they come, instead of asking for them every few seconds.
   app.post(RUNNER_ROUTES.metrics, async (request, reply) => {
-    services.metricsStore.record(request.runnerHost!.id, parseBody(metricsReportSchema, request.body));
+    const hostId = request.runnerHost!.id;
+    services.metricsStore.record(hostId, parseBody(metricsReportSchema, request.body));
+    const usage = services.metricsStore.latestContainers(hostId);
+    services.live.publish({
+      kind: LIVE_EVENT.metrics,
+      hostId,
+      host: services.metricsStore.latestHost(hostId),
+      containers: usage.size > LIVE_METRICS_CONTAINER_LIMIT ? null : Object.fromEntries(usage),
+    });
     return reply.code(HTTP_STATUS.noContent).send();
   });
 

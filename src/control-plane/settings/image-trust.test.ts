@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type AuditEventView, type EnrolledHostView } from "../../shared/api.js";
 import { AUDIT_ACTIONS, HTTP_STATUS } from "../../shared/constants.js";
 import type { ImageTrustView } from "./image-trust-service.js";
@@ -163,18 +163,6 @@ describe("requiring a signed image before an update", () => {
     await admin.delete(apiPath(API_ROUTES.imageTrustRule, { ruleId }));
     expect((await admin.delete(path)).statusCode).toBe(HTTP_STATUS.noContent);
     expect((await heartbeat()).imageTrust).toBeUndefined();
-  });
-
-  it("is for admins only", async () => {
-    const other = (await fullySignedInUser(controlPlane, admin, "mira", "viewer")).client;
-
-    expect((await other.get(API_ROUTES.imageTrust)).statusCode).toBe(HTTP_STATUS.forbidden);
-    expect((await other.post(API_ROUTES.imageTrust, { name: "x", publicKey: OWNER_KEY })).statusCode).toBe(
-      HTTP_STATUS.forbidden,
-    );
-    expect((await other.post(API_ROUTES.imageTrustRules, { registry: "ghcr.io" })).statusCode).toBe(
-      HTTP_STATUS.forbidden,
-    );
   });
 
   it("records every change to the policy in the audit log", async () => {

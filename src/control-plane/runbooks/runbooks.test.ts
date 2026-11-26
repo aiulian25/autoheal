@@ -6,7 +6,7 @@ import {
   type TestControlPlane,
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -108,13 +108,6 @@ describe("runbooks", () => {
     expect(saved.statusCode).toBe(409);
     expect(saved.json()).toEqual({ error: "runbook_archived" });
     expect((await publish(runbook)).json()).toEqual({ error: "runbook_archived" });
-  });
-
-  it("lets viewers read runbooks but not change them", async () => {
-    await create("global", "House rules", "Escalate anything touching the database.");
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await viewer.get(API_ROUTES.runbooks)).json()).toHaveLength(1);
-    expect((await viewer.post(API_ROUTES.runbooks, { scope: "global", title: "x", body: "y" })).statusCode).toBe(403);
   });
 
   it("gives the model the runbooks that match, least specific first, and records which", async () => {

@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 import { Link } from "react-router";
 import {
-  hasUpdate,
   type ContainerView,
   type HostPackagesView,
   type HostView,
@@ -12,7 +11,6 @@ import {
 } from "../../../../src/shared/api.js";
 import {
   HOST_SECTIONS,
-  TASK_RESOURCE,
   UPDATE_ASSESSMENT,
   UPDATE_RUN_STATUS,
   type HeldReason,
@@ -28,6 +26,8 @@ import {
   updateItem,
   type Selection,
 } from "../../agent-dispatch.js";
+import type { UpdateGroupFacts } from "../../attention-places.js";
+import { containerOf } from "../../board.js";
 import { hostSectionLink } from "../../host-links.js";
 import { ErrorNotice } from "../../components/common.js";
 import { ImageVersions } from "../../components/container-actions.js";
@@ -41,26 +41,15 @@ import { runLine } from "../../update-runs.js";
 import { Grip } from "./attention-parts.js";
 import { ReleaseNotesLink } from "../../components/release-notes-link.js";
 
-export interface UpdateGroupFacts {
-  host: HostView;
-  tasks: TaskSummaryView[];
-  // The host's containers, for what each update brings.
-  containers: ContainerView[];
-  packages: HostPackagesView | undefined;
-  // Its containers with a newer version of their pinned tag out, which the agent can move them to.
-  newer: ContainerView[];
-  // What its packages ask of a person besides the list: a reboot, a release's end, its updates while none are listed.
-  hostTasks: TaskSummaryView[];
-}
-
 // What the update brings when its images say; else what updating does.
 export function UpdateLine({ container }: { container: ContainerView | undefined }) {
   const generic = <span className="small faint">{TEXT.attention.containerImage}</span>;
   return container === undefined ? generic : <ImageVersions container={container} fallback={generic} />;
 }
 
-export const UpdateTile = ({ icon }: { icon: IconName }) => (
-  <span className="update-tile" aria-hidden>
+// A row's kind at a glance; a problem's tile takes its tone.
+export const UpdateTile = ({ icon, tone }: { icon: IconName; tone?: "warning" | "danger" | "accent" }) => (
+  <span className={tone === undefined ? "update-tile" : `update-tile tone-${tone}`} aria-hidden>
     <Icon name={icon} />
   </span>
 );
@@ -145,16 +134,6 @@ export function PackageRows({
     );
   });
 }
-
-// The container an update task is about: the one a run updates.
-export const containerOf = (task: TaskSummaryView) =>
-  task.resource?.kind === TASK_RESOURCE.container ? task.resource.id : null;
-
-// As its host last reported it, the container still has its new image waiting: its task is no history.
-export const stillWaits = (task: TaskSummaryView, containers: readonly ContainerView[]) =>
-  containers.some(
-    (container) => container.hostId === task.hostId && container.name === containerOf(task) && hasUpdate(container),
-  );
 
 export function AdviceBadge({ advice }: { advice: UpdateAssessment | null }) {
   if (advice === null) {

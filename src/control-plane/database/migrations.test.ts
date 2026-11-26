@@ -1,3 +1,4 @@
+import { withoutOnePersonRule } from "../../../test/support/legacy-people.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -253,12 +254,15 @@ describe("migrations", () => {
     expect(() => handle.sqlite.prepare("delete from audit_events").run()).toThrow(/append-only/);
   });
 
-  it("enforces roles and statuses in the database itself", () => {
+  it("enforces roles, one person, and names unique whatever their case, in the database itself", () => {
     const insert = handle.sqlite.prepare(
       "insert into users (id, username, password_hash, role, created_at) values (?, ?, 'hash', ?, 1)",
     );
+    expect(() => insert.run("u0", "root", "superuser")).toThrow(/CHECK constraint/);
     insert.run("u1", "Admin", "admin");
-    expect(() => insert.run("u2", "root", "superuser")).toThrow(/CHECK constraint/);
+    expect(() => insert.run("u2", "Cedar", "viewer")).toThrow(/one_person/);
+    // On a file from before it was one person's, a name is still its own.
+    withoutOnePersonRule(handle);
     expect(() => insert.run("u3", "ADMIN", "viewer")).toThrow(/UNIQUE constraint/);
   });
 

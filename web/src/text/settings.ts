@@ -26,41 +26,8 @@ const WIDGET_MAPPINGS: [keyof WidgetView, string][] = [
   ["updatesAvailable", "Updates"],
 ];
 
-/** Settings: connections, notifications, Ollama, keys and who may do what. */
+/** Settings: connections, notifications, Ollama and the read-only keys. */
 export const SETTINGS_TEXT = {
-  operatorGrants: {
-    title: "Scoped operator access",
-    explanation: (username: string) =>
-      `Give ${username} specific container actions. Viewing access stays unchanged. Global settings, users, backups ` +
-      "and host package actions remain administrator-only.",
-    actions: {
-      lifecycle: "Start, stop, restart and recreate",
-      update: "Update and roll back",
-      logs: "Read container logs",
-      terminal: "Open a container terminal",
-      files: "Browse and edit container files",
-      settings: "Edit container settings",
-      read: "View inventory (already available to viewers)",
-    },
-    scopes: { host: "All containers on the host", container: "One container", stack: "One Compose stack" },
-    scoped: (scope: string, resource: string) => `${scope}: ${resource}`,
-    none: "No delegated actions.",
-    remove: "Remove grant",
-    add: "Add delegated actions",
-    host: "Host",
-    chooseHost: "Choose a host",
-    scope: "Scope",
-    stackName: "Exact Compose project name",
-    containerName: "Exact container name",
-    addToReview: "Add to review",
-    savingEnds:
-      "Saving ends this person’s current sessions and closes their container connections. They must sign in again. " +
-      "An action affecting dependent containers requires access to every affected member.",
-    save: "Save access changes",
-    discard: "Discard changes",
-    discardAndReload: "Discard changes and reload",
-    saved: "Access saved. The person must sign in again.",
-  },
   notificationInbox: {
     title: "Notification deliveries",
     explanation:
@@ -180,7 +147,7 @@ export const SETTINGS_TEXT = {
       notifications: "Notifications",
       schedules: "Schedules",
       backups: "Backups",
-      people: "People and keys",
+      keys: "Read-only integrations",
       system: "System",
       account: "Your account",
     } satisfies Record<keyof typeof SETTINGS_SECTIONS | "label", string>,
@@ -192,7 +159,10 @@ export const SETTINGS_TEXT = {
         title: "Backups",
         lede: "The database, copied daily, encrypted with age and checked after every run.",
       },
-      people: { title: "People and keys", lede: "Who can sign in, and keys for other apps." },
+      keys: {
+        title: "Read-only integrations",
+        lede: "Autoheal is yours alone to sign in to. Homepage, Prometheus and the like read it with a key: numbers only, never a way in.",
+      },
       system: {
         title: "System",
         lede: "Read from the control plane's .env, except trusted proxies, which can be set here too. Secrets are never shown.",
@@ -333,11 +303,6 @@ export const SETTINGS_TEXT = {
         "Mount a folder from another machine (a NAS share, say) into the control plane's container, and name it in its .env as ",
       offboxSetting: "OFFBOX_BACKUP_DIRECTORY",
       offboxHowAfter: ". From the next backup on, each one is copied there too, still encrypted.",
-    },
-    people: {
-      count: (count: number) => `${count} ${count === 1 ? "person" : "people"}`,
-      roles: (count: number, role: string) => (count === 1 ? role : `${count} ${role}s`),
-      manage: "Manage people",
     },
     keys: {
       title: "Widget and metrics keys",

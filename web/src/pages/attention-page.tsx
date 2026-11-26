@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
+import type { HostPackagesView } from "../../../src/shared/api.js";
 import { VERDICT_FIXED } from "../../../src/shared/constants.js";
 import {
   carriesHandOver,
@@ -10,20 +11,31 @@ import {
   useSelection,
   hostsOfItems,
 } from "../agent-dispatch.js";
-import { isHostPackageTask, isIncident, isTask, isUpdateTask, whatNeedsYou } from "../board.js";
+import { lookAtPlaces, needsYouPlaces, snoozedTasks } from "../attention-places.js";
+import { isIncident } from "../board.js";
 import { ArrangeLine, CardGroup, usePageArrangement, type ArrangedCard } from "../components/arranged-cards.js";
 import { ErrorNotice, Loading, PageHeader } from "../components/common.js";
-import { ATTENTION_CARDS, CARD_PAGES, PATHS, TEXT } from "../constants.js";
-import { boardQuery, containersQuery, enrolledHostsQuery, ollamaServersQuery, overviewQuery } from "../queries.js";
+import { ATTENTION_CARDS, ATTENTION_PLACE, CARD_PAGES, PATHS, TEXT } from "../constants.js";
+import {
+  boardQuery,
+  containersQuery,
+  enrolledHostsQuery,
+  hostPackagesQuery,
+  ollamaServersQuery,
+  overviewQuery,
+} from "../queries.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { type HandOver, SectionLabel } from "./attention/attention-parts.js";
-import { OllamaCard, StatusStrip } from "./attention/status-strip.js";
-import { DecisionCard } from "./attention/decision-card.js";
-import { FixCard } from "./attention/fix-card.js";
-import { Updates } from "./attention/updates.js";
+import { FleetLine } from "./attention/fleet-line.js";
+import { AllClear, LookAt, SnoozedFold } from "./attention/look-at.js";
+import { PlaceCard } from "./attention/place-card.js";
+import { OllamaCard } from "./attention/status-strip.js";
 import { SideCard, CardList, AgentPill, ComingUp } from "./attention/side-cards.js";
 
-/** What needs a person now, then what Autoheal has in hand, has healed, and will do next. */
+/**
+ * What needs a person now, one card for each place it happens on, then what waits for a look when they have time;
+ * beside it, what Autoheal has in hand, has healed, and will do next.
+ */
 export function AttentionPage() {
   const session = useSignedInSession();
   const admin = isAdmin(session);
@@ -31,6 +43,7 @@ export function AttentionPage() {
   const hosts = useQuery(enrolledHostsQuery);
   const containers = useQuery(containersQuery);
   const overview = useQuery(overviewQuery);
+  const packages = useQueries({ queries: (hosts.data ?? []).map((host) => hostPackagesQuery(host.id)) });
   const selection = useSelection();
   const handOver = useHandOver();
   // How many the agent took last, said until the next hand-over.
@@ -62,42 +75,27 @@ export function AttentionPage() {
     );
   }
   const { needsYou, autoheal, noticed, done } = board.data;
-  const hostOf = (hostId: string | null) => hosts.data.find((host) => host.id === hostId);
-  const containerOn = (hostId: string, name: string) =>
-    containers.data?.find((container) => container.hostId === hostId && container.name === name);
-  const { decisions, problems } = whatNeedsYou(needsYou);
-  const updateTasks = [...needsYou, ...noticed, ...autoheal]
-    .filter(isTask)
-    .map((card) => card.task)
-    .filter(isUpdateTask);
-  const hostTasks = needsYou
-    .filter(isTask)
-    .map((card) => card.task)
-    .filter(isHostPackageTask);
-  const healed = done.filter((card) => isIncident(card) && card.incident.verdict === VERDICT_FIXED);
   // Null until Home Assistant is set up in Settings.
   const home = overview.data?.homeAssistant ?? null;
+  const packageViews = new Map(
+    hosts.data.flatMap((host, index): [string, HostPackagesView][] => {
+      const view = packages[index]?.data;
+      return view === undefined ? [] : [[host.id, view]];
+    }),
+  );
+  const places = needsYouPlaces({
+    board: board.data,
+    hosts: hosts.data,
+    containers: containers.data ?? [],
+    packages: packageViews,
+    homeAssistantUpdates: home?.connected === true ? home.system.updates : [],
+  });
+  const lookAt = lookAtPlaces(board.data);
+  const lookAtCount = lookAt.reduce((sum, place) => sum + place.tasks.length, 0);
+  const hostsNeeding = places.filter((place) => place.kind === ATTENTION_PLACE.host).length;
+  const healed = done.filter((card) => isIncident(card) && card.incident.verdict === VERDICT_FIXED);
   const text = TEXT.attention;
-  // What needs a person keeps its place above them: only these may be pinned first or hidden, in this browser.
-  const updates: ArrangedCard[] = [
-    {
-      id: ATTENTION_CARDS.updates,
-      title: text.sections.updates.label,
-      node: (
-        <Updates
-          tasks={updateTasks}
-          hostTasks={hostTasks}
-          hosts={hosts.data}
-          containers={containers.data ?? []}
-          homeAssistantUpdates={home?.connected === true ? home.system.updates : []}
-          admin={admin}
-          selection={selection}
-          onHandOver={give}
-          handing={handOver.isPending}
-        />
-      ),
-    },
-  ];
+  // Only the cards beside what needs a person may be pinned first or hidden, in this browser.
   const side: ArrangedCard[] = [
     {
       id: ATTENTION_CARDS.onItNow,
@@ -121,22 +119,6 @@ export function AttentionPage() {
       ),
     },
     { id: ATTENTION_CARDS.comingUp, title: text.comingUp, node: <ComingUp admin={admin} /> },
-    {
-      id: ATTENTION_CARDS.howFar,
-      title: text.howFar,
-      node: (
-        <SideCard title={text.howFar} muted>
-          <p className="small muted">
-            {text.howFarBefore}
-            <code>{text.howFarCommand}</code>
-            {text.howFarAfter}
-          </p>
-          <Link className="small" to={PATHS.runbooks}>
-            {text.changeRules}
-          </Link>
-        </SideCard>
-      ),
-    },
   ];
   return (
     <div
@@ -148,11 +130,11 @@ export function AttentionPage() {
       onDragEnd={stopDragging}
       onDrop={stopDragging}
     >
-      <PageHeader title={text.title} lede={text.lede(needsYou.length)}>
+      <PageHeader title={text.title} lede={text.lede(needsYou.length, hostsNeeding, lookAtCount)}>
         <Link to={PATHS.board}>{text.allItems(needsYou.length + autoheal.length + noticed.length)}</Link>
       </PageHeader>
+      <FleetLine hosts={hosts.data} />
       <div className="attention-layout">
-        <StatusStrip hosts={hosts.data} containers={containers.data ?? []} agent={false} />
         <div className="attention-main">
           {handed !== null && (
             <p className="small text-good" role="status">
@@ -160,39 +142,28 @@ export function AttentionPage() {
             </p>
           )}
           <ErrorNotice error={handOver.error} />
-          {decisions.length > 0 && (
+          {places.length > 0 && (
             <section className="attention-section">
-              <SectionLabel tone="warning" text={text.sections.decide} />
-              {decisions.map((card) => (
-                <DecisionCard
-                  key={card.incident.id}
-                  incident={card.incident}
-                  host={hostOf(card.incident.hostId)}
-                  container={containerOn(card.incident.hostId, card.incident.containerName)}
+              <SectionLabel tone="warning" text={text.needsYou} />
+              {places.map((place) => (
+                <PlaceCard
+                  key={place.key}
+                  place={place}
+                  containers={containers.data ?? []}
+                  viewerId={session.user.id}
                   admin={admin}
+                  selection={selection}
                   onHandOver={give}
+                  handing={handOver.isPending}
                 />
               ))}
             </section>
           )}
-          {problems.length > 0 && (
-            <section className="attention-section">
-              <SectionLabel tone="danger" text={text.sections.fix} />
-              <div className="fix-grid">
-                {problems.map((card) => (
-                  <FixCard
-                    key={card.task.id}
-                    task={card.task}
-                    host={hostOf(card.task.hostId)}
-                    viewerId={session.user.id}
-                    admin={admin}
-                  />
-                ))}
-              </div>
-            </section>
+          <LookAt places={lookAt} admin={admin} />
+          {places.length === 0 && lookAt.length === 0 && (
+            <AllClear board={board.data} containers={containers.data ?? []} />
           )}
-          <CardGroup cards={updates} page={page} />
-          {needsYou.length === 0 && <p className="card muted">{text.nothingNeedsYou}</p>}
+          <SnoozedFold tasks={snoozedTasks(board.data)} admin={admin} />
         </div>
         <aside className="attention-side">
           <OllamaCard
@@ -206,7 +177,7 @@ export function AttentionPage() {
           </div>
         </aside>
       </div>
-      <ArrangeLine cards={[...updates, ...side]} page={page} />
+      <ArrangeLine cards={side} page={page} />
     </div>
   );
 }

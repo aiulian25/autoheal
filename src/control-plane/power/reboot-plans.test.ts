@@ -10,7 +10,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView, type TaskSummaryView } from "../../shared/api.js";
 import { HOST_KIND, HTTP_HEADERS, JOB_ACTION } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type PackageFacts, type WorkResponse } from "../../shared/protocol.js";
@@ -312,14 +312,6 @@ describe("a plan of reboots across three hosts", () => {
       expect(made.statusCode).toBe(409);
       expect(made.json()).toMatchObject({ error: API_ERRORS.rebootPlanUnreadable });
     });
-  });
-
-  it("is for admins", async () => {
-    const viewer = await fullySignedInUser(world.plane, world.admin, "operator", "viewer");
-    await reportAll();
-    expect((await viewer.client.get(REBOOT_PLAN_ROUTES.plans)).statusCode).toBe(403);
-    expect((await viewer.client.post(REBOOT_PLAN_ROUTES.plans, bodyWith())).statusCode).toBe(403);
-    expect((await viewer.client.post(REBOOT_PLAN_ROUTES.preview, bodyWith())).statusCode).toBe(403);
   });
 
   it("refuses a minimum that could not hold, and repeated members", async () => {

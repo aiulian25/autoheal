@@ -217,16 +217,16 @@ describe("the settings page", () => {
     expect(screen.getByRole("link", { name: "See all backups" }).getAttribute("href")).toBe(PATHS.backups);
   });
 
-  it("lists who can sign in and the widget keys, and creates a key", async () => {
+  it("lists the read-only keys, and creates one", async () => {
     const fetch = serve("admin", {
       [`POST ${API_ROUTES.widgetKeys}`]: {
         key: { id: "k2", name: "phone", scope: "widget", hint: "efgh" },
         secret: "the-secret",
       },
     });
-    renderSettings("admin", "#people");
+    renderSettings("admin", "#keys");
 
-    expect((await screen.findByText("1 person")).closest("p")!.textContent).toBe("1 person · admin");
+    expect(await screen.findByRole("heading", { name: "Read-only integrations", level: 2 })).toBeTruthy();
     const keys = await fold("Widget and metrics keys");
     expect(within(keys).getByText("homepage")).toBeTruthy();
     expect(within(keys).getByText("Homepage · never used")).toBeTruthy();
@@ -247,7 +247,7 @@ describe("the settings page", () => {
         secret: "ahw_metrics-secret",
       },
     });
-    renderSettings("admin", "#people");
+    renderSettings("admin", "#keys");
 
     const keys = await fold("Widget and metrics keys");
     fireEvent.change(within(keys).getByLabelText(/^New key name/), { target: { value: "prometheus" } });
@@ -278,10 +278,10 @@ describe("the settings page", () => {
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     await act(() => router.navigate("#system"));
     expect(await screen.findByText(TEXT.settingsPage.systemFacts.version)).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "People and keys" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Read-only integrations" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Backups" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Trusted proxies" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "People and keys" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Read-only integrations" })).toBeNull();
     expect(screen.getByRole("link", { name: "Your account" }).getAttribute("href")).toBe(PATHS.account);
   });
 

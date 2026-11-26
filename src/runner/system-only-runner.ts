@@ -18,6 +18,7 @@ import { RemedyGuard } from "./remedy-guard.js";
 import { allGpus, NvidiaGpus } from "./gpu-metrics.js";
 import { SysfsGpus } from "./sysfs-gpus.js";
 import { HostFactsWatch, readHostHealth } from "./host-health.js";
+import { coalesced, skippedWhileRunning } from "./one-at-a-time.js";
 import { HostMetricsSampler } from "./host-metrics.js";
 import { followContainerAccess } from "./container-access.js";
 import { TerminalSessions } from "./terminal-sessions.js";
@@ -54,7 +55,8 @@ export function startSystemOnlyRunner(
     running.add(done);
     void done.finally(() => running.delete(done));
   };
-  const heartbeat = async () => {
+  // One report at a time, and one more after it when asked meanwhile; a sample never overlaps the one still read.
+  const heartbeat = coalesced(async () => {
     const [host, clockOffset] = await Promise.all([
       readHostHealth({
         hostRoot: config.hostRoot,
@@ -83,15 +85,15 @@ export function startSystemOnlyRunner(
       ...(clockOffset === null ? {} : { hostClock: Date.now() + clockOffset }),
     };
     await controlPlane.heartbeat(payload);
-  };
-  const report = async () => {
+  });
+  const report = skippedWhileRunning(async () => {
     const host = await metrics.sample();
     if (host !== null) await controlPlane.reportMetrics({ host, containers: [] });
-  };
+  });
   // Between full reports, with the usage: a reboot now needed, or packages changed, is reported at once.
-  const watch = async () => {
+  const watch = skippedWhileRunning(async () => {
     if (await hostFacts.changed()) await heartbeat();
-  };
+  });
   const hostJobs = hostPackageJobsOf(
     { localHost: null, packageUnits: ports.packageUnits, hostFiles: ports.hostFiles },
     {

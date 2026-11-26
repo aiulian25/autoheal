@@ -191,6 +191,9 @@ export const CONTAINERS_TEXT = {
     restartOf: (name: string) => `If ${name} fails`,
     updateOf: (name: string) => `When a new image of ${name} is out`,
     upToDate: "up to date",
+    // Found so by the check before its last one, which failed.
+    wasUpToDate: "was up to date",
+    lastCheckFailed: (reason: string) => `last check failed: ${reason}`,
     notChecked: "not checked yet",
     unknown: "could not check",
     updateReady: "update ready",

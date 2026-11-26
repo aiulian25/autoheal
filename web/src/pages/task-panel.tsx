@@ -36,6 +36,7 @@ import {
   TASK_SHOW,
   TEXT,
 } from "../constants.js";
+import { liveAware } from "../live-health.js";
 import { dateTime } from "../format.js";
 import { isAdmin, useSignedInSession } from "../session.js";
 import { HostPackages, RebootWarning } from "./host-packages.js";
@@ -273,7 +274,7 @@ function TaskContainer({ task, canAct }: { task: TaskDetailView; canAct: boolean
         "GET",
         `${API_ROUTES.containers}?${new URLSearchParams({ [CONTAINER_QUERY.hostId]: container.hostId })}`,
       ),
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+    refetchInterval: liveAware(INVENTORY_REFRESH_MILLISECONDS),
   });
   return (
     <div className="card inset stack">
@@ -304,7 +305,7 @@ export function TaskPanel({ taskId, onClose }: { taskId: string; onClose: () => 
   const detail = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => api<TaskDetailView>("GET", apiPath(API_ROUTES.task, { taskId })),
-    refetchInterval: INVENTORY_REFRESH_MILLISECONDS,
+    refetchInterval: liveAware(INVENTORY_REFRESH_MILLISECONDS),
   });
   const assignees = useQuery({
     queryKey: ["assignees"],

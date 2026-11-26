@@ -6,7 +6,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { HTTP_HEADERS } from "../../shared/constants.js";
@@ -244,16 +244,11 @@ describe("staged immutable rollouts", () => {
       rollout: { expectedSourceContainerId: "1".repeat(64) },
     });
   });
-  it("fails a bad canary, blocks writable data, and refuses viewer promotion", async () => {
+  it("fails a bad canary, and blocks writable data", async () => {
     expect((await create("present")).statusCode).toBe(409);
     const response = await create();
     expect(response.statusCode, response.body).toBe(200);
     const plan = response.json<RolloutView>();
-    const viewer = (await fullySignedInUser(plane, admin, "rollout-viewer", "viewer")).client;
-    expect(
-      (await viewer.post(apiPath(ROLLOUT_ROUTES.rolloutPromote, { rolloutId: plan.id }), { serviceVerified: true }))
-        .statusCode,
-    ).toBe(403);
     const [job] = await work();
     await complete(job!.id);
     plane.clock.now += 1000;

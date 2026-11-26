@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ERRORS,
   API_ROUTES,
@@ -130,7 +130,7 @@ describe("what each host's page lets Autoheal do on its own", () => {
     });
   });
 
-  it("lets an admin clear a container's restarts this hour, and tells its runner with each answer for an hour", async () => {
+  it("clears a container's restarts this hour, and tells its runner with each answer for an hour", async () => {
     const resetPath = (containerName: string) => apiPath(API_ROUTES.restartsReset, { hostId, containerName });
     // A runner from before restart waits takes no reset.
     await report();
@@ -172,8 +172,6 @@ describe("what each host's page lets Autoheal do on its own", () => {
     expect(audited.map((event) => JSON.parse(event.detailsJson) as unknown)).toEqual([{ containerName: "paperless" }]);
 
     expect((await admin.post(resetPath("gone"))).json()).toEqual({ error: "container_not_found" });
-    const viewer = (await fullySignedInUser(controlPlane, admin, "observer", "viewer")).client;
-    expect((await viewer.post(resetPath("paperless"))).statusCode).toBe(403);
     // After the hour the restarts it cleared would have left the window anyway: it is no longer sent.
     controlPlane.clock.now += 60 * 60_000;
     expect((await answer()).control?.restartsResetAt).toEqual({});
@@ -255,9 +253,8 @@ describe("what each host's page lets Autoheal do on its own", () => {
     });
   });
 
-  it("refuses a tick that is fixed, a container the host does not have, and a viewer", async () => {
+  it("refuses a tick that is fixed, and a container the host does not have", async () => {
     await report();
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
 
     expect((await tick({ names: ["paperless-db"], update: "apply" })).json()).toMatchObject({
       error: "control_locked",
@@ -266,7 +263,6 @@ describe("what each host's page lets Autoheal do on its own", () => {
     expect((await tick({ names: ["nextcloud"], restart: "restart" })).statusCode).toBe(404);
     expect((await tick({ names: ["paperless"] })).statusCode).toBe(400);
     expect((await tick({ names: ["paperless"], restart: true })).statusCode).toBe(400);
-    expect((await tick({ names: ["paperless"], restart: "restart" }, viewer)).statusCode).toBe(403);
   });
 
   it("keeps its hands off the old container an update keeps aside: no tick, no update, but a person's to start", async () => {
@@ -426,11 +422,9 @@ describe("what each host's page lets Autoheal do on its own", () => {
     expect(await open()).toEqual(["1.2 is out for wiki on Alder", "2.1 is out for cache on Alder"]);
   });
 
-  it("lets only an admin ignore versions, of containers the host has", async () => {
+  it("ignores versions only of containers the host has", async () => {
     await report();
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
     const route = apiPath(API_ROUTES.hostIgnoredVersions, { hostId });
-    expect((await viewer.put(route, { changes: [{ container: "paperless", version: "*" }] })).statusCode).toBe(403);
     expect((await admin.put(route, { changes: [{ container: "gone", version: "*" }] })).json()).toEqual({
       error: "container_not_found",
     });

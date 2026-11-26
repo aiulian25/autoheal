@@ -94,8 +94,6 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   same_password: "The new password must be different.",
   password_policy: "That password does not meet the rules",
   username_taken: "That username is taken.",
-  last_admin: "There must always be one active admin.",
-  deactivate_instead: "This account has history; deactivate it instead.",
   host_label_taken: "Another host already has that name.",
   jarvis_name_taken: "Another machine already goes by that name.",
   host_revoked: "This host's runner was revoked; nothing can be approved for it.",
@@ -141,6 +139,9 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   backup_too_new: "That backup comes from a newer Autoheal; run the newer image to restore it.",
   backup_secrets_unreadable:
     "That backup opens, but its sign-in codes and tokens were sealed under another backup passphrase: restoring it would lock accounts out.",
+  backup_owner_unclear:
+    "That backup has several active admins and none of them is the one it was set up with, so it cannot say whose " +
+    "Autoheal it is. Choose another backup.",
   restore_drain_busy: "Restore did not start because work is still running. Nothing was replaced. Wait and try again.",
   restore_busy: "A database restore is already running. Wait for it to finish, then sign in again.",
   restore_maintenance:

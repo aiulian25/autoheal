@@ -33,6 +33,7 @@ import {
   CONTAINER_STATE_PAUSED,
 } from "../../../src/shared/constants.js";
 import { api } from "../api-client.js";
+import { lastCheckFailed } from "../image-checks.js";
 import { ASSIGNEE_KINDS, MOTION, PATHS, RESET_HEARD_MILLISECONDS, TEXT, type Motion } from "../constants.js";
 import { duration, dateTime, timeOfDay, precisePercent, decimal, bytes } from "../format.js";
 import { ErrorNotice } from "./common.js";
@@ -163,6 +164,17 @@ export function ImageCell({
   // Up to date behind its tag, with a newer version of that tag out: the person's to take, told where they look.
   if (!hasUpdate(container) && hasNewerVersion(container)) {
     return <a href={`#${HOST_SECTIONS.updates}`}>{TEXT.updates.newer(container.update.newerTag!)}</a>;
+  }
+  // The check before found it up to date, which is all that is known: the last one got no answer.
+  if (!hasUpdate(container) && lastCheckFailed(container)) {
+    return (
+      <>
+        <span className="muted">{text.wasUpToDate}</span>
+        <div className="check-reason muted" title={reason!}>
+          {text.lastCheckFailed(reason!)}
+        </div>
+      </>
+    );
   }
   if (!hasUpdate(container)) {
     return <span className="muted">{text.upToDate}</span>;

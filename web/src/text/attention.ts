@@ -1,6 +1,4 @@
 import {
-  DELIBERATE_STOP_WINDOW_SECONDS,
-  HANDLE_COOLDOWN_SECONDS,
   MAX_RESTARTS_PER_WINDOW,
   TASK_SNOOZE,
   type HeldReason,
@@ -11,11 +9,35 @@ import {
   type UpdateAssessment,
   wordsOf,
 } from "../../../src/shared/constants.js";
-import { SECONDS_PER_MINUTE } from "./basics.js";
+import type { ATTENTION_PLACE, AttentionPlaceKind } from "../constants.js";
 
-const TIMES_IN_WORDS: Record<number, string> = { 1: "once", 2: "twice" };
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+const things = (count: number) => plural(count, "thing", "things");
+const onHosts = (hosts: number) => (hosts === 0 ? "" : `, on ${plural(hosts, "host", "hosts")}`);
 
-const timesAnHour = (count: number) => TIMES_IN_WORDS[count] ?? `${count} times`;
+// What waits for a look, after what needs a person or alone: "6 more wait" or "12 things wait".
+function forALook(count: number, more: boolean): string {
+  const counted = more ? `${count} more` : things(count);
+  return `${counted} ${count === 1 ? "waits" : "wait"} for a look when you have time.`;
+}
+
+// What Autoheal did by itself in the last day, in a sentence; nothing when it did nothing.
+function lastDay(healed: number, updated: number): string {
+  const restarted = `restarted ${plural(healed, "container", "containers")} that stopped`;
+  const wentIn = `${plural(updated, "update", "updates")} went in by themselves`;
+  if (healed > 0 && updated > 0) return `In the last 24 hours Autoheal ${restarted}, and ${wentIn}.`;
+  if (healed > 0) return `In the last 24 hours Autoheal ${restarted}.`;
+  return updated > 0 ? `In the last 24 hours ${wentIn}.` : "";
+}
+
+// What comes next: the image check and the host packages' window, where each is known.
+function nextUp(checkInMinutes: number | null, windowStart: string | null): string {
+  const parts = [
+    checkInMinutes === null ? null : `the image update check in ${plural(checkInMinutes, "minute", "minutes")}`,
+    windowStart === null ? null : `host packages tonight at ${windowStart}`,
+  ].filter((part) => part !== null);
+  return parts.length === 0 ? "" : `Next: ${parts.join(", ")}.`;
+}
 
 /** Attention, the board and tasks. */
 export const ATTENTION_TEXT = {
@@ -53,10 +75,59 @@ export const ATTENTION_TEXT = {
   },
   attention: {
     title: "Attention",
-    lede: (count: number) =>
-      count === 0
+    // What needs a person, on how many hosts, and how much more waits for a look.
+    lede: (needs: number, hosts: number, lookAt: number) => {
+      const rest = lookAt === 0 ? "Everything else is running or already in hand." : forALook(lookAt, needs > 0);
+      if (needs > 0) return `${things(needs)} ${needs === 1 ? "needs" : "need"} you${onHosts(hosts)}. ${rest}`;
+      return lookAt === 0
         ? "Nothing needs you. Everything is running or already in hand."
-        : `${count} ${count === 1 ? "thing needs" : "things need"} you. Everything else is running or already in hand.`,
+        : `Nothing needs you. ${rest}`;
+    },
+    // The line under the title: how the fleet stands, naming only what is wrong.
+    fleet: {
+      label: "How the fleet stands",
+      hostsOnline: (online: number, total: number) => `${online} of ${total} hosts`,
+      online: "online",
+      containers: (running: number, total: number) => `${running} of ${total}`,
+      running: "containers running",
+      fullestDisk: "fullest disk",
+      on: (host: string) => `on ${host}`,
+      link: "Fleet",
+    },
+    needsYou: { label: "Needs you", hint: "Most pressing first, each with its own buttons" },
+    lookAt: {
+      label: "To look at",
+      hint: "When you have time · Done and Snooze in the row, no need to open the board",
+      more: (count: number, names: string) => `${count} more · ${names}`,
+    },
+    snoozed: (count: number) => `${count} snoozed`,
+    snoozedUntil: (when: string) => `until ${when}`,
+    allClear: {
+      title: "All clear",
+      nothing: "Nothing needs you and nothing waits for a look.",
+      lastDay,
+      next: nextUp,
+    },
+    // Where it happens, for what has no host of its own.
+    places: {
+      "home-assistant": "Home Assistant",
+      network: "Network",
+      ollama: "Ollama",
+      other: "Tasks",
+    } satisfies Record<Exclude<AttentionPlaceKind, typeof ATTENTION_PLACE.host>, string>,
+    tags: { decide: "Decide", escalated: "Escalated", fix: "Fix" },
+    rebootWaiting: "reboot waiting",
+    disk: "disk",
+    lastReport: (time: string) => `last report ${time}`,
+    // A host's packages in one row, opened in place to tick them.
+    packageUpdates: (count: number) => plural(count, "host package update", "host package updates"),
+    securityFixes: (count: number) => plural(count, "security fix", "security fixes"),
+    waitForYou: (count: number) => `${count} ${count === 1 ? "waits" : "wait"} for you`,
+    reviewCount: (count: number) => `Review ${count}`,
+    hideList: "Hide the list",
+    update: "Update",
+    handTicked: (count: number) => `Hand ${count} to Ollama`,
+    imageCheckIn: (minutes: number) => `in ${minutes} min`,
     allItems: (count: number) => `See all ${count} board ${count === 1 ? "item" : "items"}`,
     services: "Hosts and services",
     fullestDisk: (percent: string) => `disk ${percent}`,
@@ -86,30 +157,14 @@ export const ATTENTION_TEXT = {
       goesTo: (server: string) => `Goes to ${server}`,
       goesToServers: (count: number) => `Goes to ${count} servers`,
       dropHere: "Drop updates or escalated incidents here to hand them to Ollama",
-      selectAll: (count: number) => `Select all (${count})`,
-      selectNone: "Clear selection",
-      dispatch: "Dispatch to Ollama Agent",
       handOver: "Hand to Ollama",
       handed: (count: number) => `Handed ${count} ${count === 1 ? "item" : "items"} to Ollama.`,
       drag: (name: string) => `Drag ${name} onto the Ollama Agent`,
-      // Around the agent's name, which shows bold.
-      tipBefore: "ProTip: Drag any update card directly onto the ",
-      tipAgent: "Ollama Agent",
-      tipAfter: " card at the top right, in sight as you scroll, to run with LLM supervision.",
-      dragActive: "Drag & drop active",
       ready: "Agent ready",
       working: "Agent working",
       offline: "Agent offline",
       partlyOffline: "Partly offline",
     },
-    sections: {
-      decide: { label: "Decide", hint: "Autoheal may not do these alone" },
-      fix: { label: "Fix", hint: "Problems a restart cannot solve" },
-      updates: { label: "Updates", hint: "Grouped by host, applied in one go" },
-    },
-    nothingNeedsYou: "Nothing needs you right now.",
-    awaiting: "Awaiting approval",
-    escalated: "Escalated",
     happened: { die: "stopped", oom: "killed for memory", unhealthy: "turned unhealthy" } satisfies Record<
       Trigger,
       string
@@ -118,7 +173,6 @@ export const ATTENTION_TEXT = {
     suggestsDependency: (target: string) => `Ollama suggests restarting ${target}.`,
     ruleAsksFirst: "This container's rule asks you first.",
     handedOver: "Ollama did not find a safe fix and handed it to you.",
-    guardPasses: "All guard checks pass",
     restartsUsed: (used: number) => `${used} of ${MAX_RESTARTS_PER_WINDOW} restarts used this hour`,
     approve: "Approve restart",
     restartIt: "Restart it",
@@ -128,12 +182,9 @@ export const ATTENTION_TEXT = {
     seeWhy: "See why",
     open: (where: string) => `Open ${where}`,
     done: "Done",
-    diskOn: (host: string) => `Disk on ${host}`,
     yoursSince: (since: string) => `yours since ${since}`,
     theirsSince: (name: string, since: string) => `${name}'s since ${since}`,
     openSince: (since: string) => `open since ${since}`,
-    waiting: (count: number) => `${count} waiting`,
-    reviewOn: (host: string) => `Review on ${host}`,
     review: "Review",
     containerImage: "Container image · recreated with its settings and volumes",
     newerVersion: (from: string, to: string) => `Newer version · ${from} → ${to}, its tag changed in its files`,
@@ -167,12 +218,6 @@ export const ATTENTION_TEXT = {
     databaseBackup: "Database backup",
     daily: "daily",
     dailyVerified: "daily, verified",
-    howFar: "How far Autoheal goes",
-    // Around the command, which shows in the code font.
-    howFarBefore: "It only ever runs ",
-    howFarCommand: "docker restart",
-    howFarAfter: `, never on a protected container, at most ${timesAnHour(MAX_RESTARTS_PER_WINDOW)} an hour per container with ${HANDLE_COOLDOWN_SECONDS / SECONDS_PER_MINUTE} minutes between, and never within ${DELIBERATE_STOP_WINDOW_SECONDS} seconds of someone stopping it on purpose.`,
-    changeRules: "Change the rules",
   },
   tasks: {
     title: "Tasks",

@@ -11,7 +11,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type JobView } from "../../shared/api.js";
 import { HTTP_HEADERS } from "../../shared/constants.js";
 import { RUNNER_ROUTES, type WorkResponse } from "../../shared/protocol.js";
@@ -226,12 +226,6 @@ describe("an install's details, until its job has an outcome", () => {
         retryOf,
       });
       expect(refusal(asked)).toEqual(REFUSED);
-    });
-
-    it("is for the person who started it", async () => {
-      const retryOf = await failedInstall();
-      const second = await fullySignedInUser(plane, admin, "second", "admin");
-      expect(refusal(await askFor(second.client, { retryOf }))).toEqual(REFUSED);
     });
 
     it("works once: tried again since, only the newest failure can be named", async () => {

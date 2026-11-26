@@ -7,10 +7,9 @@ import {
   useContainerMotion,
   bringUnderListHeader,
 } from "../container-motion.js";
-import { type ContainerShow, CONTAINER_SHOW, TEXT, INVENTORY_REFRESH_MILLISECONDS } from "../constants.js";
+import { type ContainerShow, CONTAINER_SHOW, TEXT } from "../constants.js";
 import { useState, useRef, useEffect, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { type ResourceAction } from "../../../src/shared/resource-permissions.js";
 import { useBulkAction } from "../container-bulk.js";
 import { AddContainer } from "../pages/add-container.js";
 import { type BackupDialogMode, BackupDialog } from "../pages/container-backup.js";
@@ -18,7 +17,6 @@ import { NetworksHeading, NetworksChip, HostNetworks } from "../pages/host-netwo
 import { type InspectorTabRequest, ContainerInspector } from "../pages/container-inspector.js";
 import { VolumesHeading, VolumesChip, HostVolumes } from "../pages/host-volumes.js";
 import { hostContainersQuery, hostJobsQuery, hostTasksQuery } from "../queries.js";
-import { useResourcePermissions } from "../session.js";
 import { updateRunQuery, waitInRun } from "../update-runs.js";
 import { useAskInPlace } from "./ask-in-place.js";
 import { ErrorNotice, Loading } from "./common.js";
@@ -37,7 +35,7 @@ import {
   UsageCells,
   ChoiceCells,
 } from "./container-cells.js";
-import { type Reach, permissionOf, RowActions, PanelReach, ReachPanel } from "./container-row-actions.js";
+import { type Reach, RowActions, PanelReach, ReachPanel } from "./container-row-actions.js";
 import { OperationImpactReview } from "./dependency-map.js";
 import { useContainerSelection } from "./filters.js";
 import { BulkBar, BULK_TEXT, toggled } from "./host-bulk-bar.js";
@@ -77,11 +75,11 @@ export function HostContainers({
   // Goes up each time a person clicks the page's Containers tab, which leads back to this list.
   containersAsked?: number;
 }) {
-  const permissions = useResourcePermissions();
-  const allowed = (action: ResourceAction, container: ContainerView) => admin || permissions.allowed(action, container);
+  // Autoheal is one person's: its owner may do everything here, and nobody else signs in.
+  const allowed = () => admin;
   const asking = useAskInPlace();
   const query = hostContainersQuery(host.id);
-  const containers = useQuery({ ...query, refetchInterval: INVENTORY_REFRESH_MILLISECONDS });
+  const containers = useQuery(query);
   const jobs = useQuery(hostJobsQuery(host.id));
   const run = useQuery(updateRunQuery(host.id));
   const motion = useContainerMotion(containers.data, jobs.data);
@@ -159,23 +157,8 @@ export function HostContainers({
   // A stack's score counts all its containers, whatever the list is filtered to.
   const membersOf = (stack: string) => (list ?? []).filter((container) => container.composeProject === stack);
   // Restart stack restarts the ones Autoheal may change: the person must be let restart every one of them.
-  const mayRestart = (stack: string) => {
-    const restartable = membersOf(stack).filter((container) => container.handsOff === null);
-    return restartable.length > 0 && restartable.every((container) => allowed("lifecycle", container));
-  };
-  const actionsShown =
-    admin ||
-    list?.some((container) =>
-      (["lifecycle", "update", "logs", "terminal", "files", "settings"] as const).some((action) =>
-        allowed(action, container),
-      ),
-    ) === true;
-  const columns = admin ? ADMIN_COLUMN_COUNT : COLUMN_COUNT + (actionsShown ? 1 : 0);
-  useEffect(() => {
-    if (!reach || admin) return;
-    const container = list?.find((item) => item.name === reach.name);
-    if (!container || !allowed(permissionOf(reach.kind), container)) setReach(null);
-  }, [reach, list, admin, permissions.allowed]);
+  const mayRestart = (stack: string) => admin && membersOf(stack).some((container) => container.handsOff === null);
+  const columns = admin ? ADMIN_COLUMN_COUNT : COLUMN_COUNT;
   const address = host.health?.address ?? null;
   // Only what the host lets Autoheal change can be ticked; ticks on containers gone since are left out.
   const tickable = groups
@@ -312,7 +295,7 @@ export function HostContainers({
                     <th className="memory-column usage-cell">{text.ram}</th>
                     <th className="choice-column">{text.ifItFails}</th>
                     <th className="choice-column">{text.newImage}</th>
-                    {actionsShown && <th className="actions-column">{text.actions}</th>}
+                    {admin && <th className="actions-column">{text.actions}</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -375,9 +358,7 @@ export function HostContainers({
                         )}
                       {group.containers.map((container) => {
                         if (gone.has(container.name)) {
-                          return (
-                            <GoneRow key={container.name} container={container} admin={admin} actions={actionsShown} />
-                          );
+                          return <GoneRow key={container.name} container={container} admin={admin} actions={admin} />;
                         }
                         const open = selection.open === container.name;
                         const job = working.get(container.name) ?? null;
@@ -454,7 +435,7 @@ export function HostContainers({
                                 canAct={admin}
                                 onChange={(change) => choose.mutate({ names: [container.name], ...change })}
                               />
-                              {actionsShown && (
+                              {admin && (
                                 <td>
                                   <RowActions
                                     admin={admin}
@@ -473,7 +454,7 @@ export function HostContainers({
                                       })
                                     }
                                     onReach={(kind) => toggleReach(container.name, kind)}
-                                    allowed={(action) => allowed(action, container)}
+                                    allowed={allowed}
                                   />
                                 </td>
                               )}
@@ -507,7 +488,7 @@ export function HostContainers({
                                         container={container}
                                         reaching={reachingOf(container.name)}
                                         onReach={(kind) => toggleReach(container.name, kind)}
-                                        allowed={(action) => allowed(action, container)}
+                                        allowed={allowed}
                                         files={files}
                                       />
                                     )}
@@ -515,7 +496,7 @@ export function HostContainers({
                                 </td>
                               </tr>
                             )}
-                            {reach?.name === container.name && allowed(permissionOf(reach.kind), container) && (
+                            {reach?.name === container.name && admin && (
                               <tr className="reach-row">
                                 <td colSpan={columns}>
                                   <ReachPanel

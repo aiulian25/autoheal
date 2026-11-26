@@ -6,7 +6,7 @@ import {
   type TestControlPlane,
   runnerTokenOf,
 } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type EnrolledHostView, type IncidentDetailView } from "../../shared/api.js";
 import { APPROVAL_EXPIRY_MILLISECONDS } from "../../shared/constants.js";
 import {
@@ -66,11 +66,6 @@ describe("approvals", () => {
 
   it("starts from an escalation waiting for a person", async () => {
     expect((await incident()).status).toBe("awaiting_approval");
-  });
-
-  it("is admin-only", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await approve(viewer, { choice: "restart" })).statusCode).toBe(403);
   });
 
   it.each([

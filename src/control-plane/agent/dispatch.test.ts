@@ -7,7 +7,7 @@ import {
 } from "../../../test/support/control-plane.js";
 import { FakeOllama, answer, type ChatRequest } from "../../../test/fakes/fake-ollama.js";
 import { containerSnapshot, heartbeatWith, hostHealth } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -175,8 +175,6 @@ describe("work handed to the Ollama agent", () => {
     expect((await dispatch({ updates: [whoamiTask.id, npmTask.id] })).json()).toEqual({ error: "hands_off" });
     expect((await detail(whoamiTask.id)).assignee).toMatchObject({ kind: "user" });
 
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await dispatch({ updates: [whoamiTask.id] }, viewer)).statusCode).toBe(403);
     expect((await dispatch({})).statusCode).toBe(400);
 
     await report([whoami], true);

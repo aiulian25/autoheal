@@ -56,6 +56,8 @@ export const timeOfDay = (timestamp: number) => clockTime.format(timestamp);
 const DAY_TIME_ZONE = "UTC";
 const calendarDay = new Intl.DateTimeFormat(undefined, { dateStyle: "long", timeZone: DAY_TIME_ZONE });
 export const day = (isoDate: string) => calendarDay.format(Date.parse(isoDate));
+// A moment's day, written as `day` writes one.
+export const calendarDate = (timestamp: number) => calendarDay.format(timestamp);
 
 /** A moment as a clock in another place shows it: "Sunday, 25 October at 03:00". */
 export const timeIn = (timestamp: number, timeZone: string) =>

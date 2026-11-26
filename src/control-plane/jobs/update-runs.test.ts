@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { EVERY_RUNNER_CAPABILITY, containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -226,7 +226,7 @@ describe("updating several containers one at a time", () => {
     expect(await takeWork()).toEqual([]);
   });
 
-  it("runs one at a time per host, and only for containers with a new image someone may apply", async () => {
+  it("runs one at a time per host, and only for containers with a new image that may be applied", async () => {
     expect((await start(["radicale"])).statusCode).toBe(200);
     expect((await start(["quantum"])).json()).toEqual({ error: "update_run_busy" });
     const [first] = await takeWork();
@@ -238,8 +238,6 @@ describe("updating several containers one at a time", () => {
     expect((await start([])).statusCode).toBe(400);
     expect(await takeWork()).toEqual([]);
 
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    expect((await start(["quantum"], viewer)).statusCode).toBe(403);
-    expect((await viewer.get(runs())).json<UpdateRunView>()).toMatchObject({ status: "finished", done: ["radicale"] });
+    expect((await admin.get(runs())).json<UpdateRunView>()).toMatchObject({ status: "finished", done: ["radicale"] });
   });
 });

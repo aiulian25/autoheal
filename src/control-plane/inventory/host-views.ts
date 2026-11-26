@@ -31,7 +31,7 @@ import type {
 import { controlOf, policyOf, type SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 
-function hostStateOf(host: HostRow, now: number): HostView["state"] {
+export function hostStateOf(host: HostRow, now: number): HostView["state"] {
   if (host.status === HOST_STATUS_REVOKED) {
     return HOST_STATE.revoked;
   }

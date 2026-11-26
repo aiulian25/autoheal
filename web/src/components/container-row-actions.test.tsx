@@ -4,7 +4,7 @@ import { API_ROUTES, apiPath, type JobView } from "../../../src/shared/api.js";
 import { hostHealth } from "../../../test/support/inventory.js";
 import { ASK_FIRST_ON, ASK_FIRST_STORAGE_KEY, TEXT } from "../constants.js";
 import { HostContainers } from "./host-containers.js";
-import { session, alder, container, CONTAINERS, noPanels, serve, show, sent } from "../test-support/host-table.js";
+import { alder, container, CONTAINERS, serve, show, sent } from "../test-support/host-table.js";
 
 // The terminal draws on a canvas jsdom lacks: in its place, what the row shows of it and its close button.
 vi.mock("./shell-terminal.js", () => ({
@@ -231,33 +231,4 @@ describe("a host's containers and what each does", () => {
     expect(screen.queryByRole("button", { name: "Close the shell in attic" })).toBeNull();
     expect(shellOf(row("attic"), "attic").getAttribute("aria-pressed")).toBe("false");
   });
-});
-
-it("shows only a delegated container terminal and closes its panel when the grant is revoked", async () => {
-  const hostId = "66cc4c4e-efb1-4a02-9e0b-f9ba7c2e7b92";
-  const host = { ...alder(false), id: hostId, containerAccess: true };
-  const routes: Record<string, unknown> = {
-    [API_ROUTES.containers]: CONTAINERS.map((item) => ({ ...item, hostId })),
-    [API_ROUTES.jobs]: [],
-    [apiPath(API_ROUTES.containerUpdates, { hostId })]: null,
-    ...noPanels(hostId),
-    [API_ROUTES.accountPermissions]: {
-      revision: 1,
-      grants: [{ hostId, scope: "container", resource: "attic", actions: ["terminal"] }],
-    },
-  };
-  serve(routes);
-  const client = show(<HostContainers host={host} admin={false} />, {
-    ...session,
-    user: { ...session.user, role: "viewer" },
-  });
-  fireEvent.click(await screen.findByRole("button", { name: TEXT.hostContainers.shell("attic") }));
-  expect(await screen.findByRole("button", { name: "Close the shell in attic" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: TEXT.hostContainers.files("attic") })).toBeNull();
-  expect(screen.queryByRole("button", { name: TEXT.hostContainers.shell("BentoPDF") })).toBeNull();
-  expect(screen.queryByRole("group", { name: TEXT.hostContainers.bulk.label })).toBeNull();
-  routes[API_ROUTES.accountPermissions] = { revision: 2, grants: [] };
-  await client.invalidateQueries({ queryKey: ["resource-permissions"] });
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Close the shell in attic" })).toBeNull());
-  client.clear();
 });

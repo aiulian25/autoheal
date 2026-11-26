@@ -53,7 +53,7 @@ const SECTIONS: readonly Section[] = [
     path: PATHS.settings,
     label: TEXT.nav.settings,
     icon: "sliders",
-    pages: [PATHS.account, PATHS.users, PATHS.backups],
+    pages: [PATHS.account, PATHS.backups],
   },
 ];
 

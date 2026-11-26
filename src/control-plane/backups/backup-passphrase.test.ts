@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { SECRET_FILE_MODE } from "../../shared/constants.js";
 import { ensureBackupPassphrase, readBackupPassphrase } from "./backup-passphrase.js";
 
@@ -44,7 +44,6 @@ describe("the backup passphrase", () => {
     const first = await fullySignedInAdmin(controlPlane);
     expect(first.backupPassphrase).toBe(FROM_ENVIRONMENT);
     expect(first.recoveryCodes).toHaveLength(10);
-    await fullySignedInUser(controlPlane, first.client, "second-admin", "admin");
     expect(controlPlane.services.backupPassphraseNotice.takeFor("admin")).toBeNull();
     await controlPlane.app.close();
     await controlPlane.runnerApp.close();

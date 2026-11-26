@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -162,14 +162,6 @@ describe("the board", () => {
       payload: { status: "done" },
     });
     expect((await columns()).done).toEqual(["Tidy the cables", "paperless"]);
-  });
-
-  it("leaves someone else's pressing task with them", async () => {
-    const { client: partner, userId: partnerId } = await fullySignedInUser(controlPlane, admin, "partner", "admin");
-    await task({ title: "Replace the NAS disk", priority: "urgent", assignee: { kind: "user", id: partnerId } });
-    expect((await columns()).needsYou).toEqual([]);
-    expect((await columns()).noticed).toEqual(["Replace the NAS disk"]);
-    expect((await columns(partner)).needsYou).toEqual(["Replace the NAS disk"]);
   });
 
   it("puts off a task its person snoozes for a day: noticed until then, then theirs again", async () => {

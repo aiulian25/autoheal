@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeHomeAssistant } from "../../../test/fakes/fake-home-assistant.js";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type HomeAssistantView, type OverviewView } from "../../shared/api.js";
 import { HomeAssistantClient, type ReadCommand } from "./home-assistant-client.js";
 import { HomeAssistantInventory } from "./home-assistant-inventory.js";
@@ -445,9 +445,8 @@ describe("the Home Assistant inventory in the dashboard", () => {
     await home.close();
   });
 
-  it("serves the Home Assistant inventory to every signed-in user, and adds it to the overview", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
-    const view = (await viewer.get(API_ROUTES.homeAssistant)).json<HomeAssistantView>();
+  it("serves the Home Assistant inventory, and adds it to the overview", async () => {
+    const view = (await admin.get(API_ROUTES.homeAssistant)).json<HomeAssistantView>();
     expect(view.zigbee).toHaveLength(3);
     expect(view.safety).toHaveLength(1);
     expect(view.unavailableEntities).toBe(2);

@@ -12,6 +12,7 @@ import type { ControlPlaneConfig } from "../config/control-plane-config.js";
 import {
   ADMIN_USERNAME,
   BACKUP_PASSPHRASE_MESSAGES,
+  SINGLE_OWNER_MESSAGES,
   JOIN_DIRECTORY,
   PLAIN_HTTP_PROTOCOL,
   PLAIN_HTTP_MESSAGES,
@@ -49,6 +50,7 @@ import { buildRunnerServer } from "./runner-api/runner-server.js";
 import { AuditLog } from "./audit/audit-log.js";
 import { backupIfDue } from "./backups/backup-scheduler.js";
 import { ensureFirstAdmin } from "./auth/bootstrap.js";
+import { assertOwnerClear, keepOneOwner } from "./auth/single-owner.js";
 import { ensureBackupPassphrase, type BackupPassphrase } from "./backups/backup-passphrase.js";
 import { DatabaseHandle, databasePathIn } from "./database/connection.js";
 import { SelfUpdateOutcomeFile } from "./self-update/self-update-outcome.js";
@@ -158,7 +160,10 @@ export function eachApart(parts: readonly (() => unknown)[], failed: (error: unk
 export function lookSoonAfterChanges(live: Pick<LiveEvents, "subscribe">, look: () => void): () => void {
   let soonTimer: NodeJS.Timeout | undefined;
   const stopListening = live.subscribe((event) => {
-    const changed = event.kind === LIVE_EVENT.job || (event.kind === LIVE_EVENT.inventory && event.changed);
+    // What a running job wrote changes nothing tasks are opened from.
+    const changed =
+      (event.kind === LIVE_EVENT.job && event.output !== true) ||
+      (event.kind === LIVE_EVENT.inventory && event.changed);
     if (!changed) return;
     soonTimer ??= setTimeout(() => {
       soonTimer = undefined;
@@ -193,6 +198,25 @@ async function recoverFromRestart(
   }
 }
 
+/**
+ * The database, opened only once it can say whose it is: a new one gets its one person, and an older one with more
+ * people keeps only its owner able to sign in.
+ */
+export async function openOwnedDatabase(
+  databasePath: string,
+  log: (line: string) => void,
+  clock: () => number,
+  auditLogOf: (handle: DatabaseHandle) => AuditLog = (handle) => new AuditLog(handle),
+): Promise<{ databaseHandle: DatabaseHandle; auditLog: AuditLog }> {
+  assertOwnerClear(databasePath);
+  const databaseHandle = new DatabaseHandle(databasePath);
+  const auditLog = auditLogOf(databaseHandle);
+  await ensureFirstAdmin(databaseHandle, auditLog, ADMIN_USERNAME, log, clock);
+  const keptOut = keepOneOwner(databaseHandle, auditLog);
+  if (keptOut.length > 0) log(SINGLE_OWNER_MESSAGES.kept(keptOut));
+  return { databaseHandle, auditLog };
+}
+
 export async function runControlPlane(): Promise<number> {
   // The one clock this process runs on: everything below reads the time from it.
   const clock = Date.now;
@@ -209,9 +233,7 @@ export async function runControlPlane(): Promise<number> {
     log(PLAIN_HTTP_MESSAGES.ollama);
   }
   new RestoreJournal(config.dataDirectory).assertClean();
-  const databaseHandle = new DatabaseHandle(databasePathIn(config.dataDirectory));
-  const auditLog = new AuditLog(databaseHandle);
-  await ensureFirstAdmin(databaseHandle, auditLog, ADMIN_USERNAME, log, clock);
+  const { databaseHandle, auditLog } = await openOwnedDatabase(databasePathIn(config.dataDirectory), log, clock);
   const services = createControlPlaneServices(databaseHandle, auditLog, {
     ollama: config.ollama,
     backups: { ...config, backupPassphrase: passphrase.passphrase },

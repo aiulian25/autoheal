@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addLegacyPeople } from "../../../test/support/legacy-people.js";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import {
-  NEW_ADMIN_PASSWORD,
-  currentCode,
-  fullySignedInAdmin,
-  fullySignedInUser,
-} from "../../../test/support/second-factor.js";
+import { NEW_ADMIN_PASSWORD, currentCode, fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -70,8 +66,8 @@ describe("your own account", () => {
     expect(slowed.json()).toEqual({ error: "too_many_attempts", retryAfterSeconds: 1 });
   });
 
-  it("renames you only with your password, and never to a name someone else has", async () => {
-    await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+  it("renames you only with your password, and never to a name its history holds", async () => {
+    await addLegacyPeople(controlPlane.services.databaseHandle, [{ username: "partner", status: "deactivated" }]);
     const rename = (payload: object) => admin.request({ method: "PATCH", url: API_ROUTES.account, payload });
     expect((await rename({ username: "alex", currentPassword: "not-my-password" })).json()).toEqual({
       error: "wrong_password",
@@ -137,17 +133,13 @@ describe("your own account", () => {
     expect(auditActions()).toContain('"action":"account.recovery_codes_renewed"');
   });
 
-  it("ends one of your sessions, or all the others, but never someone else's", async () => {
+  it("ends one of your sessions, or all the others", async () => {
     nextStep();
     const laptop = (await signedIn("admin", NEW_ADMIN_PASSWORD, currentCode(secret, controlPlane.clock.now))).client;
-    const { client: partner } = await fullySignedInUser(controlPlane, admin, "partner", "admin");
-    const partnerSession = (await account(partner)).sessions[0]!.id;
     const laptopSession = (await account()).sessions.find((session) => !session.current)!.id;
 
     const endOne = (client: TestClient, sessionId: string) =>
       client.request({ method: "DELETE", url: apiPath(API_ROUTES.accountSession, { sessionId }) });
-    expect((await endOne(admin, partnerSession)).json()).toEqual({ error: "session_not_found" });
-    expect((await account(partner)).username).toBe("partner");
     expect((await endOne(admin, laptopSession)).statusCode).toBe(204);
     expect((await laptop.get(API_ROUTES.account)).statusCode).toBe(401);
 

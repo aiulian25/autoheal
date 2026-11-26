@@ -7,7 +7,7 @@ import {
   type TestControlPlane,
 } from "../../../test/support/control-plane.js";
 import { fillNotificationQueue } from "../../../test/support/notifications.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ERRORS, API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
 import { INCIDENT_STATUS } from "../../shared/constants.js";
 import { type NotificationInbox, type NotificationRule } from "../../shared/notification-deliveries.js";
@@ -57,8 +57,7 @@ describe("notification delivery API", () => {
     expect((await runnerNotice(undefined, id)).statusCode).toBe(204);
     expect((await runnerNotice(undefined, id)).statusCode).toBe(204);
     expect(requests).toHaveLength(0);
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    const pending = await viewer.get(API_ROUTES.notificationDeliveries);
+    const pending = await admin.get(API_ROUTES.notificationDeliveries);
     expect(pending.statusCode).toBe(200);
     expect(pending.json<NotificationInbox>().events).toHaveLength(1);
     expect(pending.body).not.toContain(PRIVATE);
@@ -74,12 +73,11 @@ describe("notification delivery API", () => {
       attempts: 1,
     });
     const eventId = accepted.events[0]!.id;
-    expect((await viewer.post(apiPath(API_ROUTES.notificationAcknowledge, { eventId }))).statusCode).toBe(403);
     expect((await admin.post(apiPath(API_ROUTES.notificationAcknowledge, { eventId }))).statusCode).toBe(204);
     expect((await admin.post(apiPath(API_ROUTES.notificationAcknowledge, { eventId }))).statusCode).toBe(204);
     expect(plane.stdout.filter((line) => line.includes("notification.acknowledged"))).toHaveLength(1);
   });
-  it("requires admin acknowledgement/retry/routing and does not move queued messages to changed channels implicitly", async () => {
+  it("retries and routes only when asked, and does not move queued messages to changed channels implicitly", async () => {
     await runnerNotice();
     await admin.put(integration(), { url: "https://changed-provider.test", token: "replacement-private-token" });
     await plane.services.notificationDeliveries.tick();
@@ -87,8 +85,6 @@ describe("notification delivery API", () => {
     const event = (await admin.get(API_ROUTES.notificationDeliveries)).json<NotificationInbox>().events[0]!;
     const deliveryId = event.deliveries[0]!.id;
     expect(event.deliveries[0]?.failureCode).toBe("configuration_changed");
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
-    expect((await viewer.post(apiPath(API_ROUTES.notificationRetry, { deliveryId }))).statusCode).toBe(403);
     expect((await admin.post(apiPath(API_ROUTES.notificationRetry, { deliveryId }))).statusCode).toBe(204);
     await plane.services.notificationDeliveries.tick();
     expect(requests).toHaveLength(1);
@@ -103,7 +99,6 @@ describe("notification delivery API", () => {
       escalateAfterMinutes: 15,
       escalationChannels: ["ntfy"],
     };
-    expect((await viewer.put(API_ROUTES.notificationRouting, { rules: [rule] })).statusCode).toBe(403);
     expect((await admin.put(API_ROUTES.notificationRouting, { rules: [rule] })).statusCode).toBe(200);
     expect(
       (await admin.put(API_ROUTES.notificationRouting, { rules: [{ ...rule, quietEndMinute: rule.quietStartMinute }] }))
@@ -117,14 +112,12 @@ describe("notification delivery API", () => {
     expect(plane.stdout.join("\n")).not.toContain(PRIVATE);
     expect(plane.stdout.join("\n")).not.toContain("replacement-private-token");
   });
-  it("requires explicit administrator approval to queue an alert captured without any channels", async () => {
+  it("queues an alert captured without any channels only when asked", async () => {
     await admin.delete(integration());
     await runnerNotice();
     const event = (await admin.get(API_ROUTES.notificationDeliveries)).json<NotificationInbox>().events[0]!;
     expect(event.deliveries).toHaveLength(0);
-    const viewer = (await fullySignedInUser(plane, admin, "observer", "viewer")).client;
     const path = apiPath(API_ROUTES.notificationRouteUnsent, { eventId: event.id });
-    expect((await viewer.post(path)).statusCode).toBe(403);
     await admin.put(integration(), { url: "https://provider.test", token: "configured-later" });
     expect((await admin.post(path)).statusCode).toBe(204);
     await plane.services.notificationDeliveries.tick();

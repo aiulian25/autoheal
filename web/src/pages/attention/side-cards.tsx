@@ -1,14 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 import { Link } from "react-router";
-import { apiPath, type BoardCardView, type HostView, type OllamaServersView } from "../../../../src/shared/api.js";
-import { INTEGRITY_OK, UPDATE_CHECK_INTERVAL_MILLISECONDS } from "../../../../src/shared/constants.js";
+import {
+  apiPath,
+  type BoardCardView,
+  type ContainerView,
+  type HostView,
+  type OllamaServersView,
+} from "../../../../src/shared/api.js";
+import {
+  INTEGRITY_OK,
+  MILLISECONDS_PER_MINUTE,
+  UPDATE_CHECK_INTERVAL_MILLISECONDS,
+} from "../../../../src/shared/constants.js";
 import { FLEET_STATE, answeringFor, fleetOf } from "../../ollama-fleet.js";
+import { nextImageCheckIn } from "../../attention-places.js";
 import { isIncident } from "../../board.js";
 import { TimeAgo } from "../../components/common.js";
 import { incidentLink } from "../../components/incident-parts.js";
 import { MILLISECONDS_PER_HOUR, PATHS, TEXT } from "../../constants.js";
-import { backupsQuery, hostUpdatesQuery, ollamaQuery, ollamaServersQuery } from "../../queries.js";
+import { backupsQuery, containersQuery, hostUpdatesQuery, ollamaQuery, ollamaServersQuery } from "../../queries.js";
 import { serverLabel } from "./attention-parts.js";
 
 export function SideCard({ title, children, muted = false }: { title: string; children: ReactNode; muted?: boolean }) {
@@ -76,8 +87,17 @@ export function CardList({
   );
 }
 
+// When the next image check is due, once the hosts' last checks say; else how often they come.
+function imageCheckWords(containers: readonly ContainerView[] | undefined): string {
+  const checkIn = containers === undefined ? null : nextImageCheckIn(containers, Date.now());
+  const text = TEXT.attention;
+  if (checkIn === null) return text.everyHours(UPDATE_CHECK_INTERVAL_MILLISECONDS / MILLISECONDS_PER_HOUR);
+  return text.imageCheckIn(Math.ceil(checkIn / MILLISECONDS_PER_MINUTE));
+}
+
 export function ComingUp({ admin }: { admin: boolean }) {
   const updates = useQuery(hostUpdatesQuery);
+  const containers = useQuery(containersQuery);
   // Only admins may list backups: everyone else sees the schedule alone.
   const backups = useQuery({ ...backupsQuery, enabled: admin });
   const verified = backups.data?.[0]?.integrityCheck === INTEGRITY_OK;
@@ -86,7 +106,7 @@ export function ComingUp({ admin }: { admin: boolean }) {
     <SideCard title={text.comingUp}>
       <dl className="side-facts">
         <dt>{text.imageCheck}</dt>
-        <dd>{text.everyHours(UPDATE_CHECK_INTERVAL_MILLISECONDS / MILLISECONDS_PER_HOUR)}</dd>
+        <dd>{imageCheckWords(containers.data)}</dd>
         {updates.data !== undefined && (
           <>
             <dt>{text.hostPackages}</dt>

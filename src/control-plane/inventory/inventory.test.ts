@@ -12,7 +12,7 @@ import {
   hostHealth,
   hostMetrics,
 } from "../../../test/support/inventory.js";
-import { fullySignedInAdmin, fullySignedInUser } from "../../../test/support/second-factor.js";
+import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import {
   API_ROUTES,
   apiPath,
@@ -418,15 +418,14 @@ describe("the inventory", () => {
     expect(stranger.statusCode).toBe(401);
   });
 
-  it("is readable by viewers and by nobody signed out", async () => {
-    const { client: viewer } = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+  it("is readable signed in, and by nobody signed out", async () => {
     const alder = await host("Alder");
     const histories = [
       apiPath(API_ROUTES.hostMetrics, { hostId: alder.id }),
       apiPath(API_ROUTES.containerMetrics, { hostId: alder.id, containerName: "paperless" }),
     ];
     for (const route of [API_ROUTES.hosts, API_ROUTES.containers, API_ROUTES.overview, ...histories]) {
-      expect((await viewer.get(route)).statusCode).toBe(200);
+      expect((await admin.get(route)).statusCode).toBe(200);
       expect((await controlPlane.client().get(route)).statusCode).toBe(401);
     }
   });

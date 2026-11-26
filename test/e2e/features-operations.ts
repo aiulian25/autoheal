@@ -1,6 +1,5 @@
 import { expect, type Page } from "@playwright/test";
 import {
-  API_ERRORS,
   API_ROUTES,
   CSRF_HEADER,
   apiPath,
@@ -10,18 +9,13 @@ import {
   type SessionView,
 } from "../../src/shared/api.js";
 import type { NotificationInbox, NotificationRoutingView } from "../../src/shared/notification-deliveries.js";
-import type { ResourcePermissionsView } from "../../src/shared/resource-permissions.js";
 import type { PolicyRehearsalResult } from "../../src/shared/recovery-policy-simulator.js";
 import { E2E_IMAGE, E2E_LABEL, E2E_NETWORK, VICTIM } from "./global-setup.js";
 import type { FeatureUIContext } from "./feature-context.js";
 
 const LONG = 150_000;
 const PROVIDER = "autoheal-e2e-notification-provider";
-const ALLOWED = "autoheal-e2e-operator-allowed";
-const DENIED = "autoheal-e2e-operator-denied";
 const REHEARSAL = "autoheal-e2e-rehearsal";
-const OPERATOR = "scoped-observer";
-const OPERATOR_PASSWORD = "gentle-violet-observatory-73";
 async function hostOf(page: Page) {
   const response = await page.request.get(API_ROUTES.hosts);
   expect(response.ok()).toBe(true);
@@ -217,92 +211,6 @@ export async function verifySearch({ page, openHost }: FeatureUIContext) {
   await search.press("Escape");
   await expect(results).toHaveCount(0);
   await openHost("e2e-host");
-}
-
-export async function verifyPermissions(context: FeatureUIContext) {
-  const { page, browser, docker, completeFirstSignIn, freshCode } = context;
-  const host = await hostOf(page);
-  for (const name of [ALLOWED, DENIED])
-    docker("run", "-d", "--name", name, "--label", E2E_LABEL, E2E_IMAGE, "application-copy", "wait");
-  const operatorContext = await browser.newContext({ baseURL: new URL(page.url()).origin, ignoreHTTPSErrors: true });
-  const operator = await operatorContext.newPage();
-  try {
-    await expect
-      .poll(
-        async () => {
-          const rows = await json<{ name: string }[]>(page, apiPath(API_ROUTES.containers, {}) + `?hostId=${host.id}`);
-          return [ALLOWED, DENIED].every((name) => rows.some((row) => row.name === name));
-        },
-        { timeout: LONG },
-      )
-      .toBe(true);
-    await page.goto("/users");
-    await page.getByLabel("Username", { exact: true }).fill(OPERATOR);
-    await page.getByRole("button", { name: "Add user", exact: true }).click();
-    const initial = (await page.locator(".notice span.secret").textContent())!.trim();
-    const { secret } = await completeFirstSignIn(operator, OPERATOR, initial, OPERATOR_PASSWORD);
-    await operator.goto(`/hosts/${host.id}`);
-    await expect(operator.getByRole("button", { name: `Restart ${ALLOWED}`, exact: true })).toHaveCount(0);
-    const account = page.getByRole("row").filter({ has: page.getByText(OPERATOR, { exact: true }) });
-    const grants = account.locator("details.operator-grants");
-    await grants.locator("summary").click();
-    await grants.getByLabel("Host", { exact: true }).selectOption(host.id);
-    await grants.getByLabel("Exact container name", { exact: true }).fill(ALLOWED);
-    await grants.getByLabel("Start, stop, restart and recreate", { exact: true }).check();
-    await grants.getByLabel("Read container logs", { exact: true }).check();
-    await grants.getByRole("button", { name: "Add to review", exact: true }).click();
-    await grants.getByRole("button", { name: "Save access changes", exact: true }).click();
-    await expect(grants.getByRole("status")).toHaveText("Access saved. The person must sign in again.");
-    const accounts = await json<{ id: string; username: string }[]>(page, API_ROUTES.users);
-    const userId = accounts.find((value) => value.username === OPERATOR)!.id;
-    expect((await json<ResourcePermissionsView>(page, apiPath(API_ROUTES.userGrants, { userId }))).grants).toEqual([
-      { hostId: host.id, scope: "container", resource: ALLOWED, actions: ["lifecycle", "logs"] },
-    ]);
-    await operator.reload();
-    await expect(operator).toHaveURL(/\/login$/);
-    await operator.getByLabel("Username").fill(OPERATOR);
-    await operator.getByLabel("Password", { exact: true }).fill(OPERATOR_PASSWORD);
-    await operator.getByRole("button", { name: "Sign in", exact: true }).click();
-    await operator.getByLabel("Code", { exact: true }).fill(await freshCode(secret));
-    await operator.getByRole("button", { name: "Continue", exact: true }).click();
-    await expect(operator).toHaveURL(/\/$/);
-    await operator.goto(`/hosts/${host.id}`);
-    await expect(operator.getByRole("button", { name: `Restart ${ALLOWED}`, exact: true })).toBeVisible();
-    await expect(operator.getByRole("button", { name: `Restart ${DENIED}`, exact: true })).toHaveCount(0);
-    const before = docker("inspect", "-f", "{{.State.StartedAt}}", ALLOWED),
-      otherBefore = docker("inspect", "-f", "{{.State.StartedAt}}", DENIED);
-    const restart = operator.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        new URL(response.url()).pathname ===
-          apiPath(API_ROUTES.containerActions, { hostId: host.id, containerName: ALLOWED }),
-    );
-    await operator.getByRole("button", { name: `Restart ${ALLOWED}`, exact: true }).click();
-    expect((await restart).ok()).toBe(true);
-    await expect
-      .poll(() => docker("inspect", "-f", "{{.State.StartedAt}}", ALLOWED), { timeout: LONG })
-      .not.toBe(before);
-    const session = await json<SessionView>(operator, API_ROUTES.session);
-    const denied = await operator.request.post(
-      apiPath(API_ROUTES.containerActions, { hostId: host.id, containerName: DENIED }),
-      {
-        data: { action: "restart" },
-        headers: { [CSRF_HEADER]: session.csrfToken, origin: new URL(operator.url()).origin },
-      },
-    );
-    expect(denied.status()).toBe(403);
-    expect((await denied.json()).error).toBe(API_ERRORS.resourceForbidden);
-    expect(docker("inspect", "-f", "{{.State.StartedAt}}", DENIED)).toBe(otherBefore);
-    await grants.getByRole("button", { name: "Remove grant", exact: true }).click();
-    await grants.getByRole("button", { name: "Save access changes", exact: true }).click();
-    await expect(grants.getByRole("status")).toHaveText("Access saved. The person must sign in again.");
-    expect((await json<ResourcePermissionsView>(page, apiPath(API_ROUTES.userGrants, { userId }))).grants).toEqual([]);
-    await operator.reload();
-    await expect(operator).toHaveURL(/\/login$/);
-  } finally {
-    await operatorContext.close();
-    for (const name of [ALLOWED, DENIED]) docker("rm", "-f", name);
-  }
 }
 
 export async function verifyRehearsal({ page, docker }: FeatureUIContext) {

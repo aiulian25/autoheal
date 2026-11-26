@@ -150,7 +150,7 @@ export const diskNearlyFull: TaskSummaryView = {
   id: "task-disk",
   title: "Alder's disk is 97% full",
   labels: [],
-  resource: null,
+  resource: { kind: "disk", id: "/", label: "/" },
 };
 
 // What waits for a person besides the updates: one incident Ollama handed over, and one problem.
@@ -181,6 +181,7 @@ export const json = (body: unknown) =>
 export const heldPackages = {
   facts: { setting: "apply", unsupported: null },
   running: null,
+  recent: [],
   automatic: [],
   packages: ["netdata-dashboard", "netdata-user"].map((name) => ({ name, security: false })),
 };
@@ -194,7 +195,7 @@ export function serve(
   role: "admin" | "viewer",
   shown: BoardView = board,
   overview: unknown = { homeAssistant: null },
-  packages: unknown = { packages: [], automatic: [] },
+  packages: unknown = { facts: null, packages: [], automatic: [], recent: [] },
   more: Record<string, unknown> = {},
 ) {
   const answers: Record<string, unknown> = {

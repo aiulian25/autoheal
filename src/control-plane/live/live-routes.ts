@@ -4,8 +4,8 @@ import { API_ERRORS, API_ROUTES } from "../../shared/api.js";
 import {
   ACCEL_BUFFERING_OFF,
   EVENT_STREAM_CONTENT_TYPE,
-  EVENT_STREAM_KEEPALIVE,
   HTTP_HEADERS,
+  LIVE_ALIVE_MESSAGE,
   LIVE_KEEPALIVE_MILLISECONDS,
   LIVE_STREAMS_PER_ACCOUNT,
 } from "../../shared/constants.js";
@@ -34,11 +34,12 @@ export function registerLiveRoutes(
     const { tokenHash, user } = request.authSession!;
     const open = held.get(user.id) ?? 0;
     if (open >= perAccount) throw new DomainError(API_ERRORS.liveStreamsFull);
-    const writer = sseWriter(reply, LIVE_KEEPALIVE_MILLISECONDS, () => sessions.isLive(tokenHash));
+    // The page hears it is alive every so often, so a stream that stopped telling without an error is found out.
+    const writer = sseWriter(reply, LIVE_KEEPALIVE_MILLISECONDS, () => sessions.isLive(tokenHash), LIVE_ALIVE_MESSAGE);
     held.set(user.id, open + 1);
     // However the stream ends, its place goes back.
     writer.cleanup(() => release(user.id));
-    writer.write(EVENT_STREAM_KEEPALIVE);
+    writer.write(LIVE_ALIVE_MESSAGE);
     writer.cleanup(live.subscribe((event) => writer.write(`event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)));
     return reply
       .header(HTTP_HEADERS.contentType, EVENT_STREAM_CONTENT_TYPE)

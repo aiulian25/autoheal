@@ -412,7 +412,15 @@ export const STACKS_TEXT = {
     line: (hours: number) =>
       `Checked every ${hours === 1 ? "hour" : `${hours} hours`}, for a new image behind each tag and a newer version ` +
       "than it. Applied by recreating the container with its settings and volumes.",
-    allCurrent: "Every image here is up to date.",
+    // Followed by how long ago its oldest check was.
+    allCurrent: "Every image here was up to date at its last check, the oldest",
+    noContainers: "No containers here to check.",
+    allOff: "Updates are off for every container here.",
+    notChecked: (count: number) => `${count} ${count === 1 ? "image is" : "images are"} not checked yet.`,
+    checkFailed: (count: number) =>
+      count === 1
+        ? "The last check of 1 image got no answer: its row says why."
+        : `The last check of ${count} images got no answer: their rows say why.`,
     newerTitle: "Newer TAG versions",
     newerShowAll: (count: number) => `Show all ${count}`,
     newerShowFewer: "Show fewer",

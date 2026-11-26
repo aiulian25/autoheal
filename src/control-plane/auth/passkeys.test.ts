@@ -5,12 +5,7 @@ import type {
 } from "@simplewebauthn/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import {
-  NEW_ADMIN_PASSWORD,
-  currentCode,
-  fullySignedInAdmin,
-  fullySignedInUser,
-} from "../../../test/support/second-factor.js";
+import { NEW_ADMIN_PASSWORD, currentCode, fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { SoftwarePasskey } from "../../../test/support/software-passkey.js";
 import { API_ROUTES, apiPath, type PasskeyStatusView, type PasskeyView, type SessionView } from "../../shared/api.js";
 import {
@@ -20,7 +15,8 @@ import {
   PASSKEY_CEREMONY_MILLISECONDS,
   TOTP_PERIOD_SECONDS,
 } from "../../shared/constants.js";
-import { passkeys } from "../database/schema.js";
+import { auditEvents, passkeys, users } from "../database/schema.js";
+import { resetOwner } from "./bootstrap.js";
 import { PasskeyService } from "./passkey-service.js";
 
 // What a test does the moment the WebAuthn library has checked an answer, before the dashboard acts on it: whatever a
@@ -224,18 +220,18 @@ describe("passkeys", () => {
     expect((await admin.get(API_ROUTES.accountPasskeys)).json<PasskeyView[]>()).toHaveLength(1);
   });
 
-  it("stops working for a deactivated account, and an admin's reset removes them", async () => {
-    const viewer = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
+  it("stops working while its account may not sign in, and the host's reset-admin removes them", async () => {
     const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
-    expect((await enrol(passkey, viewer.client, viewer.secret)).statusCode).toBe(200);
-    const user = apiPath(API_ROUTES.user, { userId: viewer.userId });
+    expect((await enrol(passkey)).statusCode).toBe(200);
+    const { databaseHandle: handle, auditLog } = controlPlane.services;
+    const setStatus = (status: "active" | "deactivated") => handle.database.update(users).set({ status }).run();
 
-    await admin.request({ method: "PATCH", url: user, payload: { status: "deactivated" } });
+    setStatus("deactivated");
     expect((await signIn(passkey)).statusCode).toBe(401);
-    await admin.request({ method: "PATCH", url: user, payload: { status: "active" } });
+    setStatus("active");
     expect((await signIn(passkey)).statusCode).toBe(200);
 
-    await admin.post(apiPath(API_ROUTES.userResetTotp, { userId: viewer.userId }));
+    await resetOwner(handle, auditLog, undefined, () => undefined);
     expect((await signIn(passkey)).statusCode).toBe(401);
     expect(await status()).toEqual({ usable: true, offered: false });
   });
@@ -278,16 +274,19 @@ describe("passkeys", () => {
     });
 
     it("signs no one into an account deactivated meanwhile", async () => {
-      const partner = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
       const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
-      expect((await enrol(passkey, partner.client, partner.secret)).statusCode).toBe(200);
-      const account = apiPath(API_ROUTES.user, { userId: partner.userId });
+      expect((await enrol(passkey)).statusCode).toBe(200);
+      const { database } = controlPlane.services.databaseHandle;
       once(async () => {
-        await admin.request({ method: "PATCH", url: account, payload: { status: "deactivated" } });
+        database.update(users).set({ status: "deactivated" }).run();
       }, "signIn");
       expect((await signIn(passkey)).json()).toMatchObject({ error: "passkey_refused" });
-      const audit = JSON.stringify((await admin.get(API_ROUTES.audit)).json());
-      expect(audit).toContain(`"reason":"${LOGIN_FAILURE_REASONS.deactivated}"`);
+      const reasons = database
+        .select({ details: auditEvents.detailsJson })
+        .from(auditEvents)
+        .all()
+        .map(({ details }) => (JSON.parse(details) as { reason?: string }).reason);
+      expect(reasons).toContain(LOGIN_FAILURE_REASONS.deactivated);
     });
 
     it("keeps a passkey's count from going back when two of its answers are checked at once: the slower is refused", async () => {
@@ -313,12 +312,11 @@ describe("passkeys", () => {
     });
 
     it("adds no passkey for a session that ended meanwhile", async () => {
-      const partner = await fullySignedInUser(controlPlane, admin, "partner", "viewer");
       const passkey = new SoftwarePasskey(LOCAL_PUBLIC_BASE_URL);
       once(async () => {
-        expect((await partner.client.post(API_ROUTES.logout)).statusCode).toBeLessThan(300);
+        expect((await admin.post(API_ROUTES.logout)).statusCode).toBeLessThan(300);
       }, "enrol");
-      const added = await enrol(passkey, partner.client, partner.secret);
+      const added = await enrol(passkey);
       expect(added.statusCode).toBe(401);
       expect(added.json()).toMatchObject({ error: "not_signed_in" });
       expect(stored()).toEqual([]);
