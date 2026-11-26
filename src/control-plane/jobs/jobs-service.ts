@@ -1,4 +1,4 @@
-import type { ContainerJob, StackAction } from "../../shared/protocol.js";
+import type { ContainerJob, RolloutMember, StackAction } from "../../shared/protocol.js";
 import { backupJobSchema, type BackupJobDetails } from "../../shared/container-backups.js";
 import { stackJobSchema, type StackJobDetails } from "../../shared/stacks.js";
 import { newVolumeSchema, volumeRemovalSchema, type NewVolume, type VolumeRemoval } from "../../shared/volumes.js";
@@ -10,16 +10,13 @@ import {
   type NewNetwork,
 } from "../../shared/networks.js";
 import { rolloutJobSchema, type RolloutJob } from "../../shared/rollouts.js";
-import type { ResourceMember, ResourcePermissions } from "../auth/resource-permissions.js";
-import { actionPermission } from "../../shared/resource-permissions.js";
+import type { OwnerCheck } from "../auth/owner-check.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, lte, notInArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { API_ERRORS, type JobView } from "../../shared/api.js";
 import {
   ACTOR_SYSTEM,
-  ROLE_ADMIN,
-  USER_STATUS_ACTIVE,
   AGENT_AUTOHEAL,
   AGENT_NAMES,
   AUDIT_ACTIONS,
@@ -65,7 +62,7 @@ import {
 import type { Job, JobProgress, JobResult, UpdateProgress } from "../../shared/protocol.js";
 import type { AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
-import { hosts, jobs, users } from "../database/schema.js";
+import { hosts, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
@@ -126,7 +123,7 @@ export class JobsService {
     private readonly live: Pick<LiveEvents, "publish">,
     private readonly clock: () => number = Date.now,
     private readonly maintenanceHeld: (hostId: string, name: string) => boolean = () => false,
-    private readonly permissions?: ResourcePermissions,
+    private readonly owner: Pick<OwnerCheck, "is" | "require">,
   ) {}
 
   resetProgress() {
@@ -150,11 +147,11 @@ export class JobsService {
       details.rollout &&
       (action !== JOB_ACTION.update ||
         author.kind !== "user" ||
-        !this.permissions?.isAdmin(author.actor.userId) ||
+        !this.owner.is(author.actor.userId) ||
         !details.expectedResourcesFingerprint)
     )
       throw new DomainError(API_ERRORS.resourceForbidden);
-    if (author.kind === "user") this.requireUserPermission(author.actor.userId, hostId, containerName, action);
+    if (author.kind === "user") this.owner.require(author.actor.userId);
     if ((author.kind === "agent" || details.rollout) && this.maintenanceHeld(hostId, containerName))
       throw new DomainError(API_ERRORS.maintenanceActive);
     // Once each, and sorted: the same images ticked in another order are the same removal.
@@ -182,14 +179,7 @@ export class JobsService {
     this.requireVolumeChange(hostId, action, details.volume, volumeRemoval);
     const stackJson = details.stack === undefined ? null : JSON.stringify(details.stack);
     this.requireStack(hostId, details.stack);
-    if (taskId !== null) {
-      this.requireSameContainer(
-        taskId,
-        hostId,
-        containerName,
-        author.kind === "user" && this.permissions !== undefined && !this.permissions.isAdmin(author.actor.userId),
-      );
-    }
+    if (taskId !== null) this.requireSameContainer(taskId, hostId, containerName);
     const imagesJson = jsonOf(images);
     const waiting = this.database
       .select()
@@ -230,10 +220,6 @@ export class JobsService {
         taskId,
         containerName,
         action,
-        operatorUserId:
-          author.kind === "user" && this.permissions && !this.permissions.isAdmin(author.actor.userId)
-            ? author.actor.userId
-            : null,
         requestedByUserId: author.kind === "user" ? author.actor.userId : null,
         requestedByAgent: author.kind === "agent" ? author.agent : null,
         status: JOB_STATUS.pending,
@@ -277,17 +263,6 @@ export class JobsService {
         (!host.rollouts || !this.rolloutDispatchAllowed(job.id) || this.maintenanceHeld(host.id, job.containerName))
       )
         return false;
-      if (job.operatorUserId !== null && !host.resourcePermissions) {
-        const outcome = JOB_OUTCOMES.delegationUnsupported;
-        this.database
-          .update(jobs)
-          .set({ status: JOB_STATUS.failed, completedAt: now, outcome })
-          .where(eq(jobs.id, job.id))
-          .run();
-        if (job.taskId !== null) this.finishWork(job, false, outcome);
-        this.announce(job, false);
-        return false;
-      }
       if (job.expectedResourcesFingerprint !== null && !host.operationPreviews) {
         const outcome = JOB_OUTCOMES.reviewedScopeUnsupported;
         this.database
@@ -302,12 +277,7 @@ export class JobsService {
       if (job.requestedByAgent !== null) return !this.maintenanceHeld(host.id, job.containerName);
       try {
         if (!job.requestedByUserId) throw new DomainError(API_ERRORS.resourceForbidden);
-        this.requireUserPermission(job.requestedByUserId, host.id, job.containerName, job.action);
-        if (this.permissions && !this.permissions.isAdmin(job.requestedByUserId)) {
-          if (!host.resourcePermissions) throw new DomainError(API_ERRORS.resourceRunnerRequired);
-          job.operatorUserId = job.requestedByUserId;
-          this.database.update(jobs).set({ operatorUserId: job.operatorUserId }).where(eq(jobs.id, job.id)).run();
-        }
+        this.owner.require(job.requestedByUserId);
         return true;
       } catch {
         this.database
@@ -350,7 +320,6 @@ export class JobsService {
     return available.map((job): Job => {
       const delivered = {
         id: job.id,
-        ...(job.operatorUserId ? { operatorUserId: job.operatorUserId } : {}),
         ...(job.expectedResourcesFingerprint ? { expectedResourcesFingerprint: job.expectedResourcesFingerprint } : {}),
         containerName: job.containerName,
         ...(job.requestedByAgent !== null || job.rolloutJson !== null ? { automatic: true } : {}),
@@ -414,52 +383,29 @@ export class JobsService {
         action: job.action as ContainerJob["action"],
         ...(job.undoIfUnhealthy ? { undoIfUnhealthy: true } : {}),
         ...(job.expectedDigest === null ? {} : { expectedDigest: job.expectedDigest }),
-        ...(job.action === JOB_ACTION.update &&
-        job.requestedByUserId !== null &&
-        !job.operatorUserId &&
-        !job.rolloutJson
+        ...(job.action === JOB_ACTION.update && job.requestedByUserId !== null && !job.rolloutJson
           ? { allowWithoutCheckpoint: true }
           : {}),
       };
     });
   }
 
-  private requireUserPermission(userId: string, hostId: string, containerName: string, action: JobAction) {
-    if (this.permissions) return this.permissions.requireJob(userId, hostId, containerName, action);
-    const user = this.database.select().from(users).where(eq(users.id, userId)).get();
-    if (!user || user.role !== ROLE_ADMIN || user.status !== USER_STATUS_ACTIVE)
-      throw new DomainError(API_ERRORS.resourceForbidden);
-  }
-
-  /** A runner-discovered group is authorized against current grants after its operation lock is held. */
-  authorizeOperator(host: HostRow, jobId: string, members: readonly ResourceMember[]): boolean {
-    try {
-      const job = this.database.select().from(jobs).where(eq(jobs.id, jobId)).get();
-      if (
-        !job ||
-        job.hostId !== host.id ||
-        job.status !== JOB_STATUS.delivered ||
-        !job.requestedByUserId ||
-        !this.permissions ||
-        this.clock() >= job.expiresAt
-      )
-        return false;
-      if (!members.some((member) => member.name === job.containerName)) return false;
-      if (
-        job.rolloutJson &&
-        (!host.rollouts ||
-          !this.permissions.isAdmin(job.requestedByUserId) ||
-          !this.rolloutDispatchAllowed(job.id) ||
-          members.some((member) => this.maintenanceHeld(host.id, member.name)))
-      )
-        return false;
-      const action = actionPermission(job.action);
-      if (action === null) return false;
-      this.permissions.requireMembers(job.requestedByUserId, host.id, action, members);
-      return true;
-    } catch {
-      return false;
-    }
+  /** A rollout's canary, asked again once its runner holds the operation lock: still its owner's, and still let go. */
+  authorizeRollout(host: HostRow, jobId: string, members: readonly RolloutMember[]): boolean {
+    const job = this.database.select().from(jobs).where(eq(jobs.id, jobId)).get();
+    if (!job?.requestedByUserId) return false;
+    const live =
+      job.hostId === host.id &&
+      job.status === JOB_STATUS.delivered &&
+      this.clock() < job.expiresAt &&
+      members.some((member) => member.name === job.containerName);
+    return (
+      live &&
+      host.rollouts &&
+      this.owner.is(job.requestedByUserId) &&
+      this.rolloutDispatchAllowed(job.id) &&
+      !members.some((member) => this.maintenanceHeld(host.id, member.name))
+    );
   }
 
   complete(host: HostRow, jobId: string, reported: JobResult) {
@@ -675,13 +621,10 @@ export class JobsService {
   }
 
   // A task about one container can't be worked by acting on another.
-  private requireSameContainer(taskId: string, hostId: string, containerName: string, delegated = false) {
+  private requireSameContainer(taskId: string, hostId: string, containerName: string) {
     const task = this.tasks.find(taskId);
     const aboutContainer = task.resourceKind === TASK_RESOURCE.container;
-    if (
-      (delegated && !aboutContainer) ||
-      ((aboutContainer || delegated) && (task.hostId !== hostId || task.resourceId !== containerName))
-    ) {
+    if (aboutContainer && (task.hostId !== hostId || task.resourceId !== containerName)) {
       throw new DomainError(API_ERRORS.invalidTarget);
     }
   }

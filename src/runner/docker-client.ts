@@ -826,7 +826,7 @@ export class DockerClient {
     }
   }
 
-  /** Driver/options must be inspected before delegated access can trust a named volume's boundary. */
+  /** A named volume's driver and options; null when Docker has none by that name. */
   async inspectVolume(name: string): Promise<DockerVolume | null> {
     const { status, body } = await this.request("GET", path(DOCKER_PATHS.volume, name));
     if (status === HTTP_STATUS.notFound) return null;

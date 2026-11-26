@@ -66,13 +66,11 @@ export class RunnerRelay<Request extends { id: string }, Answer> {
   }
 
   /** The requests waiting for this host's runner; each is handed over once, a read twice if the first went unanswered. */
-  take(hostId: string, accepts: (request: Request) => boolean = () => true): Request[] {
+  take(hostId: string): Request[] {
     const now = Date.now();
     const due = (entry: Pending<Request, Answer>) =>
       entry.handOvers === 0 || (this.again(entry) && now - entry.handedOverAt >= RUNNER_REHAND_MILLISECONDS);
-    const waiting = [...this.pending.values()].filter(
-      (entry) => entry.hostId === hostId && due(entry) && accepts(entry.request),
-    );
+    const waiting = [...this.pending.values()].filter((entry) => entry.hostId === hostId && due(entry));
     return waiting.map((entry) => {
       entry.handOvers += 1;
       entry.handedOverAt = now;

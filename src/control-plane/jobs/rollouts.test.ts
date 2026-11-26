@@ -6,6 +6,7 @@ import {
   type TestControlPlane,
   type TestClient,
 } from "../../../test/support/control-plane.js";
+import { addLegacyPeople } from "../../../test/support/legacy-people.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { containerSnapshot, heartbeatWith } from "../../../test/support/inventory.js";
 import { API_ROUTES, apiPath, type EnrolledHostView } from "../../shared/api.js";
@@ -19,7 +20,7 @@ describe("staged immutable rollouts", () => {
   let plane: TestControlPlane, admin: TestClient, hostId: string, token: string;
   const headers = () => ({
     authorization: `Bearer ${token}`,
-    [HTTP_HEADERS.runnerCapabilities]: "resource-permissions,operation-previews,rollouts",
+    [HTTP_HEADERS.runnerCapabilities]: "operation-previews,rollouts",
   });
   async function report(replacement = false, health: "healthy" | "unhealthy" = "healthy") {
     const containers = [
@@ -288,5 +289,72 @@ describe("staged immutable rollouts", () => {
     await complete(job!.id);
     expect((await current()).status).toBe("held");
     expect(await work()).toEqual([]);
+  });
+  it("says yes again only to its own runner, about its own canary, while it is delivered, unexpired and the owner's", async () => {
+    await create();
+    const sqlite = plane.services.databaseHandle.sqlite;
+    const { id: pending } = sqlite.prepare("SELECT id FROM jobs WHERE container_name = 'canary'").get() as {
+      id: string;
+    };
+    const canaryAlone = [{ name: "canary", composeProject: null }];
+    const answer = async (members = canaryAlone, jobId = pending, asking = headers()) =>
+      (
+        await plane.runnerApp.inject({
+          method: "POST",
+          url: apiPath(RUNNER_ROUTES.jobAuthorization, { jobId }),
+          headers: asking,
+          payload: { members },
+        })
+      ).json<{ authorized: boolean }>().authorized;
+    // Not yet handed to its runner.
+    expect(await answer(canaryAlone, pending)).toBe(false);
+    const [canary] = await work();
+    expect(canary!.id).toBe(pending);
+    expect(await answer()).toBe(true);
+
+    expect(await answer([{ name: "follower", composeProject: null }])).toBe(false);
+    expect(await answer(canaryAlone, randomUUID())).toBe(false);
+    // A runner that said since it does no rollouts, and another host's.
+    const rollouts = plane.services.databaseHandle.sqlite.prepare("UPDATE hosts SET rollouts = ? WHERE id = ?");
+    rollouts.run(0, hostId);
+    expect(await answer()).toBe(false);
+    rollouts.run(1, hostId);
+    const ownToken = token;
+    token = runnerTokenOf((await admin.post(API_ROUTES.hosts, { label: "Rollout-lab-2" })).json<EnrolledHostView>());
+    await report();
+    const otherHost = headers();
+    token = ownToken;
+    expect(await answer(canaryAlone, pending, otherHost)).toBe(false);
+    // Not a rollout at all.
+    await admin.post(apiPath(API_ROUTES.containerActions, { hostId, containerName: "follower" }), {
+      action: "restart",
+    });
+    const [restart] = await work();
+    expect(restart).toMatchObject({ containerName: "follower", action: "restart" });
+    expect(await answer([{ name: "follower", composeProject: null }], restart!.id)).toBe(false);
+
+    // Asked for by someone who no longer signs in: as when another person promoted it, before one person.
+    const { cedar } = Object.fromEntries(
+      await addLegacyPeople(plane.services.databaseHandle, [
+        { username: "cedar", role: "admin", status: "deactivated" },
+      ]),
+    ) as { cedar: string };
+    const requester = sqlite.prepare("UPDATE jobs SET requested_by_user_id = ? WHERE id = ?");
+    const { requested_by_user_id: owner } = sqlite
+      .prepare("SELECT requested_by_user_id FROM jobs WHERE id = ?")
+      .get(pending) as { requested_by_user_id: string };
+    requester.run(cedar, pending);
+    expect(await answer()).toBe(false);
+    requester.run(owner, pending);
+    const held = vi.spyOn(plane.services.maintenance, "held").mockReturnValue(true);
+    expect(await answer()).toBe(false);
+    held.mockRestore();
+    const now = plane.clock.now;
+    plane.clock.now = canary!.expiresAt;
+    expect(await answer()).toBe(false);
+    plane.clock.now = now;
+    expect(await answer()).toBe(true);
+    await complete(canary!.id);
+    expect(await answer()).toBe(false);
   });
 });

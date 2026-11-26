@@ -14,7 +14,6 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { z } from "zod";
 import type { OperationPreviewAnswer } from "../shared/topology.js";
-import type { ResourceTarget } from "../shared/resource-permissions.js";
 import type { IncomingMessage } from "node:http";
 import { Agent, request, type RequestOptions } from "node:https";
 import type { Duplex } from "node:stream";
@@ -57,6 +56,7 @@ import {
   type JobResult,
   type MetricsReport,
   type Outcome,
+  type RolloutMember,
   type TerminalEnd,
   type TerminalInput,
   type WorkResponse,
@@ -191,27 +191,10 @@ export class ControlPlaneClient {
     return this.post(RUNNER_ROUTES.heartbeat, heartbeat) as Promise<HeartbeatResponse | null>;
   }
 
-  /** Fresh per-request authorization; only an explicit affirmative reply permits delegated work. */
-  async authorizeOperatorJob(jobId: string, members: readonly Omit<ResourceTarget, "hostId">[]): Promise<boolean> {
-    return this.authorized(apiPath(RUNNER_ROUTES.jobAuthorization, { jobId }), members);
-  }
-
-  async authorizeOperatorAccess(
-    kind: "terminal" | "file" | "settings",
-    requestId: string,
-    member: Omit<ResourceTarget, "hostId">,
-  ): Promise<boolean> {
-    const routes = {
-      terminal: RUNNER_ROUTES.terminalAuthorization,
-      file: RUNNER_ROUTES.fileAuthorization,
-      settings: RUNNER_ROUTES.settingsAuthorization,
-    };
-    return this.authorized(apiPath(routes[kind], { requestId }), [member]);
-  }
-
-  private async authorized(path: string, members: readonly Omit<ResourceTarget, "hostId">[]): Promise<boolean> {
+  /** A rollout's canary, asked about again once its lock is held: only an explicit yes lets it go. */
+  async authorizeRollout(jobId: string, members: readonly RolloutMember[]): Promise<boolean> {
     try {
-      const answer = await this.post(path, { members });
+      const answer = await this.post(apiPath(RUNNER_ROUTES.jobAuthorization, { jobId }), { members });
       return (answer as { authorized?: unknown } | null)?.authorized === true;
     } catch {
       return false;

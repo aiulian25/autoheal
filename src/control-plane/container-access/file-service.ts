@@ -1,4 +1,3 @@
-import type { ResourceMember } from "../auth/resource-permissions.js";
 import { randomUUID } from "node:crypto";
 import { API_ERRORS } from "../../shared/api.js";
 import {
@@ -34,68 +33,28 @@ const READS = new Set<FileOperation>([FILE_OPERATION.list, FILE_OPERATION.read])
  * waits for the runner's. Contents pass through, never kept.
  */
 export class FileService {
-  private readonly authorizations = new Map<
-    string,
-    { hostId: string; containerName: string; userId: string; tokenHash: string }
-  >();
   private readonly relay: RunnerRelay<FileRequest, FileAnswer>;
 
   constructor(
-    private readonly access: Pick<ContainerAccessService, "require"> &
-      Partial<Pick<ContainerAccessService, "operatorUserId" | "authorizeOperator">>,
+    private readonly access: Pick<ContainerAccessService, "require">,
     private readonly auditLog: AuditLog,
     runners: Pick<WaitingRunners, "wake">,
   ) {
     this.relay = new RunnerRelay(runners, (request) => READS.has(request.operation));
   }
 
-  ask(actor: Actor, hostId: string, containerName: string, ask: FileAsk, tokenHash?: string) {
-    const container = this.access.require(hostId, containerName, actor.userId, "files");
+  ask(actor: Actor, hostId: string, containerName: string, ask: FileAsk) {
+    const container = this.access.require(hostId, containerName, actor.userId);
     if (container.state !== CONTAINER_STATE_RUNNING) {
       throw new DomainError(API_ERRORS.containerNotRunning);
     }
-    const operatorUserId = this.access.operatorUserId?.(actor.userId);
-    if (operatorUserId && !tokenHash) throw new DomainError(API_ERRORS.resourceForbidden);
-    const request: FileRequest = {
-      id: randomUUID(),
-      containerName,
-      ...ask,
-      requestedBy: actor.username,
-      ...(operatorUserId ? { operatorUserId } : {}),
-    };
-    if (operatorUserId)
-      this.authorizations.set(request.id, { hostId, containerName, userId: operatorUserId, tokenHash: tokenHash! });
+    const request: FileRequest = { id: randomUUID(), containerName, ...ask, requestedBy: actor.username };
     this.audit(actor, hostId, request);
-    return this.relay
-      .ask(hostId, request)
-      .then((answer) => {
-        if (
-          operatorUserId &&
-          !this.authorizeOperator({ id: hostId } as HostRow, request.id, [
-            { name: containerName, composeProject: container.composeProject },
-          ])
-        )
-          throw new DomainError(API_ERRORS.resourceForbidden);
-        return answer;
-      })
-      .finally(() => this.authorizations.delete(request.id));
-  }
-
-  authorizeOperator(host: HostRow, requestId: string, members: readonly ResourceMember[]): boolean {
-    const owner = this.authorizations.get(requestId);
-    return (
-      owner !== undefined &&
-      owner.hostId === host.id &&
-      (this.access.authorizeOperator?.(host.id, owner.containerName, owner.userId, "files", members, owner.tokenHash) ??
-        false)
-    );
+    return this.relay.ask(hostId, request);
   }
 
   take(host: HostRow): FileRequest[] {
-    return this.relay.take(
-      host.id,
-      (request) => request.operatorUserId === undefined || host.resourcePermissions === true,
-    );
+    return this.relay.take(host.id);
   }
 
   answer(host: HostRow, requestId: string, answer: FileAnswer) {
@@ -103,7 +62,6 @@ export class FileService {
   }
 
   reset() {
-    this.authorizations.clear();
     this.relay.reset();
   }
 

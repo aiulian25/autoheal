@@ -1,6 +1,13 @@
 import { UPDATE_GROUP_LABEL } from "./update-group.js";
 import { describe, expect, it, vi } from "vitest";
-import { JOB_OUTCOMES, OUTCOME_TEXT_LIMIT, STACK_OUTCOMES } from "../shared/constants.js";
+import {
+  DELEGATED_WORK_REFUSAL,
+  JOB_ACTION,
+  JOB_OUTCOMES,
+  OUTCOME_TEXT_LIMIT,
+  RUNNER_UPDATE_TEXT,
+  STACK_OUTCOMES,
+} from "../shared/constants.js";
 import type {
   ContainerJob,
   ContainerSettings,
@@ -283,109 +290,26 @@ describe("ContainerJobs", () => {
     });
   });
 
-  it("refuses delegated work without a current authorizer, on rejection or on loss of connectivity", async () => {
-    for (const authorizeOperator of [
-      undefined,
-      async () => false,
-      async () => {
-        throw new Error("offline");
-      },
-    ]) {
-      const fixture = jobsWith();
-      fixture.dependencies.authorizeOperator = authorizeOperator;
-      expect((await fixture.jobs.run(job({ operatorUserId: "operator" }))).succeeded).toBe(false);
-      expect(fixture.calls).not.toContain("restart paperless");
-    }
-  });
-
-  it("authorizes actual full group scopes after waiting and refuses revoked permissions without mutation", async () => {
-    let updates = 0;
-    let permitted = true;
-    const fixture = jobsWith({
-      dependents: ["client"],
-      onUpdate: async () => {
-        updates += 1;
-      },
-    });
-    const targets: unknown[] = [];
-    fixture.dependencies.authorizeOperator = async (id, members) => {
-      expect(id).toBe("j1");
-      targets.push(members);
-      return permitted;
-    };
-    const inspect = fixture.dependencies.docker.inspect;
-    fixture.dependencies.docker.inspect = async (name) => {
-      const details = await inspect(name);
-      return details === null
-        ? null
-        : {
-            ...details,
-            Config: {
-              ...details.Config,
-              Labels: { "com.docker.compose.project": name === "client" ? "client-stack" : "app-stack" },
-            },
-          };
-    };
-    expect((await fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }))).succeeded).toBe(true);
-    expect(targets).toContainEqual([
-      { name: "paperless", composeProject: "app-stack" },
-      { name: "client", composeProject: "client-stack" },
-    ]);
-    const blocker = await fixture.dependencies.guard.operations.acquire(["name:paperless"]);
-    let queued!: () => void;
-    const waiting = new Promise<void>((resolve) => {
-      queued = resolve;
-    });
-    fixture.dependencies.reportProgress = async (_id, progress) => {
-      if (progress.phase === "waiting") queued();
-    };
-    const run = fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }));
-    await waiting;
-    permitted = false;
-    blocker.release();
-    expect((await run).succeeded).toBe(false);
-    expect(updates).toBe(1);
-  });
-
-  describe("a delegated update whose provider's namespace gains a container after it was admitted", () => {
-    // Another Docker client starts one in the provider's namespace, then the updater looks and acts.
-    const updatingWith = (joinsMeanwhile: boolean) => {
-      const dependents: string[] = [];
-      const stopped: string[] = [];
-      const fixture = jobsWith({ dependents });
-      fixture.dependencies.authorizeOperator = async () => true;
-      fixture.dependencies.updater.update = async (name, _undo, _steps, options) => {
-        if (joinsMeanwhile) dependents.push("intruder");
-        if (!(await options?.authorize?.())) return { succeeded: false, outcome: "refused" };
-        stopped.push(...dependents, name);
-        return { succeeded: true, outcome: `updated ${name}` };
-      };
-      return { fixture, stopped };
-    };
-
-    it("stops nothing, as the operator was granted only what the job was admitted on", async () => {
-      const { fixture, stopped } = updatingWith(true);
-
-      const result = await fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }));
-
-      expect(result.succeeded).toBe(false);
-      expect(stopped).toEqual([]);
-    });
-
-    it("goes ahead when nothing joined", async () => {
-      const { fixture, stopped } = updatingWith(false);
-
-      expect((await fixture.jobs.run(job({ action: "update", operatorUserId: "operator" }))).succeeded).toBe(true);
-      expect(stopped).toEqual(["paperless"]);
-    });
-  });
-
-  it("rechecks a delegated log read before reading its data", async () => {
+  // Only a dashboard from before Autoheal was one person's names someone a job is done for.
+  it.each([
+    JOB_ACTION.restart,
+    JOB_ACTION.update,
+    JOB_ACTION.logs,
+    JOB_ACTION.checkUpdates,
+    JOB_ACTION.pruneImages,
+    JOB_ACTION.edit,
+    JOB_ACTION.install,
+    JOB_ACTION.updateRunner,
+  ])("refuses %s asked for on someone's behalf, before Docker is touched", async (action) => {
     const fixture = jobsWith({ logs: "private-log" });
-    fixture.dependencies.authorizeOperator = async () => false;
-    const result = await fixture.jobs.run(job({ action: "logs", operatorUserId: "operator" }));
-    expect(result.succeeded).toBe(false);
-    expect(result.output).toBeNull();
+    const result = await fixture.jobs.run(job({ action, operatorUserId: "cedar" }));
+    expect(result).toEqual({ succeeded: false, outcome: DELEGATED_WORK_REFUSAL, output: null });
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it("says a runner that runs in place cannot be replaced from the dashboard", async () => {
+    const result = await jobsWith().jobs.run(job({ action: JOB_ACTION.updateRunner, containerName: "" }));
+    expect(result).toEqual({ succeeded: false, outcome: RUNNER_UPDATE_TEXT.notInContainer, output: null });
   });
 
   it("checks maintenance on automatic jobs and their full affected group, while allowing explicit manual actions", async () => {
@@ -1060,13 +984,6 @@ describe("ContainerJobs", () => {
       expect((await jobs.run(job({ action: "edit" }))).outcome).toBe("edited paperless: TZ");
     });
 
-    it("leaves the file alone for someone whose reach is one container", async () => {
-      const stacks = stacksAnswering({ written: true, result: { succeeded: true, outcome: "in its file" } });
-      const { jobs } = jobsWith({ settings: SETTINGS, stacks });
-      await jobs.run(job({ action: "edit", operatorUserId: "operator" }));
-      expect(stacks.applySettings).not.toHaveBeenCalled();
-    });
-
     it("keeps every refusal an edit has, before any file is touched", async () => {
       const stacks = stacksAnswering({ written: false, reason: null });
       const { jobs } = jobsWith({ settings: SETTINGS, stacks, editRefusal: "refused" });
@@ -1136,7 +1053,7 @@ describe("rollout proof and post-pull admission", () => {
     const fixture = jobsWith();
     let held = false;
     let checks = 0;
-    fixture.dependencies.authorizeOperator = async () => {
+    fixture.dependencies.authorizeRollout = async () => {
       checks++;
       return !held;
     };
@@ -1162,6 +1079,57 @@ describe("rollout proof and post-pull admission", () => {
     };
     expect((await fixture.jobs.run(job({ action: "update", automatic: true, rollout }))).succeeded).toBe(true);
     expect(checks).toBe(1);
+  });
+  describe("its dashboard asked again, once the canary's lock is held", () => {
+    const rollout = {
+      id: "a1c09362-d48c-4b7f-a331-6d47c8a8dc96",
+      targetReference: `example/paperless@sha256:${"a".repeat(64)}`,
+      expectedSourceContainerId: "paperless",
+      expectedPlatform: "linux/amd64",
+      requireStateless: true as const,
+    };
+    // The updater asks just before its first stop, as the real one does.
+    const canaryWith = (authorizeRollout?: ContainerJobsDependencies["authorizeRollout"]) => {
+      const fixture = jobsWith({ dependents: ["client"] });
+      if (authorizeRollout !== undefined) fixture.dependencies.authorizeRollout = authorizeRollout;
+      fixture.dependencies.updater.update = async (_name, _undo, _steps, options) => ({
+        succeeded: await options!.authorize!(),
+        outcome: "asked",
+      });
+      return fixture;
+    };
+    const canary = job({ action: JOB_ACTION.update, automatic: true, rollout });
+
+    it.each([
+      ["with no way to ask", undefined],
+      ["on a no", async () => false],
+      [
+        "with no answer",
+        async () => {
+          throw new Error("offline");
+        },
+      ],
+    ])("stops %s", async (_case, authorizeRollout) => {
+      expect((await canaryWith(authorizeRollout).jobs.run(canary)).succeeded).toBe(false);
+    });
+
+    it("names it and every container it would change", async () => {
+      const asked: unknown[] = [];
+      const fixture = canaryWith(async (jobId, members) => {
+        asked.push({ jobId, members });
+        return true;
+      });
+      expect((await fixture.jobs.run(canary)).succeeded).toBe(true);
+      expect(asked).toEqual([
+        {
+          jobId: "j1",
+          members: [
+            { name: "paperless", composeProject: null },
+            { name: "client", composeProject: null },
+          ],
+        },
+      ]);
+    });
   });
   it("reports missing mount/platform evidence as unknown and distinguishes writable from stateless mounts", async () => {
     const fixture = jobsWith();
@@ -1236,7 +1204,7 @@ describe("a newer version handed to the agent", () => {
     );
   });
 
-  it("is refused by a delegated operator, and where the host keeps no copies", async () => {
+  it("is refused where the host keeps no copies", async () => {
     const stacks = {
       run: async () => ({ succeeded: true, outcome: "", output: null }),
       membersOf: async () => [],
@@ -1244,8 +1212,6 @@ describe("a newer version handed to the agent", () => {
       changeTag: vi.fn(),
     };
     const { jobs } = jobsWith({ stacks });
-    const asOperator = await jobs.run({ ...job({ operatorUserId: "u1" }), action: "change_tag", tag: "2.1" } as never);
-    expect(asOperator.succeeded).toBe(false);
     const withoutCopies = await jobs.run({ ...job({}), action: "change_tag", tag: "2.1" } as never);
     expect(withoutCopies).toMatchObject({ succeeded: false, outcome: JOB_OUTCOMES.checkpointUnavailable });
     expect(stacks.changeTag).not.toHaveBeenCalled();

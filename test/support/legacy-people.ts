@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "../../src/control-plane/auth/password-hashing.js";
 import type { DatabaseHandle } from "../../src/control-plane/database/connection.js";
+import { resourcePermissionsMigration } from "../../src/control-plane/database/migrations/0024-resource-permissions.js";
 import { onePersonMigration } from "../../src/control-plane/database/migrations/0079-one-person.js";
 
 // What every legacy person signs in with, in tests.
@@ -18,6 +19,16 @@ VALUES (?, ?, ?, ?, ?, 0, ?)`;
 
 /** The database's rule against a second person lifted, as on a file from before it: for making one in tests. */
 export const withoutOnePersonRule = (handle: DatabaseHandle) => handle.sqlite.exec(ONE_PERSON_TRIGGERS);
+
+// The last schema from before Autoheal was one person's.
+export const BEFORE_ONE_PERSON = onePersonMigration.version - 1;
+
+/** A file made now, put back as that schema left it: no rule against a second person, grants and delegated jobs kept. */
+export function asBeforeOnePerson(handle: DatabaseHandle) {
+  withoutOnePersonRule(handle);
+  handle.sqlite.exec(resourcePermissionsMigration.sql);
+  handle.sqlite.pragma(`user_version = ${BEFORE_ONE_PERSON}`);
+}
 
 /**
  * People the Users page could add before Autoheal was one person's, each signing in with LEGACY_PASSWORD. The

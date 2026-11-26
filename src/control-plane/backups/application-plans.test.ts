@@ -95,7 +95,7 @@ describe("durable application backup plans", () => {
       url: RUNNER_ROUTES.heartbeat,
       headers: {
         authorization: `Bearer ${runnerTokenOf(enrolled)}`,
-        "x-autoheal-capabilities": "application-backups,operation-previews,resource-permissions",
+        "x-autoheal-capabilities": "application-backups,operation-previews",
       },
       payload: {
         ...heartbeatWith({ dryRun: false, containerAccess: false, containers: [containerSnapshot({ name: "app" })] }),

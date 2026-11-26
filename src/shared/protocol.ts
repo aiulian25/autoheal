@@ -96,6 +96,18 @@ import { incidentReportSchema } from "./report.js";
 // The runner ↔ control plane contract. The control plane listens for runners on its own LAN-only
 // port, never through the internet-facing proxy.
 
+// Each container a rollout's canary would change, as its runner finds them once it holds the operation lock.
+export const rolloutMemberSchema = z
+  .object({
+    name: z.string().min(1).max(REPORT_LIMITS.nameCharacters),
+    composeProject: z.string().min(1).max(REPORT_LIMITS.nameCharacters).nullable(),
+  })
+  .strict();
+export type RolloutMember = z.infer<typeof rolloutMemberSchema>;
+export const rolloutAuthorizationSchema = z
+  .object({ members: z.array(rolloutMemberSchema).min(1).max(REPORT_LIMITS.containers) })
+  .strict();
+
 export const RUNNER_ROUTES = {
   applicationBackupWork: "/runner/v1/application-backups/work",
   applicationBackupResult: "/runner/v1/application-backups/result",
@@ -103,10 +115,8 @@ export const RUNNER_ROUTES = {
   applicationBackupUpload: "/runner/v1/application-backups/:taskId/artifacts/:artifactId/upload",
   applicationBackupDownload: "/runner/v1/application-backups/:taskId/artifacts/:artifactId/download",
   operationPreviewAnswer: "/runner/v1/operation-previews/:requestId/answer",
+  // A rollout's canary, asked again by its runner once it holds the operation lock: still allowed to go?
   jobAuthorization: "/runner/v1/jobs/:jobId/authorize",
-  terminalAuthorization: "/runner/v1/terminals/:requestId/authorize",
-  fileAuthorization: "/runner/v1/files/:requestId/authorize",
-  settingsAuthorization: "/runner/v1/settings/:requestId/authorize",
   resultDelivery: "/runner/v1/result-delivery",
   heartbeat: "/runner/v1/heartbeat",
   jobResult: "/runner/v1/jobs/:jobId/result",
@@ -447,7 +457,6 @@ export const heartbeatSchema = z.object({
   rollouts: z.boolean().optional(),
   topology: topologySnapshotSchema.optional(),
   operationPreviews: z.boolean().optional(),
-  resourcePermissions: z.boolean().optional(),
   // It can move a container to a newer tag by its Compose files, as its .env allows; absent from runners from before.
   tagChanges: z.boolean().optional(),
   maintenanceGeneration: z.number().int().nonnegative().safe().optional(),
@@ -717,6 +726,7 @@ export interface WorkItem {
 }
 
 interface JobBase {
+  // Only ever set by a control plane from before Autoheal was one person's: its runner refuses such work.
   operatorUserId?: string;
   automatic?: boolean;
   id: string;
@@ -835,6 +845,7 @@ export const isHostJob = (job: Job): job is HostJob => isHostPackageAction(job.a
  * there is none; it re-checks it first. Host shells only go to runners that said they can open them.
  */
 export interface TerminalStart {
+  // Only ever set by a control plane from before Autoheal was one person's: its runner refuses such work.
   operatorUserId?: string;
   id: string;
   containerName: string | null;
@@ -850,6 +861,7 @@ export interface WorkResponse {
 
 /** Something to do with a container's files, for its runner, which checks again first as for a shell. */
 export interface FileRequest {
+  // Only ever set by a control plane from before Autoheal was one person's: its runner refuses such work.
   operatorUserId?: string;
   id: string;
   containerName: string;
@@ -863,6 +875,7 @@ export interface FileRequest {
 
 /** A container's settings, for its runner to read as they are; or, asked for details, all but its settings. */
 export interface SettingsRequest {
+  // Only ever set by a control plane from before Autoheal was one person's: its runner refuses such work.
   operatorUserId?: string;
   id: string;
   containerName: string;

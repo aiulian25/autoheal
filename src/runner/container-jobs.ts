@@ -3,17 +3,7 @@ import { STACK_OUTCOMES } from "../shared/constants.js";
 import { VOLUME_SHARE, type NewVolume, type VolumeRemoval } from "../shared/volumes.js";
 import { operationFingerprint, publicOperationResources, OPERATION_SCOPE_CHANGED } from "./operation-impact.js";
 import type { OperationPreviewAnswer, PreviewAction } from "../shared/topology.js";
-import {
-  isolatedOperatorContainer,
-  OPERATOR_REFUSAL,
-  OPERATOR_ISOLATION_REFUSAL,
-  OPERATOR_MOUNTS_REFUSAL,
-  operatorAccessTarget,
-  operatorTarget,
-  unchangedOperatorBoundaries,
-  type OperatorJobAuthorizer,
-  type OperatorTarget,
-} from "./operator-authorization.js";
+import { isolatedContainer } from "./container-isolation.js";
 import { sharesRollbackData } from "./rollback-data.js";
 import { updateGroupOf } from "./update-group.js";
 import {
@@ -21,6 +11,7 @@ import {
   HOST_DEPLOY_REFUSALS,
   INSTALL_OUTCOMES,
   CONTAINER_ACCESS_REFUSALS,
+  DELEGATED_WORK_REFUSAL,
   EDIT_OUTCOMES,
   JOB_ACTION,
   JOB_OUTCOMES,
@@ -37,6 +28,7 @@ import {
   KEPT_ASIDE_RUNNING_ACTIONS,
   updatedNameOf,
   NETWORK_OUTCOMES,
+  RUNNER_UPDATE_TEXT,
   VOLUME_OUTCOMES,
   type ContainerAction,
 } from "../shared/constants.js";
@@ -47,6 +39,7 @@ import type {
   ContainerSettings,
   DockerJob,
   JobResult,
+  RolloutMember,
   StackAction,
   StackJob,
   BackupJob,
@@ -69,7 +62,8 @@ import type { Installs } from "./installs.js";
 import { UpdateReport } from "./update-progress.js";
 
 export interface ContainerJobsDependencies {
-  authorizeOperator?: OperatorJobAuthorizer;
+  // A rollout's canary, asked about again once its operation lock is held: whether its dashboard still lets it go.
+  authorizeRollout?: (jobId: string, members: RolloutMember[]) => Promise<boolean>;
   maintenanceHeld?: (name: string) => boolean;
   docker: Pick<
     DockerClient,
@@ -95,7 +89,7 @@ export interface ContainerJobsDependencies {
     | "createVolume"
     | "removeVolume"
   > &
-    Partial<Pick<DockerClient, "inspectVolume" | "inspectImage">>;
+    Partial<Pick<DockerClient, "inspectImage">>;
   updater: Pick<ContainerUpdater, "update" | "rollBack" | "edit" | "editRefusal" | "recreate" | "dependentsOf">;
   // A container given to Ollama: its update is undone at once when the new version starts badly.
   undoesFailedUpdate: (name: string) => boolean;
@@ -235,19 +229,8 @@ export class ContainerJobs {
         if (settings === null) {
           return { succeeded: false, outcome: EDIT_OUTCOMES.settingsGone };
         }
-        if (job.operatorUserId !== undefined) {
-          const target = await operatorAccessTarget(name, docker);
-          if (target === null) return { succeeded: false, outcome: OPERATOR_ISOLATION_REFUSAL };
-          const details = await docker.inspect(name);
-          if (details === null || !unchangedOperatorBoundaries(details, settings))
-            return { succeeded: false, outcome: OPERATOR_MOUNTS_REFUSAL };
-          if (!(await authorize?.())) return { succeeded: false, outcome: OPERATOR_REFUSAL };
-        }
-        // An operator's reach is one container, not the file a whole stack shares.
         const write =
-          job.operatorUserId === undefined && stacks !== undefined
-            ? await this.throughCompose(name, settings)
-            : { written: false as const, reason: null };
+          stacks !== undefined ? await this.throughCompose(name, settings) : { written: false as const, reason: null };
         if (write.written) return write.result;
         const edited = await (authorize ? updater.edit(name, settings, authorize) : updater.edit(name, settings));
         if (write.reason === null || !edited.succeeded) return edited;
@@ -296,7 +279,7 @@ export class ContainerJobs {
           let writableData: "none" | "present" | "unknown" = "none";
           for (const identity of snapshot.authorizationIdentities) {
             const inspected = identity.id ? await this.dependencies.docker.inspect(identity.id) : null;
-            if (!inspected || !Array.isArray(inspected.Mounts) || !isolatedOperatorContainer(inspected)) {
+            if (!inspected || !Array.isArray(inspected.Mounts) || !isolatedContainer(inspected)) {
               writableData = "unknown";
               break;
             }
@@ -343,38 +326,17 @@ export class ContainerJobs {
       output: null,
     };
   }
-  private async operatorAllowed(job: DockerJob, targets: OperatorTarget[]): Promise<boolean> {
-    if (job.operatorUserId === undefined) return true;
-    if (targets.length === 0 || !this.dependencies.authorizeOperator) return false;
-    return this.dependencies.authorizeOperator(job.id, targets).catch(() => false);
-  }
   private dispatch(job: DockerJob): Promise<JobResult> {
+    if (job.operatorUserId !== undefined)
+      return Promise.resolve(asJobResult({ succeeded: false, outcome: DELEGATED_WORK_REFUSAL }));
     if (this.maintenanceBlocks(job)) return Promise.resolve(this.maintenanceRefusal());
-    if (job.action === JOB_ACTION.checkUpdates) {
-      return job.operatorUserId === undefined
-        ? this.checkUpdates()
-        : Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
-    }
-    // A person asked, from the dashboard; never on an operator's grant, which is about containers, not this runner.
+    if (job.action === JOB_ACTION.checkUpdates) return this.checkUpdates();
     if (job.action === JOB_ACTION.updateRunner) {
       const update = this.dependencies.updateRunner;
-      return job.operatorUserId === undefined && update !== undefined
+      return update !== undefined
         ? update()
-        : Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
+        : Promise.resolve(asJobResult({ succeeded: false, outcome: RUNNER_UPDATE_TEXT.notInContainer }));
     }
-    if (
-      job.operatorUserId !== undefined &&
-      (job.action === JOB_ACTION.pruneImages ||
-        job.action === JOB_ACTION.removeImages ||
-        job.action === JOB_ACTION.createNetwork ||
-        job.action === JOB_ACTION.removeNetworks ||
-        job.action === JOB_ACTION.createVolume ||
-        job.action === JOB_ACTION.removeVolumes ||
-        isBackupJob(job) ||
-        isStackJob(job) ||
-        isTagChangeJob(job))
-    )
-      return Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
     if (job.action === JOB_ACTION.pruneImages) {
       return this.dependencies.guard.operations.host(() =>
         this.maintenanceBlocks(job) ? Promise.resolve(this.maintenanceRefusal()) : this.pruneImages(),
@@ -428,16 +390,14 @@ export class ContainerJobs {
       );
     }
     if (job.action === JOB_ACTION.logs) {
-      return this.logs(job.containerName, job);
+      return this.logs(job.containerName);
     }
     if (
       job.action === JOB_ACTION.install ||
       job.action === JOB_ACTION.uninstall ||
       job.action === JOB_ACTION.uninstallWithData
     ) {
-      return job.operatorUserId === undefined
-        ? this.installing(job)
-        : Promise.resolve(asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL }));
+      return this.installing(job);
     }
     return this.change(job, job.action);
   }
@@ -463,7 +423,7 @@ export class ContainerJobs {
     reportInventory();
     if (logsOf === null) return asJobResult(result);
     // What went wrong is in its own words: its logs, masked as they always are.
-    const logs = await this.logs(logsOf, job).catch(() => null);
+    const logs = await this.logs(logsOf).catch(() => null);
     return { ...asJobResult(result), ...(logs?.output === undefined ? {} : { output: logs.output }) };
   }
 
@@ -543,52 +503,26 @@ export class ContainerJobs {
           return matches;
         };
         let admittedScope = false;
-        // What the updater acts on is what it finds when it acts: a container that joined the provider's namespace
-        // since this job's look was granted to nobody, so nothing goes ahead. A reviewed scope's fingerprint says so
-        // already.
-        const membersStillGranted = async () => {
-          if (job.operatorUserId === undefined || job.expectedResourcesFingerprint) return true;
-          const granted = new Set(authorizationIdentities.map(({ id }) => id));
-          const { authorizationIdentities: now } = await this.affected(name, action);
-          return now.every(({ id }) => granted.has(id));
-        };
-        const operatorCheck = async () => {
-          if (job.operatorUserId === undefined) return true;
-          const targets: OperatorTarget[] = [];
-          for (const identity of authorizationIdentities) {
-            const current = identity.id === null ? null : await this.dependencies.docker.inspect(identity.id);
-            if (current === null || current.Id !== identity.id) return false;
-            targets.push({ ...operatorTarget(current), name: identity.name });
-          }
-          return this.operatorAllowed(job, targets);
-        };
+        const rolloutStillAllowed = async () =>
+          (await this.dependencies
+            .authorizeRollout?.(
+              job.id,
+              authorizationIdentities.map((member) => ({ name: member.name, composeProject: null })),
+            )
+            .catch(() => false)) === true;
         const authorize =
-          job.operatorUserId === undefined && !job.expectedResourcesFingerprint && !job.rollout
+          !job.expectedResourcesFingerprint && !job.rollout
             ? undefined
             : async () => {
                 // First updater admission is after image pulling and immediately before its first stop/rename.
-                // Later checks must allow the operation's own replacement IDs while retaining current grant checks.
-                if (!admittedScope && !(await reviewStillCurrent())) return false;
-                if (!admittedScope && !(await membersStillGranted())) return false;
-                if (
-                  !admittedScope &&
-                  job.rollout &&
-                  !(await this.dependencies
-                    .authorizeOperator?.(
-                      job.id,
-                      authorizationIdentities.map((member) => ({ name: member.name, composeProject: null })),
-                    )
-                    .catch(() => false))
-                )
-                  return false;
-                if (!admittedScope && this.maintenanceBlocks(job, [name, canonical, ...group])) return false;
-                if (!(await operatorCheck())) return false;
+                if (admittedScope) return true;
+                if (!(await reviewStillCurrent())) return false;
+                if (job.rollout && !(await rolloutStillAllowed())) return false;
+                if (this.maintenanceBlocks(job, [name, canonical, ...group])) return false;
                 admittedScope = true;
                 return true;
               };
         if (!(await reviewStillCurrent())) return asJobResult({ succeeded: false, outcome: OPERATION_SCOPE_CHANGED });
-        if (job.operatorUserId !== undefined && !(await operatorCheck()))
-          return asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL });
         const held = [...new Set([name, canonical, ...group])];
         held.forEach((container) => {
           guard.hold(container);
@@ -598,8 +532,6 @@ export class ContainerJobs {
           await guard.persisted();
           if (this.maintenanceBlocks(job, held)) return this.maintenanceRefusal();
           if (!(await reviewStillCurrent())) return asJobResult({ succeeded: false, outcome: OPERATION_SCOPE_CHANGED });
-          if (job.operatorUserId !== undefined && !(await operatorCheck()))
-            return asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL });
           const result = await this.changes[action](name, job, authorize);
           if (scopeChanged && !result.succeeded)
             return asJobResult({ succeeded: false, outcome: OPERATION_SCOPE_CHANGED });
@@ -717,8 +649,8 @@ export class ContainerJobs {
       ...new Map(
         identities.flatMap(({ details }) => {
           if (details === null) return [];
-          const target = operatorTarget(details);
-          const logical = isParkedContainer(target.name) ? updatedNameOf(target.name) : target.name;
+          const named = details.Name.replace(/^\//, "");
+          const logical = isParkedContainer(named) ? updatedNameOf(named) : named;
           return [[`${logical}:${details.Id}`, { name: logical, id: details.Id ?? null }]] as const;
         }),
       ).values(),
@@ -745,14 +677,12 @@ export class ContainerJobs {
     return redactSecrets(text, environment).slice(-JOB_OUTPUT_CHARACTERS);
   }
 
-  private async logs(name: string, job: ContainerJob): Promise<JobResult> {
+  private async logs(name: string): Promise<JobResult> {
     const { docker } = this.dependencies;
     const container = await docker.inspect(name);
     if (container === null) {
       return asJobResult({ succeeded: false, outcome: JOB_OUTCOMES.missing(name) });
     }
-    if (!(await this.operatorAllowed(job, [operatorTarget(container)])))
-      return asJobResult({ succeeded: false, outcome: OPERATOR_REFUSAL });
     const [text, otherEnvironment] = await Promise.all([
       docker.logs(name, container.Config.Tty ?? false),
       docker.allEnvironmentEntries(),

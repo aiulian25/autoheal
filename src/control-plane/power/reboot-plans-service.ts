@@ -27,7 +27,7 @@ import {
   type RebootStep,
 } from "../../shared/reboot-plans.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
-import type { ResourcePermissions } from "../auth/resource-permissions.js";
+import type { OwnerCheck } from "../auth/owner-check.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { hosts, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
@@ -73,7 +73,7 @@ export interface RebootPlanFinding {
 export interface RebootPlanDependencies {
   databaseHandle: DatabaseHandle;
   audit: AuditLog;
-  permissions: Pick<ResourcePermissions, "isAdmin">;
+  owner: Pick<OwnerCheck, "is">;
   // What an application's replicas say about taking hosts down; absent where no group is set up.
   availability?: Pick<AvailabilityGroupsService, "problemFor">;
   // The same way in as the Reboot button: it refuses a host that cannot be asked, or that has a job still open.
@@ -195,7 +195,7 @@ export class RebootPlansService {
   /** Why the next host may not go down now; null when it may. Asked fresh before every reboot. */
   private gateProblem(plan: Pick<RebootPlanView, "body" | "createdBy">, target: { hostId: string; hostLabel: string }) {
     const { body, createdBy } = plan;
-    if (!this.dependencies.permissions.isAdmin(createdBy.userId)) return REBOOT_PLAN_TEXT.noLongerAllowed;
+    if (!this.dependencies.owner.is(createdBy.userId)) return REBOOT_PLAN_TEXT.noLongerAllowed;
     const targetProblem = this.hostProblem(this.hostRow(target.hostId), target.hostLabel);
     if (targetProblem !== null) return targetProblem;
     const others = body.hostIds.filter((hostId) => hostId !== target.hostId);

@@ -15,7 +15,7 @@ import {
   type TopologyView,
 } from "../../shared/topology.js";
 import type { Actor } from "../audit/audit-log.js";
-import type { ResourcePermissions } from "../auth/resource-permissions.js";
+import type { OwnerCheck } from "../auth/owner-check.js";
 import { RunnerRelay } from "../container-access/runner-relay.js";
 import type { WaitingRunners } from "../container-access/waiting-runners.js";
 import type { DatabaseHandle } from "../database/connection.js";
@@ -38,7 +38,7 @@ export class TopologyService {
   constructor(
     private readonly handle: DatabaseHandle,
     private readonly inventory: Pick<InventoryService, "containers">,
-    private readonly permissions: Pick<ResourcePermissions, "requireJob">,
+    private readonly owner: Pick<OwnerCheck, "require">,
     runners: Pick<WaitingRunners, "wake">,
     private readonly clock = Date.now,
   ) {
@@ -96,7 +96,7 @@ export class TopologyService {
     action: PreviewAction,
   ): Promise<OperationImpactView> {
     this.expire();
-    this.permissions.requireJob(actor.userId, hostId, containerName, action);
+    this.owner.require(actor.userId);
     const host = this.host(hostId);
     const now = this.clock();
     if (
@@ -114,18 +114,9 @@ export class TopologyService {
     this.pending++;
     try {
       const answer = operationPreviewAnswerSchema.parse(await this.relay.ask(hostId, { id, containerName, action }));
-      this.permissions.requireJob(actor.userId, hostId, containerName, action);
+      // Asked again once the runner answered: it may have taken a while.
+      this.owner.require(actor.userId);
       if (this.prepared.size >= TOPOLOGY_LIMITS.previews) throw new DomainError(API_ERRORS.topologyBusy);
-      if (answer.ok) {
-        for (const member of answer.members) {
-          try {
-            this.permissions.requireJob(actor.userId, hostId, member.name, action);
-          } catch {
-            if (!answer.refusals.includes("One or more affected containers are outside your delegated access."))
-              answer.refusals.push("One or more affected containers are outside your delegated access.");
-          }
-        }
-      }
       const at = this.clock();
       const view: OperationImpactView = {
         id,

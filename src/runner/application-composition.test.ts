@@ -479,18 +479,11 @@ describe("what a runner says it can do", () => {
     await stop();
     const [{ named, heartbeat }] = heartbeats as [(typeof heartbeats)[number]];
     // As old dashboards read them: these names, and these fields.
-    const always = [
-      "application-backups",
-      "application-boot-drills",
-      "operation-previews",
-      "resource-permissions",
-      "rollouts",
-    ];
+    const always = ["application-backups", "application-boot-drills", "operation-previews", "rollouts"];
     expect(named.toSorted()).toEqual([...always, ...(changesTags ? ["tag-changes"] : [])].toSorted());
     expect(heartbeat).toMatchObject({
       applicationBackups: true,
       operationPreviews: true,
-      resourcePermissions: true,
       rollouts: true,
       serviceProbes: true,
       probeAttempts: true,

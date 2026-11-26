@@ -17,6 +17,7 @@ import {
   type EnrolledHostView,
   type HostView,
   type JobView,
+  type SessionView,
   type TerminalView,
 } from "../../shared/api.js";
 import {
@@ -43,6 +44,7 @@ import {
 } from "../../shared/protocol.js";
 import { SecretBox } from "../database/secret-box.js";
 import { auditEvents, sessions, users } from "../database/schema.js";
+import type { ResolvedSession } from "../auth/sessions.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import { SettingsService } from "./settings-service.js";
 
@@ -94,13 +96,19 @@ describe("reaching inside containers", () => {
   it("reaches a container at once where its host's .env allows it, and only one its host lets Autoheal change", async () => {
     await report(true);
     const { containerAccess } = controlPlane.services;
-    expect(containerAccess.require(hostId, "paperless").name).toBe("paperless");
-    expect(() => containerAccess.require(hostId, "npm")).toThrow("hands_off");
-    expect(() => containerAccess.require(hostId, "ghost")).toThrow("container_not_found");
+    const owner = (await admin.get(API_ROUTES.session)).json<SessionView>().user.id;
+    expect(containerAccess.require(hostId, "paperless", owner).name).toBe("paperless");
+    // Nobody else reaches inside anything, looks at a host, or opens a shell on it.
+    expect(() => containerAccess.require(hostId, "paperless", "someone-else")).toThrow("resource_forbidden");
+    expect(() => containerAccess.requireHostAdmin(hostId, "someone-else")).toThrow("resource_forbidden");
+    expect(() => containerAccess.requireHostShell(hostId, "someone-else")).toThrow("resource_forbidden");
+    expect(() => containerAccess.requireHostAdmin(hostId, owner)).not.toThrow();
+    expect(() => containerAccess.require(hostId, "npm", owner)).toThrow("hands_off");
+    expect(() => containerAccess.require(hostId, "ghost", owner)).toThrow("container_not_found");
 
     // A runner from before the setting allows none of it.
     await report(undefined);
-    expect(() => containerAccess.require(hostId, "paperless")).toThrow("container_access_off");
+    expect(() => containerAccess.require(hostId, "paperless", owner)).toThrow("container_access_off");
     const [host] = (await admin.get(API_ROUTES.hosts)).json<HostView[]>();
     expect(host!.containerAccess).toBe(false);
   });
@@ -127,6 +135,18 @@ describe("reaching inside containers", () => {
 
     beforeEach(async () => {
       await report(true);
+    });
+
+    it("is not opened for a sign-in that has ended, whatever let the request through", async () => {
+      const owner = (await admin.get(API_ROUTES.session)).json<SessionView>().user;
+      const actor = { userId: owner.id, username: owner.username, ip: "127.0.0.1", requestId: "test" };
+      const ended = { tokenHash: "a".repeat(64) } as ResolvedSession;
+      const size = { columns: 80, rows: 24 };
+      expect(() => controlPlane.services.terminals.open(actor, ended, hostId, "paperless", size)).toThrow(
+        "terminal_not_found",
+      );
+      const host = controlPlane.services.hostsService.authenticate(token)!;
+      expect(controlPlane.services.terminals.starts(host)).toEqual([]);
     });
 
     it("starts on its runner, carries keystrokes and output both ways, and audits its lifecycle", async () => {

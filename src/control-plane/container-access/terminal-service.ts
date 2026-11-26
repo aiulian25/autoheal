@@ -1,9 +1,7 @@
-import type { ResourceMember } from "../auth/resource-permissions.js";
 import { randomUUID } from "node:crypto";
 import { API_ERRORS, type TerminalView } from "../../shared/api.js";
 import {
   ACCESS_ADMIN,
-  ACCESS_FULL,
   AUDIT_ACTIONS,
   CONTAINER_STATE_RUNNING,
   TARGET_CONTAINER,
@@ -43,7 +41,6 @@ interface Terminal {
   containerName: string | null;
   // The sign-in that opened it: only that one follows it, types into it, resizes and closes it.
   ownerTokenHash: string;
-  operatorUserId?: string;
   actor: Actor;
   state: TerminalState;
   start: TerminalSize;
@@ -81,7 +78,7 @@ export class TerminalService {
 
   constructor(
     private readonly access: Pick<ContainerAccessService, "require"> &
-      Partial<Pick<ContainerAccessService, "operatorUserId" | "authorizeOperator" | "requireHostShell">>,
+      Partial<Pick<ContainerAccessService, "requireHostShell">>,
     private readonly auditLog: AuditLog,
     private readonly runners: Pick<WaitingRunners, "wake">,
     private readonly sessions: Pick<SessionStore, "isLive">,
@@ -95,24 +92,23 @@ export class TerminalService {
     containerName: string,
     start: TerminalSize,
   ): TerminalView {
-    const operatorUserId = this.access.operatorUserId?.(actor.userId);
-    if (!this.sessions.isLive(session.tokenHash, operatorUserId ? ACCESS_FULL : ACCESS_ADMIN)) {
+    if (!this.sessions.isLive(session.tokenHash, ACCESS_ADMIN)) {
       throw new DomainError(API_ERRORS.terminalNotFound);
     }
-    const container = this.access.require(hostId, containerName, actor.userId, "terminal");
+    const container = this.access.require(hostId, containerName, actor.userId);
     if (container.state !== CONTAINER_STATE_RUNNING) {
       throw new DomainError(API_ERRORS.containerNotRunning);
     }
-    return { id: this.create(actor, session, hostId, containerName, start, operatorUserId).id };
+    return { id: this.create(actor, session, hostId, containerName, start).id };
   }
 
-  /** A shell on the host itself, for an admin, on a host whose .env lets one open: as whom it runs there. */
+  /** A shell on the host itself, for the owner, on a host whose .env lets one open: as whom it runs there. */
   openHost(actor: Actor, session: ResolvedSession, hostId: string, start: TerminalSize): TerminalView {
     if (!this.sessions.isLive(session.tokenHash, ACCESS_ADMIN) || this.access.requireHostShell === undefined) {
       throw new DomainError(API_ERRORS.terminalNotFound);
     }
     const { user } = this.access.requireHostShell(hostId, actor.userId);
-    return { id: this.create(actor, session, hostId, null, start, undefined).id, user };
+    return { id: this.create(actor, session, hostId, null, start).id, user };
   }
 
   private create(
@@ -121,7 +117,6 @@ export class TerminalService {
     hostId: string,
     containerName: string | null,
     start: TerminalSize,
-    operatorUserId: string | undefined,
   ): Terminal {
     const openOnHost = [...this.terminals.values()].filter(
       (terminal) => terminal.hostId === hostId && terminal.state !== TERMINAL_STATE.ended,
@@ -135,7 +130,6 @@ export class TerminalService {
       hostId,
       containerName,
       ownerTokenHash: session.tokenHash,
-      ...(operatorUserId ? { operatorUserId } : {}),
       actor,
       state: TERMINAL_STATE.waiting,
       start,
@@ -166,10 +160,7 @@ export class TerminalService {
       if (terminal.hostId === host.id && terminal.state === TERMINAL_STATE.waiting) this.checkOwner(terminal);
     }
     const waiting = [...this.terminals.values()].filter(
-      (terminal) =>
-        terminal.hostId === host.id &&
-        terminal.state === TERMINAL_STATE.waiting &&
-        (terminal.operatorUserId === undefined || host.resourcePermissions === true),
+      (terminal) => terminal.hostId === host.id && terminal.state === TERMINAL_STATE.waiting,
     );
     const now = this.clock();
     return waiting.map((terminal) => {
@@ -177,38 +168,11 @@ export class TerminalService {
       terminal.askedAt = now;
       return {
         id: terminal.id,
-        ...(terminal.operatorUserId ? { operatorUserId: terminal.operatorUserId } : {}),
         containerName: terminal.containerName,
         ...terminal.start,
         requestedBy: terminal.actor.username,
       };
     });
-  }
-
-  authorizeOperator(host: HostRow, requestId: string, members: readonly ResourceMember[]): boolean {
-    const terminal = this.terminals.get(requestId);
-    if (
-      !terminal ||
-      terminal.hostId !== host.id ||
-      !terminal.operatorUserId ||
-      terminal.containerName === null ||
-      terminal.end !== null
-    )
-      return false;
-    const containerName = terminal.containerName;
-    this.checkOwner(terminal);
-    return (
-      terminal.end === null &&
-      (this.access.authorizeOperator?.(
-        host.id,
-        containerName,
-        terminal.operatorUserId,
-        "terminal",
-        members,
-        terminal.ownerTokenHash,
-      ) ??
-        false)
-    );
   }
 
   /** What it printed after the event the browser last had, then each new event as it comes; returns how to stop. */
@@ -346,17 +310,7 @@ export class TerminalService {
   }
 
   private checkOwner(terminal: Terminal) {
-    if (terminal.end !== null) return;
-    let permitted = this.sessions.isLive(terminal.ownerTokenHash, terminal.operatorUserId ? ACCESS_FULL : ACCESS_ADMIN);
-    // Only container shells are ever an operator's.
-    if (permitted && terminal.operatorUserId && terminal.containerName !== null) {
-      try {
-        this.access.require(terminal.hostId, terminal.containerName, terminal.operatorUserId, "terminal");
-      } catch {
-        permitted = false;
-      }
-    }
-    if (permitted) return;
+    if (terminal.end !== null || this.sessions.isLive(terminal.ownerTokenHash, ACCESS_ADMIN)) return;
     // Nothing queued before revocation may reach the shell, nor may its output be replayed.
     terminal.typed = [];
     terminal.size = null;

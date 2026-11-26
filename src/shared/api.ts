@@ -370,7 +370,6 @@ export const API_ERRORS = {
   codeAlreadyUsed: "code_already_used",
   clockDrift: "clock_drift",
   storedSecretUnreadable: "stored_secret_unreadable",
-  userNotFound: "user_not_found",
   usernameTaken: "username_taken",
   anomalyNotFound: "anomaly_not_found",
   anomalyChanged: "anomaly_changed",
@@ -389,7 +388,6 @@ export const API_ERRORS = {
   notificationQueueFull: "notification_queue_full",
   notificationDeliveryNotFound: "notification_delivery_not_found",
   resourceForbidden: "resource_forbidden",
-  resourceRunnerRequired: "resource_runner_required",
   permissionConflict: "permission_conflict",
   diagnosticsFull: "diagnostics_full",
   // An account already has as many live streams open as it may: its page asks again a few seconds later.

@@ -513,7 +513,7 @@ export async function createRuntime(
       : {}),
     installSpecOf: (jobId) =>
       controlPlane === null ? Promise.reject(new Error(INSTALL_OUTCOMES.gone)) : controlPlane.jobInstall(jobId),
-    authorizeOperator: (jobId, members) => controlPlane?.authorizeOperatorJob(jobId, members) ?? Promise.resolve(false),
+    authorizeRollout: (jobId, members) => controlPlane?.authorizeRollout(jobId, members) ?? Promise.resolve(false),
     maintenanceHeld: (name) => maintenance?.held(name) ?? false,
     docker,
     updater: new ContainerUpdater(
@@ -805,7 +805,6 @@ export function runnerCapabilities(config: RunnerConfig): RunnerCapability[] {
   // A tag change edits the Compose files, and keeps the data of what it moves aside first.
   const changesTags = config.containerAccess && config.hostDeploy && config.checkpointLimitBytes > 0 && !config.dryRun;
   return [
-    RUNNER_CAPABILITY.resourcePermissions,
     RUNNER_CAPABILITY.operationPreviews,
     RUNNER_CAPABILITY.rollouts,
     RUNNER_CAPABILITY.applicationBackups,
@@ -888,7 +887,6 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
       operationPreviews: capabilities.has(RUNNER_CAPABILITY.operationPreviews),
       tagChanges: capabilities.has(RUNNER_CAPABILITY.tagChanges),
       topology: full ? (runtime.inventory.topology() ?? undefined) : undefined,
-      resourcePermissions: capabilities.has(RUNNER_CAPABILITY.resourcePermissions),
       maintenanceGeneration: runtime.maintenance?.generation,
       runnerVersion: RUNNING_VERSION,
       hostLabel: runtime.config.hostLabel,
@@ -1055,8 +1053,6 @@ export function createContainerAccess(runtime: RunnerRuntime) {
   const terminals = new TerminalSessions({
     docker: {
       inspect: (name) => docker.inspect(name),
-      containerSummaries: () => docker.containerSummaries(),
-      inspectVolume: (name) => docker.inspectVolume(name),
       openShell: (name, columns, rows) =>
         runtime.guard.operations.containers(
           () => accessScope(name),
@@ -1070,18 +1066,12 @@ export function createContainerAccess(runtime: RunnerRuntime) {
       runtime.ports.hostShell ?? hostShellThroughDocker(docker, config.selfContainerName, config.hostTerminalUser),
     controlPlane,
     settings: config,
-    authorizeOperator: (requestId, member) => controlPlane.authorizeOperatorAccess("terminal", requestId, member),
   });
-  const files = new FileOperations({
-    docker,
-    settings: config,
-    authorizeOperator: (requestId, member) => controlPlane.authorizeOperatorAccess("file", requestId, member),
-  });
+  const files = new FileOperations({ docker, settings: config });
   const settings = new SettingsReader({
     docker,
     settings: config,
     reportInventory: () => void runtime.lifecycle.run(() => heartbeat(runtime)),
-    authorizeOperator: (requestId, member) => controlPlane.authorizeOperatorAccess("settings", requestId, member),
   });
   const dependencies: ContainerAccessDependencies = {
     controlPlane,

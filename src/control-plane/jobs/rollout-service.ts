@@ -22,7 +22,7 @@ import {
   type RolloutView,
 } from "../../shared/rollouts.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
-import type { ResourcePermissions } from "../auth/resource-permissions.js";
+import type { OwnerCheck } from "../auth/owner-check.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { hosts, jobs } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
@@ -70,7 +70,7 @@ export class RolloutService {
   constructor(
     private readonly handle: DatabaseHandle,
     private readonly audit: AuditLog,
-    private readonly permissions: Pick<ResourcePermissions, "isAdmin">,
+    private readonly owner: Pick<OwnerCheck, "is" | "require">,
     private readonly inventory: Pick<InventoryService, "containers">,
     private readonly topology: Pick<TopologyService, "view" | "consumeImpact">,
     private readonly jobsService: Pick<JobsService, "request" | "onFinished" | "rolloutDispatchAllowed">,
@@ -105,14 +105,10 @@ export class RolloutService {
     return this.handle.database;
   }
   private requireAdmin(actor: Actor) {
-    if (!this.permissions.isAdmin(actor.userId)) throw new DomainError(API_ERRORS.resourceForbidden);
+    this.owner.require(actor.userId);
   }
   private actorAllowed(plan: RolloutView) {
-    try {
-      return this.permissions.isAdmin(plan.createdBy);
-    } catch {
-      return false;
-    }
+    return this.owner.is(plan.createdBy);
   }
   private rows(): RolloutRow[] {
     return this.database.select().from(rollouts).orderBy(desc(rollouts.createdAt)).limit(ROLLOUT_LIMITS.retained).all();

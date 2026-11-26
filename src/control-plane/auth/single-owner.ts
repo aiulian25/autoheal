@@ -37,8 +37,6 @@ const KEEP_FROM_SIGNING_IN = [
   `UPDATE tasks SET assignee_user_id = NULL
    WHERE assignee_user_id IS NOT NULL AND assignee_user_id IS NOT ? AND status IN (${OPEN_STATUSES})`,
 ];
-// Nobody holds a grant: there is nobody to grant anything to.
-const NO_GRANTS = "DELETE FROM resource_permissions";
 
 const hasTable = (sqlite: Database.Database, name: string) => sqlite.prepare(TABLE_EXISTS).get(name) !== undefined;
 
@@ -84,7 +82,7 @@ export function assertOwnerClear(databasePath: string) {
 
 /**
  * Leaves the owner the only one who signs in: the one `chosen` on the host, or else whoever `ownerOf` names. Everyone
- * else stays a name in the history, signed out and without passkeys or recovery codes; nobody keeps a grant, and the
+ * else stays a name in the history, signed out and without passkeys or recovery codes, and the
  * open tasks the others held go back to nobody. Says who was kept from signing in.
  */
 export function keepOneOwner(
@@ -97,10 +95,8 @@ export function keepOneOwner(
   if (owner.kind === "unclear") throw new Error(SINGLE_OWNER_MESSAGES.unclear(owner.admins));
   const ownerId = owner.kind === "owner" ? owner.person.id : null;
   const others = sqlite.prepare(OTHERS_ACTIVE).all(USER_STATUS_ACTIVE, ownerId) as Person[];
-  const changed = databaseHandle.atomically(
-    () =>
-      KEEP_FROM_SIGNING_IN.reduce((total, statement) => total + sqlite.prepare(statement).run(ownerId).changes, 0) +
-      sqlite.prepare(NO_GRANTS).run().changes,
+  const changed = databaseHandle.atomically(() =>
+    KEEP_FROM_SIGNING_IN.reduce((total, statement) => total + sqlite.prepare(statement).run(ownerId).changes, 0),
   );
   if (changed > 0) {
     auditLog.record({

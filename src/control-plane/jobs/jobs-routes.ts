@@ -9,7 +9,6 @@ import { z } from "zod";
 import { API_ERRORS, API_ROUTES, JOB_QUERY } from "../../shared/api.js";
 import {
   ACCESS_ADMIN,
-  ACCESS_FULL,
   COMPOSE_PROJECT_PATTERN,
   DIGEST_PATTERN,
   HOST_PACKAGE_ACTIONS,
@@ -97,7 +96,7 @@ export function registerJobsRoutes(
   stackDrift: StackDriftService,
   topology?: Pick<TopologyService, "consume" | "consumeImpact">,
 ) {
-  app.post(API_ROUTES.containerActions, { config: { access: ACCESS_FULL } }, async (request) => {
+  app.post(API_ROUTES.containerActions, { config: { access: ACCESS_ADMIN } }, async (request) => {
     const { hostId, containerName } = parseBody(containerParameters, request.params);
     const { action, taskId, previewId } = parseBody(containerActionBody, request.body);
     if (previewId && !topology) throw new DomainError(API_ERRORS.topologyUnavailable);
@@ -173,8 +172,7 @@ export function registerJobsRoutes(
     updateRuns.latest(parseBody(hostParameters, request.params).hostId),
   );
 
-  // Open to a viewer whose grants let them restart every container of the stack; the service checks each.
-  app.post(API_ROUTES.stackRestart, { config: { access: ACCESS_FULL } }, async (request) => {
+  app.post(API_ROUTES.stackRestart, { config: { access: ACCESS_ADMIN } }, async (request) => {
     const { hostId, stack } = parseBody(stackParameters, request.params);
     return stackRestarts.start(actorOf(request), hostId, stack);
   });

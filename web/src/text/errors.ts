@@ -32,9 +32,8 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   application_backup_recovery_required: "Data recovery is incomplete. Keep the workload stopped and resume recovery.",
   notification_queue_full: "Notification storage is full. Review pending deliveries before retrying.",
   notification_delivery_not_found: "That notification delivery is no longer available.",
-  resource_forbidden: "This action is outside your delegated access. Ask an administrator to review your grants.",
-  resource_runner_required: "An updated, connected runner is required for scoped operator actions.",
-  permission_conflict: "These grants changed while you were editing. Reload them before saving.",
+  resource_forbidden: "Only this Autoheal's owner can do that.",
+  permission_conflict: "This changed while you were editing. Reload it before saving.",
   invalid_request: "Some of what was sent is not valid",
   not_signed_in: "You are signed out. Sign in again.",
   password_change_required: "Change your password first.",
@@ -45,7 +44,6 @@ export const ERROR_TEXT: Record<ApiErrorCode, string> = {
   clock_drift: "That code is right, but for another time than this server's. Set your phone's time to automatic.",
   stored_secret_unreadable:
     "This account's code was saved under another backup passphrase, so it cannot be checked. Use a recovery code or a passkey, or ask an admin to reset your code.",
-  user_not_found: "That user does not exist any more.",
   diagnostics_full: "Diagnostic preview capacity has been reached. Wait five minutes and retry.",
   live_streams_full:
     "This account has as many pages showing changes live as it may. Close one, and this page joins in by itself.",

@@ -40,7 +40,7 @@ describe("a reboot plan's own window and cancellation", () => {
     service = new RebootPlansService({
       databaseHandle: controlPlane.services.databaseHandle,
       audit: controlPlane.services.auditLog,
-      permissions: { isAdmin: () => true },
+      owner: { is: () => true },
       hostPackages: {
         request: (author, hostId, action) => {
           asked.push(hostId);

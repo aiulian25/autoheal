@@ -1,10 +1,5 @@
 import {
-  OPERATOR_REFUSAL,
-  OPERATOR_ISOLATION_REFUSAL,
-  operatorAccessTarget,
-  type OperatorAccessAuthorizer,
-} from "./operator-authorization.js";
-import {
+  DELEGATED_WORK_REFUSAL,
   FILE_COMMANDS,
   FILE_CONTENT_LIMIT_BYTES,
   FILE_ENTRIES_LIMIT,
@@ -29,9 +24,7 @@ import type { DockerClient } from "./docker-client.js";
 import { singleEntryArchive } from "./tar.js";
 
 export interface FileOperationsDependencies {
-  authorizeOperator?: OperatorAccessAuthorizer;
-  docker: Pick<DockerClient, "inspect" | "runCommand" | "pathStat" | "readEntry" | "putArchive"> &
-    Partial<Pick<DockerClient, "containerSummaries" | "inspectVolume">>;
+  docker: Pick<DockerClient, "inspect" | "runCommand" | "pathStat" | "readEntry" | "putArchive">;
   settings: ContainerAccessSettings;
 }
 
@@ -109,24 +102,16 @@ export class FileOperations {
 
   async answer(request: FileRequest): Promise<FileAnswer> {
     const { settings, docker } = this.dependencies;
+    if (request.operatorUserId !== undefined) return failed(DELEGATED_WORK_REFUSAL);
     try {
       const refusal = await containerAccessRefusal(request.containerName, settings, docker);
       if (refusal !== null) {
         return failed(refusal);
       }
-      await this.requireOperator(request);
       return await this.handlers[request.operation](request);
     } catch (error) {
       return failed(describeError(error));
     }
-  }
-
-  private async requireOperator(request: FileRequest) {
-    if (request.operatorUserId === undefined) return;
-    const target = await operatorAccessTarget(request.containerName, this.dependencies.docker);
-    if (target === null) throw new Error(OPERATOR_ISOLATION_REFUSAL);
-    if (!(await this.dependencies.authorizeOperator?.(request.id, target).catch(() => false)))
-      throw new Error(OPERATOR_REFUSAL);
   }
 
   private async list(request: FileRequest): Promise<FileAnswer> {
@@ -206,7 +191,6 @@ export class FileOperations {
       { name: nameOf(path), type: TAR.types.file, mode, uid: owner.header.uid, gid: owner.header.gid },
       content,
     );
-    await this.requireOperator(request);
     await docker.putArchive(request.containerName, folderOf(path), archive);
     this.logChange(request);
     return done();
@@ -223,7 +207,6 @@ export class FileOperations {
     }
     const { uid, gid } = parent.header;
     const folder = { name: nameOf(request.path), type: TAR.types.folder, mode: NEW_FOLDER_MODE, uid, gid };
-    await this.requireOperator(request);
     await docker.putArchive(request.containerName, folderOf(request.path), singleEntryArchive(folder, Buffer.alloc(0)));
     this.logChange(request);
     return done();
@@ -243,7 +226,6 @@ export class FileOperations {
   }
 
   private async runChange(request: FileRequest, command: string[]): Promise<FileAnswer> {
-    await this.requireOperator(request);
     const result = await this.dependencies.docker.runCommand(request.containerName, command, FILE_LISTING_LIMIT_BYTES);
     if (result.exitCode !== 0) {
       return failed(FILE_ERRORS.failed(command[0]!, (result.stderr || result.stdout).trim()));

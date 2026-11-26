@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { API_ROUTES } from "../../shared/api.js";
 import {
-  ACCESS_FULL,
+  ACCESS_ADMIN,
   FILE_BODY_LIMIT_BYTES,
   FILE_CONTENT_CHARACTERS,
   FILE_OPERATION,
@@ -43,7 +43,7 @@ const fileBody = z.discriminatedUnion("operation", [
 
 /** A container's files: one route for each thing asked of them, answered by the container's runner. */
 export function registerFileRoutes(app: FastifyInstance, files: FileService) {
-  const route = { config: { access: ACCESS_FULL }, bodyLimit: FILE_BODY_LIMIT_BYTES } as const;
+  const route = { config: { access: ACCESS_ADMIN }, bodyLimit: FILE_BODY_LIMIT_BYTES } as const;
   app.post(API_ROUTES.containerFiles, route, async (request) => {
     const { hostId, containerName } = parseBody(containerParameters, request.params);
     const body = parseBody(fileBody, request.body);
@@ -53,6 +53,6 @@ export function registerFileRoutes(app: FastifyInstance, files: FileService) {
       to: "to" in body ? body.to : null,
       content: "content" in body ? body.content : null,
     };
-    return files.ask(actorOf(request), hostId, containerName, ask, request.authSession!.tokenHash);
+    return files.ask(actorOf(request), hostId, containerName, ask);
   });
 }

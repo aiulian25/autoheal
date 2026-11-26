@@ -45,7 +45,7 @@ describe("the runner's connection to the control plane", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it("requires an explicit affirmative authorization tied to the job or access request, and denies provider errors", async () => {
+  it("lets a rollout's canary go only on an explicit yes for that job, and on no error", async () => {
     const material = ownCertificate(directory, ["127.0.0.1"], Date.now()).material;
     let mode: "yes" | "no" | "malformed" = "yes";
     const bodies: unknown[] = [];
@@ -67,16 +67,14 @@ describe("the runner's connection to the control plane", () => {
       token: TOKEN,
       pin: material.pin,
     });
-    const member = { name: "db", composeProject: "documents" };
-    expect(await client.authorizeOperatorJob("job-id", [member])).toBe(true);
-    expect(await client.authorizeOperatorAccess("terminal", "request-id", member)).toBe(true);
+    const member = { name: "db", composeProject: null };
+    expect(await client.authorizeRollout("job-id", [member])).toBe(true);
     mode = "no";
-    expect(await client.authorizeOperatorJob("job-id", [member])).toBe(false);
+    expect(await client.authorizeRollout("job-id", [member])).toBe(false);
     mode = "malformed";
-    expect(await client.authorizeOperatorAccess("file", "request-id", member)).toBe(false);
-    expect(requests[0]).toBe(`POST /runner/v1/jobs/job-id/authorize Bearer ${TOKEN}`);
-    expect(requests[1]).toBe(`POST /runner/v1/terminals/request-id/authorize Bearer ${TOKEN}`);
-    expect(bodies).toEqual(Array.from({ length: 4 }, () => ({ members: [member] })));
+    expect(await client.authorizeRollout("job-id", [member])).toBe(false);
+    expect(requests).toEqual(Array.from({ length: 3 }, () => `POST /runner/v1/jobs/job-id/authorize Bearer ${TOKEN}`));
+    expect(bodies).toEqual(Array.from({ length: 3 }, () => ({ members: [member] })));
   });
 
   it("trusts the certificate Autoheal made by the key its join code names, at any address", async () => {

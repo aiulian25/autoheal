@@ -27,7 +27,7 @@ describe("host topology and reviewed operation scope", () => {
   let token: string;
   const headers = () => ({
     authorization: `Bearer ${token}`,
-    "x-autoheal-capabilities": "resource-permissions,operation-previews",
+    "x-autoheal-capabilities": "operation-previews",
   });
   const impact = (name = "app") => apiPath(API_ROUTES.operationPreview, { hostId, containerName: name });
   const actionPath = (name = "app") => apiPath(API_ROUTES.containerActions, { hostId, containerName: name });

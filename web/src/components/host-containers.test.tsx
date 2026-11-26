@@ -186,6 +186,16 @@ describe("container CPU and RAM in the host table", () => {
 });
 
 describe("a host's containers and what each does", () => {
+  it.each([true, false])("offers a waiting update from its row to the owner alone (owner: %s)", async (owner) => {
+    const ready = { status: "available" as const, checkedAt: 1, policy: "ask" as const, remote: null, reason: null };
+    serve({ [API_ROUTES.containers]: [container({ name: "wiki", update: ready })] });
+    const viewer = { ...session, user: { ...session.user, role: "viewer" as const } };
+    show(<HostContainers host={alder(false)} admin={owner} />, owner ? session : viewer);
+    await screen.findByRole("button", { name: "wiki" });
+    const offered = screen.queryByRole("button", { name: TEXT.hostContainers.updateBox.icon("wiki") });
+    expect(offered !== null).toBe(owner);
+  });
+
   it("offers nothing to change to a session that is not its owner's, in its row or its panel", async () => {
     serve({ [API_ROUTES.containers]: CONTAINERS });
     const host = { ...alder(false), containerAccess: true };

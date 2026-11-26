@@ -1,10 +1,5 @@
 import {
-  OPERATOR_REFUSAL,
-  OPERATOR_ISOLATION_REFUSAL,
-  operatorAccessTarget,
-  type OperatorAccessAuthorizer,
-} from "./operator-authorization.js";
-import {
+  DELEGATED_WORK_REFUSAL,
   NETWORK_CHANGE,
   BIND_SEPARATOR,
   ENVIRONMENT_ENTRY_SEPARATOR,
@@ -142,12 +137,10 @@ export function withSettings(specification: RecreateSpecification, settings: Con
 }
 
 export interface SettingsReaderDependencies {
-  authorizeOperator?: OperatorAccessAuthorizer;
   docker: Pick<
     DockerClient,
     "inspect" | "inspectImage" | "processes" | "imageHistory" | "networks" | "connect" | "disconnect"
-  > &
-    Partial<Pick<DockerClient, "containerSummaries" | "inspectVolume">>;
+  >;
   settings: ContainerAccessSettings;
   // A network change shows on the host's page without waiting for a heartbeat.
   reportInventory?: () => void;
@@ -182,16 +175,11 @@ export class SettingsReader {
 
   async answer(request: SettingsRequest): Promise<SettingsAnswer> {
     const { docker, settings } = this.dependencies;
+    if (request.operatorUserId !== undefined) return { error: DELEGATED_WORK_REFUSAL, settings: null };
     try {
       const refusal = await containerAccessRefusal(request.containerName, settings, docker, { running: false });
       if (refusal !== null) {
         return { error: refusal, settings: null };
-      }
-      if (request.operatorUserId !== undefined) {
-        const target = await operatorAccessTarget(request.containerName, docker);
-        if (target === null) return { error: OPERATOR_ISOLATION_REFUSAL, settings: null };
-        if (!(await this.dependencies.authorizeOperator?.(request.id, target).catch(() => false)))
-          return { error: OPERATOR_REFUSAL, settings: null };
       }
       const details = (await docker.inspect(request.containerName))!;
       if (request.network !== undefined) {

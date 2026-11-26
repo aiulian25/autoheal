@@ -1,6 +1,5 @@
-import { isolatedOperatorContainer } from "./operator-authorization.js";
+import { isolatedContainer } from "./container-isolation.js";
 import { canonicalRepository, rolloutJobSchema, type RolloutJob } from "../shared/rollouts.js";
-import { OPERATOR_REFUSAL } from "./operator-authorization.js";
 import { OperationJournal, type RollbackOperation, type RollbackMember } from "./operation-journal.js";
 import { sharesRollbackData } from "./rollback-data.js";
 import { UPDATE_GROUP_LABEL, updateGroupOf, type UpdateGroup } from "./update-group.js";
@@ -411,7 +410,7 @@ export class ContainerUpdater {
       rollout &&
       [details, ...dependents].some(
         (member) =>
-          !isolatedOperatorContainer(member) ||
+          !isolatedContainer(member) ||
           !Array.isArray(member.Mounts) ||
           member.Mounts.some((mount) => mount.RW !== false && (mount.Type === "bind" || mount.Type === "volume")),
       )
@@ -507,7 +506,7 @@ export class ContainerUpdater {
             const current = await this.docker.inspect(member.Id!);
             if (
               !current ||
-              !isolatedOperatorContainer(current) ||
+              !isolatedContainer(current) ||
               !Array.isArray(current.Mounts) ||
               current.Mounts.some((mount) => mount.RW !== false && (mount.Type === "bind" || mount.Type === "volume"))
             )
@@ -692,7 +691,7 @@ export class ContainerUpdater {
           writers,
         );
         // Persist before any stop/removal/rename: subsequent attempts use IDs, never the parked name alone.
-        if (!(await this.authorizationGranted(authorize))) return failed(OPERATOR_REFUSAL);
+        if (!(await this.authorizationGranted(authorize))) return failed(JOB_OUTCOMES.noLongerAllowed);
         operation = await this.journal.begin(name, members, at);
       }
       return await this.resumeRollback(operation, authorize);
@@ -751,7 +750,7 @@ export class ContainerUpdater {
       originals.push(original);
     }
     if (!(await this.authorizationGranted(authorize)))
-      return { ...failed(OPERATOR_REFUSAL), output: JSON.stringify(operation, null, 2) };
+      return { ...failed(JOB_OUTCOMES.noLongerAllowed), output: JSON.stringify(operation, null, 2) };
     if (operation.phase === "prepared") {
       const writers = [
         ...replacements.filter((container) => nameOf(container) !== operation.owner),
@@ -970,7 +969,8 @@ export class ContainerUpdater {
     prepare?: () => Promise<void>,
     authorize?: () => Promise<boolean>,
   ): Promise<Swapped> {
-    if (!(await this.authorizationGranted(authorize))) return { state: "back", result: failed(OPERATOR_REFUSAL) };
+    if (!(await this.authorizationGranted(authorize)))
+      return { state: "back", result: failed(JOB_OUTCOMES.noLongerAllowed) };
     const oldId = details.Id!;
     const parked = parkedNameOf(name);
     const wasRunning = details.State.Running === true;
@@ -1125,7 +1125,7 @@ export class ContainerUpdater {
     steps: UpdateSteps,
     authorize?: () => Promise<boolean>,
   ): Promise<ActionResult> {
-    if (!(await this.authorizationGranted(authorize))) return failed(OPERATOR_REFUSAL);
+    if (!(await this.authorizationGranted(authorize))) return failed(JOB_OUTCOMES.noLongerAllowed);
     const running = dependents.filter((dependent) => dependent.State.Running === true);
     steps.enter(UPDATE_PHASE.stopping);
     const stopped: ContainerDetails[] = [];

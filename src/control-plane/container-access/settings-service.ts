@@ -1,4 +1,3 @@
-import type { ResourceMember } from "../auth/resource-permissions.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import { API_ERRORS, type JobView } from "../../shared/api.js";
@@ -39,15 +38,10 @@ const shapeOf = (settings: ContainerSettings) => ({
  * once the job is over without them.
  */
 export class SettingsService {
-  private readonly authorizations = new Map<
-    string,
-    { hostId: string; containerName: string; userId: string; tokenHash: string }
-  >();
   private readonly relay: RunnerRelay<SettingsRequest, SettingsAnswer>;
 
   constructor(
-    private readonly access: Pick<ContainerAccessService, "require"> &
-      Partial<Pick<ContainerAccessService, "operatorUserId" | "authorizeOperator">>,
+    private readonly access: Pick<ContainerAccessService, "require">,
     private readonly jobs: Pick<JobsService, "request" | "list" | "onFinished">,
     private readonly auditLog: AuditLog,
     runners: Pick<WaitingRunners, "wake">,
@@ -68,44 +62,28 @@ export class SettingsService {
     actor: Actor,
     hostId: string,
     containerName: string,
-    tokenHash?: string,
     details: boolean = false,
     network?: { name: string; joined: boolean },
   ): Promise<SettingsAnswer> {
-    const container = this.access.require(hostId, containerName, actor.userId, "settings");
-    const operatorUserId = this.access.operatorUserId?.(actor.userId);
-    if (operatorUserId && !tokenHash) throw new DomainError(API_ERRORS.resourceForbidden);
+    this.access.require(hostId, containerName, actor.userId);
     const request: SettingsRequest = {
       id: randomUUID(),
       containerName,
       requestedBy: actor.username,
-      ...(operatorUserId ? { operatorUserId } : {}),
       ...(details ? { details } : {}),
       ...(network === undefined ? {} : { network }),
     };
-    if (operatorUserId)
-      this.authorizations.set(request.id, { hostId, containerName, userId: operatorUserId, tokenHash: tokenHash! });
     // Details carry no environment, and a panel reads them each time it opens.
     if (network !== undefined) this.audit(actor, AUDIT_ACTIONS.containerNetworkChanged, hostId, containerName, network);
     else if (!details) this.audit(actor, AUDIT_ACTIONS.settingsRead, hostId, containerName, {});
+    // A runner from before details answers with its settings, environment and all: those were not asked for.
     return this.relay
       .ask(hostId, request)
-      .then((answer) => {
-        if (
-          operatorUserId &&
-          !this.authorizeOperator({ id: hostId } as HostRow, request.id, [
-            { name: containerName, composeProject: container.composeProject },
-          ])
-        )
-          throw new DomainError(API_ERRORS.resourceForbidden);
-        // A runner from before details answers with its settings, environment and all: those were not asked for.
-        return details ? { ...answer, settings: null, details: answer.details ?? null } : answer;
-      })
-      .finally(() => this.authorizations.delete(request.id));
+      .then((answer) => (details ? { ...answer, settings: null, details: answer.details ?? null } : answer));
   }
 
   apply(actor: Actor, hostId: string, containerName: string, settings: ContainerSettings): JobView {
-    this.access.require(hostId, containerName, actor.userId, "settings");
+    this.access.require(hostId, containerName, actor.userId);
     const editing = this.jobs
       .list(hostId, containerName)
       .some((job) => job.action === JOB_ACTION.edit && OPEN_STATUSES.has(job.status));
@@ -125,28 +103,8 @@ export class SettingsService {
     return job;
   }
 
-  authorizeOperator(host: HostRow, requestId: string, members: readonly ResourceMember[]): boolean {
-    const owner = this.authorizations.get(requestId);
-    return (
-      owner !== undefined &&
-      owner.hostId === host.id &&
-      (this.access.authorizeOperator?.(
-        host.id,
-        owner.containerName,
-        owner.userId,
-        "settings",
-        members,
-        owner.tokenHash,
-      ) ??
-        false)
-    );
-  }
-
   take(host: HostRow): SettingsRequest[] {
-    return this.relay.take(
-      host.id,
-      (request) => request.operatorUserId === undefined || host.resourcePermissions === true,
-    );
+    return this.relay.take(host.id);
   }
 
   answer(host: HostRow, requestId: string, answer: SettingsAnswer) {
@@ -169,7 +127,6 @@ export class SettingsService {
   }
 
   reset() {
-    this.authorizations.clear();
     this.relay.reset();
   }
 

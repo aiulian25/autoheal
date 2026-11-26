@@ -4,7 +4,6 @@ import { type BulkAction, isStopped, targetsOf, type RowAction } from "../contai
 import { JOB_ACTION, CONTAINER_STATE_PAUSED, CONTAINER_STATE_RUNNING } from "../../../src/shared/constants.js";
 import type { ContainerView, HostView } from "../../../src/shared/api.js";
 import { TEXT } from "../constants.js";
-import { actionPermission, type ResourceAction } from "../../../src/shared/resource-permissions.js";
 import { Loading } from "./common.js";
 import { ComposePanel } from "./compose-panel.js";
 import { ContainerFiles } from "./container-files.js";
@@ -47,10 +46,6 @@ function reachRefusal(host: HostView, container: ContainerView, needsRunning: bo
   }
   return null;
 }
-export const permissionOf = (reach: Reach): ResourceAction => {
-  if (reach === REACH.shell) return "terminal";
-  return reach === REACH.compose ? "settings" : reach;
-};
 // What opens under a row to reach inside its container.
 export function ReachPanel({
   reach,
@@ -89,18 +84,18 @@ export function PanelReach({
   reaching,
   files,
   onReach,
-  allowed,
+  canAct,
 }: {
   host: HostView;
   container: ContainerView;
   reaching: Reach | null;
   files: ReactNode;
   onReach: (reach: Reach) => void;
-  allowed: (action: ResourceAction) => boolean;
+  canAct: boolean;
 }) {
   const text = TEXT.containerDetails;
   const button = (reach: Reach, icon: IconName, label: string) => {
-    if (!allowed(permissionOf(reach))) return null;
+    if (!canAct) return null;
     const refusal = reachRefusal(host, container, reach !== REACH.settings);
     return (
       <button
@@ -133,7 +128,6 @@ export function RowActions({
   onToggle,
   onLogs,
   onReach,
-  allowed,
   admin,
   onBackup,
 }: {
@@ -148,7 +142,6 @@ export function RowActions({
   onToggle: () => void;
   onLogs: () => void;
   onReach: (reach: Reach) => void;
-  allowed: (action: ResourceAction) => boolean;
 }) {
   const text = TEXT.hostContainers;
   const asking = useAskInPlace();
@@ -158,7 +151,7 @@ export function RowActions({
     return host.containerAccess === false ? text.reachOff : null;
   };
   const composeLabel = TEXT.stacks.labels.compose(container.composeProject ?? container.name);
-  const composeButton = allowed("settings") && (
+  const composeButton = (
     <button
       type="button"
       className="icon-button"
@@ -172,7 +165,6 @@ export function RowActions({
     </button>
   );
   const reachButton = (reach: Reach, icon: IconName, label: string) => {
-    if (!allowed(permissionOf(reach))) return null;
     const refusal = reachRefusal(host, container, reach !== REACH.settings);
     return (
       <button
@@ -189,8 +181,6 @@ export function RowActions({
     );
   };
   const button = (action: RowAction, icon: IconName, enabled: boolean, onClick: () => void) => {
-    const permission = actionPermission(action);
-    if (permission === null || !allowed(permission)) return null;
     return (
       <button
         key={action}

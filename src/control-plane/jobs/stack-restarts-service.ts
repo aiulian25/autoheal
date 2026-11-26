@@ -14,7 +14,7 @@ import {
 } from "../../shared/constants.js";
 import type { TopologySnapshot } from "../../shared/topology.js";
 import type { Actor, AuditLog } from "../audit/audit-log.js";
-import type { ResourcePermissions } from "../auth/resource-permissions.js";
+import type { OwnerCheck } from "../auth/owner-check.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { jobs, stackRestarts } from "../database/schema.js";
 import { DomainError } from "../domain-error.js";
@@ -50,7 +50,7 @@ export interface StackRestartsDependencies {
   jobs: Pick<JobsService, "request" | "onFinished">;
   inventory: Pick<InventoryService, "containers">;
   topology: Pick<TopologyService, "view">;
-  permissions: Pick<ResourcePermissions, "requireJob">;
+  owner: Pick<OwnerCheck, "require">;
   clock: () => number;
 }
 
@@ -80,7 +80,7 @@ const viewOf = (row: StackRestartRow): StackRestartView => ({
 /**
  * A Compose stack's containers on one host restarted one at a time, each after the ones it depends on, as an
  * update run applies images: the next is asked for once the one before has restarted, and the first that
- * fails stops the rest. Each is the person's own restart job, so their grants are checked for each. The plan
+ * fails stops the rest. Each is the owner's own restart job, asked for in their name. The plan
  * is kept as its jobs are, so a control plane that restarts carries on from it; moving on is one transaction,
  * with the check that the job is still the one waited on, so no container is asked for twice.
  */
@@ -105,10 +105,7 @@ export class StackRestartsService {
     if (members.length === 0) {
       throw new DomainError(API_ERRORS.stackNotFound);
     }
-    // All of them before the first goes: a stack the person may not restart whole is not restarted in part.
-    for (const name of members) {
-      this.dependencies.permissions.requireJob(actor.userId, hostId, name, JOB_ACTION.restart);
-    }
+    this.dependencies.owner.require(actor.userId);
     const names = restartOrder(members, this.dependencies.topology.view(hostId).snapshot?.edges ?? []);
     const now = this.dependencies.clock();
     const restart = this.database.transaction(() => {

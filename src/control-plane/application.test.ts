@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { loadControlPlaneConfig } from "../config/control-plane-config.js";
 import type { ControlPlaneConfig } from "../config/control-plane-config.js";
-import { addLegacyPeople, withoutOnePersonRule } from "../../test/support/legacy-people.js";
+import { addLegacyPeople, asBeforeOnePerson, BEFORE_ONE_PERSON } from "../../test/support/legacy-people.js";
 import { DETECTOR_SOON_MILLISECONDS, LIVE_EVENT, SINGLE_OWNER_MESSAGES, TLS_MESSAGES } from "../shared/constants.js";
 import { eachApart, lookSoonAfterChanges, openOwnedDatabase, renewWhenDue } from "./application.js";
 import { AuditLog } from "./audit/audit-log.js";
@@ -169,7 +169,6 @@ describe("tasks following what changed, between the detectors' passes", () => {
 });
 
 // The schema of the version before Autoheal was one person's.
-const LEGACY_SCHEMA_VERSION = 78;
 
 describe("the database the control plane starts on", () => {
   let directory: string;
@@ -222,13 +221,12 @@ describe("the database the control plane starts on", () => {
       { username: "cedar", role: "admin" },
       { username: "rowan", role: "admin" },
     ]);
-    withoutOnePersonRule(first.databaseHandle);
-    first.databaseHandle.sqlite.pragma(`user_version = ${LEGACY_SCHEMA_VERSION}`);
+    asBeforeOnePerson(first.databaseHandle);
     first.databaseHandle.close();
 
     await expect(open([])).rejects.toThrow(SINGLE_OWNER_MESSAGES.unclear(2));
     const left = openReadOnly(join(directory, "autoheal.db"));
-    expect(left.pragma("user_version", { simple: true })).toBe(LEGACY_SCHEMA_VERSION);
+    expect(left.pragma("user_version", { simple: true })).toBe(BEFORE_ONE_PERSON);
     left.close();
   });
 });

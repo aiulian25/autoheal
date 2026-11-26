@@ -497,7 +497,7 @@ describe("ContainerUpdater", () => {
     }
   });
 
-  it("rechecks delegated authority after a pull and leaves the original untouched when it was revoked", async () => {
+  it("asks again after a pull whether it may go ahead, and leaves the original untouched when it may not", async () => {
     let authorized = true;
     const pull = docker.pull.bind(docker);
     docker.pull = async (...args) => {
@@ -506,7 +506,7 @@ describe("ContainerUpdater", () => {
     };
     const result = await updater.update("app", false, undefined, { authorize: async () => authorized });
     expect(result.succeeded).toBe(false);
-    expect(result.outcome).toContain("delegated action");
+    expect(result.outcome).toBe(JOB_OUTCOMES.noLongerAllowed);
     expect(docker.calls.filter((call) => /^(stop|start|rename|create|remove) /.test(call))).toEqual([]);
     expect(docker.find("app")?.State.Running).toBe(true);
   });

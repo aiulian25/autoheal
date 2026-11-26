@@ -621,9 +621,9 @@ describe("a plan of reboots across three hosts", () => {
   it("stops when its approver can no longer reboot hosts", async () => {
     await approve();
     await rebootAndReturn(0);
-    const permissions = vi.spyOn(world.plane.services.resourcePermissions, "isAdmin").mockReturnValue(false);
+    const owner = vi.spyOn(world.plane.services.ownerCheck, "is").mockReturnValue(false);
     tick();
-    permissions.mockRestore();
+    owner.mockRestore();
     expect((await plan()).reason).toBe(REBOOT_PLAN_TEXT.noLongerAllowed);
     expect(rebootJobs()).toHaveLength(1);
   });

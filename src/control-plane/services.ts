@@ -24,7 +24,7 @@ import { SearchService } from "./search/search-service.js";
 import { DeliveryService } from "./notifications/delivery-service.js";
 import { TopologyService } from "./inventory/topology-service.js";
 import { PolicyRehearsalService } from "./replay/policy-rehearsal-service.js";
-import { ResourcePermissions } from "./auth/resource-permissions.js";
+import { OwnerCheck } from "./auth/owner-check.js";
 import { DiagnosticsService } from "./incidents/diagnostics-service.js";
 import {
   AUDIT_ACTIONS,
@@ -141,7 +141,7 @@ export interface ControlPlaneServices {
   notificationDeliveries: DeliveryService;
   topology: TopologyService;
   policyRehearsal: PolicyRehearsalService;
-  resourcePermissions: ResourcePermissions;
+  ownerCheck: OwnerCheck;
   diagnostics: DiagnosticsService;
   maintenance: MaintenanceService;
   resultReceipts: ResultReceipts;
@@ -451,7 +451,7 @@ export function createControlPlaneServices(
       (host) => power.powerOf(host),
     ),
   );
-  const resourcePermissions = tracked(new ResourcePermissions(databaseHandle, inventoryService, sessions, clock));
+  const ownerCheck = tracked(new OwnerCheck(databaseHandle));
   const tasksService = tracked(new TasksService(databaseHandle, auditLog, inventoryService, clock));
   const resourceAdvisor = tracked(
     new ResourceAdvisor({ databaseHandle, metricsStore, owner: () => tasksService.owner(), clock }),
@@ -509,7 +509,7 @@ export function createControlPlaneServices(
       live,
       clock,
       (hostId, name) => maintenance.held(hostId, name),
-      resourcePermissions,
+      ownerCheck,
     ),
   );
   const power: PowerService = tracked(
@@ -602,7 +602,7 @@ export function createControlPlaneServices(
     new RebootPlansService({
       databaseHandle,
       audit: auditLog,
-      permissions: resourcePermissions,
+      owner: ownerCheck,
       hostPackages,
       power,
       probes,
@@ -657,18 +657,14 @@ export function createControlPlaneServices(
       clock,
     ),
   );
-  const containerAccess = tracked(
-    new ContainerAccessService(databaseHandle, inventoryService, resourcePermissions, sessions),
-  );
+  const containerAccess = tracked(new ContainerAccessService(databaseHandle, inventoryService, ownerCheck));
   const waitingRunners = tracked(new WaitingRunners());
-  const topology = tracked(
-    new TopologyService(databaseHandle, inventoryService, resourcePermissions, waitingRunners, clock),
-  );
+  const topology = tracked(new TopologyService(databaseHandle, inventoryService, ownerCheck, waitingRunners, clock));
   const rollouts: RolloutService = tracked(
     new RolloutService(
       databaseHandle,
       auditLog,
-      resourcePermissions,
+      ownerCheck,
       inventoryService,
       topology,
       jobsService,
@@ -741,7 +737,7 @@ export function createControlPlaneServices(
     policyRehearsal: tracked(
       new PolicyRehearsalService({ databaseHandle, hostControl, inventory: inventoryService, maintenance, clock }),
     ),
-    resourcePermissions,
+    ownerCheck,
     diagnostics,
     maintenance,
     resultReceipts: tracked(new ResultReceipts(databaseHandle, clock)),
@@ -856,7 +852,7 @@ export function createControlPlaneServices(
         jobs: jobsService,
         inventory: inventoryService,
         topology,
-        permissions: resourcePermissions,
+        owner: ownerCheck,
         clock,
       }),
     ),

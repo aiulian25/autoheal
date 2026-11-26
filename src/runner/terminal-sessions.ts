@@ -1,12 +1,7 @@
-import {
-  OPERATOR_REFUSAL,
-  OPERATOR_ISOLATION_REFUSAL,
-  operatorAccessTarget,
-  type OperatorAccessAuthorizer,
-} from "./operator-authorization.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   CONTAINER_ACCESS_REFUSALS,
+  DELEGATED_WORK_REFUSAL,
   HOST_TERMINAL_REFUSALS,
   HOST_TERMINAL_TARGET,
   RUNNER_MESSAGES,
@@ -49,12 +44,8 @@ async function typeInto(shell: ShellStream, data: string) {
 export type HostShellOpener = (columns: number, rows: number) => Promise<ShellStream>;
 
 export interface TerminalSessionsDependencies {
-  authorizeOperator?: OperatorAccessAuthorizer;
   // None on a host watched for its system alone: only its own shell opens there.
-  docker:
-    | (Pick<DockerClient, "inspect" | "openShell"> &
-        Partial<Pick<DockerClient, "containerSummaries" | "inspectVolume">>)
-    | null;
+  docker: Pick<DockerClient, "inspect" | "openShell"> | null;
   hostShell: HostShellOpener | null;
   controlPlane: Pick<ControlPlaneClient, "terminalInput" | "terminalOutput" | "terminalEnd">;
   settings: ContainerAccessSettings & { hostTerminal: boolean };
@@ -105,6 +96,10 @@ export class TerminalSessions {
   }
 
   private async run(terminal: TerminalStart) {
+    if (terminal.operatorUserId !== undefined) {
+      await this.refuse(terminal, DELEGATED_WORK_REFUSAL);
+      return;
+    }
     const shell =
       terminal.containerName === null
         ? await this.openOnHost(terminal)
@@ -136,13 +131,6 @@ export class TerminalSessions {
     if (docker === null) return this.refuse(terminal, CONTAINER_ACCESS_REFUSALS.noDocker);
     const refusal = await containerAccessRefusal(containerName, settings, docker);
     if (refusal !== null) return this.refuse(terminal, refusal);
-    if (terminal.operatorUserId !== undefined) {
-      const target = await operatorAccessTarget(containerName, docker);
-      const authorized =
-        target !== null && (await this.dependencies.authorizeOperator?.(terminal.id, target).catch(() => false));
-      if (target === null) return this.refuse(terminal, OPERATOR_ISOLATION_REFUSAL);
-      if (!authorized) return this.refuse(terminal, OPERATOR_REFUSAL);
-    }
     return this.stopping ? null : docker.openShell(containerName, terminal.columns, terminal.rows);
   }
 

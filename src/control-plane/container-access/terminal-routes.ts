@@ -4,7 +4,7 @@ import { z } from "zod";
 import { API_ROUTES } from "../../shared/api.js";
 import {
   ACCEL_BUFFERING_OFF,
-  ACCESS_FULL,
+  ACCESS_ADMIN,
   EVENT_STREAM_CONTENT_TYPE,
   EVENT_STREAM_KEEPALIVE,
   HTTP_HEADERS,
@@ -23,8 +23,8 @@ import type { TerminalEvent, TerminalService } from "./terminal-service.js";
 
 // A shell asks often: every few keystrokes, every burst of output. The usual limit would cut it off mid-word.
 export const terminalRateLimit = { max: TERMINAL_RATE_LIMIT_PER_MINUTE, timeWindow: RATE_LIMIT_WINDOW_MILLISECONDS };
-const scopedAccess = { config: { access: ACCESS_FULL } } as const;
-const typing = { config: { access: ACCESS_FULL, rateLimit: terminalRateLimit } } as const;
+const adminOnly = { config: { access: ACCESS_ADMIN } } as const;
+const typing = { config: { access: ACCESS_ADMIN, rateLimit: terminalRateLimit } } as const;
 
 export const terminalParameters = z.object({ terminalId: z.uuid() });
 const hostParameters = z.object({ hostId: z.uuid() });
@@ -53,20 +53,19 @@ function eventText(event: TerminalEvent): string {
 
 /** Shells inside containers or on a host: open one, follow what it prints, type into it, resize it, close it. */
 export function registerTerminalRoutes(app: FastifyInstance, terminals: TerminalService) {
-  // Admins only: the service refuses operators, whatever their grants.
-  app.post(API_ROUTES.hostTerminals, scopedAccess, async (request) => {
+  app.post(API_ROUTES.hostTerminals, adminOnly, async (request) => {
     const { hostId } = parseBody(hostParameters, request.params);
     return terminals.openHost(actorOf(request), request.authSession!, hostId, parseBody(sizeBody, request.body));
   });
 
-  app.post(API_ROUTES.terminals, scopedAccess, async (request) => {
+  app.post(API_ROUTES.terminals, adminOnly, async (request) => {
     const { hostId, containerName } = parseBody(containerParameters, request.params);
     const size = parseBody(sizeBody, request.body);
     return terminals.open(actorOf(request), request.authSession!, hostId, containerName, size);
   });
 
   // Server-sent events: what the shell prints, base64, then how it ended.
-  app.get(API_ROUTES.terminalStream, scopedAccess, async (request, reply) => {
+  app.get(API_ROUTES.terminalStream, adminOnly, async (request, reply) => {
     const { terminalId } = parseBody(terminalParameters, request.params);
     const writer = sseWriter(reply, TERMINAL_KEEPALIVE_MILLISECONDS);
     writer.write(EVENT_STREAM_KEEPALIVE);
@@ -105,7 +104,7 @@ export function registerTerminalRoutes(app: FastifyInstance, terminals: Terminal
     return reply.code(HTTP_STATUS.noContent).send();
   });
 
-  app.delete(API_ROUTES.terminal, scopedAccess, async (request, reply) => {
+  app.delete(API_ROUTES.terminal, adminOnly, async (request, reply) => {
     const { terminalId } = parseBody(terminalParameters, request.params);
     terminals.close(request.authSession!, terminalId);
     return reply.code(HTTP_STATUS.noContent).send();

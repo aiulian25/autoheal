@@ -80,7 +80,6 @@ describe("restarting a Compose stack one container at a time", () => {
         protectedContainers: ["musicbox-backup"],
         topology,
       }),
-      resourcePermissions: true,
     });
     expect(response.statusCode).toBe(200);
   }
@@ -210,7 +209,6 @@ describe("a stack restart across a control plane restart", () => {
         protectedContainers: ["musicbox-backup"],
         topology,
       }),
-      resourcePermissions: true,
     });
     expect(reported.statusCode).toBe(200);
     expect((await admin.post(apiPath(API_ROUTES.stackRestart, { hostId, stack: STACK }))).statusCode).toBe(200);

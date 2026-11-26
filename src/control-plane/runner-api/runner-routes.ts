@@ -11,7 +11,6 @@ import {
 } from "../../shared/application-backups.js";
 import { applicationArtifactStream } from "../../shared/application-artifact-stream.js";
 import { operationPreviewAnswerSchema } from "../../shared/topology.js";
-import { resourceAuthorizationSchema } from "../../shared/resource-permissions.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -38,6 +37,7 @@ import {
   jobResultSchema,
   metricsReportSchema,
   outcomeSchema,
+  rolloutAuthorizationSchema,
   fileAnswerSchema,
   hostProfileAnswerSchema,
   settingsAnswerSchema,
@@ -57,7 +57,7 @@ const terminalRoute = { config: { rateLimit: terminalRateLimit } } as const;
 const requestParameters = z.object({ requestId: z.uuid() });
 
 // A stored heartbeat can outlive a process downgrade. The current poller must explicitly understand
-// delegated authorization/review markers before any such request is handed over.
+// rollouts, backups and reviewed scopes before any such request is handed over.
 function deliveryHost(request: FastifyRequest) {
   const header = request.headers[HTTP_HEADERS.runnerCapabilities];
   const capabilities = new Set(
@@ -69,7 +69,6 @@ function deliveryHost(request: FastifyRequest) {
     rollouts: host.rollouts && capabilities.has(RUNNER_CAPABILITY.rollouts),
     applicationBackups: host.applicationBackups && capabilities.has(RUNNER_CAPABILITY.applicationBackups),
     applicationBootDrills: capabilities.has(RUNNER_CAPABILITY.applicationBootDrills),
-    resourcePermissions: host.resourcePermissions && capabilities.has(RUNNER_CAPABILITY.resourcePermissions),
     operationPreviews: host.operationPreviews && capabilities.has(RUNNER_CAPABILITY.operationPreviews),
   };
 }
@@ -151,20 +150,9 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
 
   app.post(RUNNER_ROUTES.jobAuthorization, async (request) => {
     const { jobId } = parseBody(jobParameters, request.params);
-    const { members } = parseBody(resourceAuthorizationSchema, request.body);
-    return { authorized: services.jobsService.authorizeOperator(request.runnerHost!, jobId, members) };
+    const { members } = parseBody(rolloutAuthorizationSchema, request.body);
+    return { authorized: services.jobsService.authorizeRollout(request.runnerHost!, jobId, members) };
   });
-  for (const [path, service] of [
-    [RUNNER_ROUTES.terminalAuthorization, services.terminals],
-    [RUNNER_ROUTES.fileAuthorization, services.files],
-    [RUNNER_ROUTES.settingsAuthorization, services.containerSettings],
-  ] as const) {
-    app.post(path, async (request) => {
-      const { requestId } = parseBody(requestParameters, request.params);
-      const { members } = parseBody(resourceAuthorizationSchema, request.body);
-      return { authorized: service.authorizeOperator(request.runnerHost!, requestId, members) };
-    });
-  }
 
   // The answer tells the runner where Ollama and the dashboard are: its .env needs neither.
   app.post(RUNNER_ROUTES.heartbeat, async (request): Promise<HeartbeatResponse> => {

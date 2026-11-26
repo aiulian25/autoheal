@@ -228,7 +228,6 @@ export const hosts = sqliteTable("hosts", {
   containersStaleSince: integer("containers_stale_since"),
   // What its latest report left out to fit, as a JSON list; null when it left out nothing.
   reportTrimmedJson: text("report_trimmed_json"),
-  resourcePermissions: integer("resource_permissions", { mode: "boolean" }).notNull().default(false),
   topologyJson: text("topology_json"),
   operationPreviews: integer("operation_previews", { mode: "boolean" }).notNull().default(false),
   // Whether its runner can make service checks from its own host.
@@ -569,7 +568,6 @@ export const jobs = sqliteTable("jobs", {
   taskId: text("task_id").references(() => tasks.id, { onDelete: "set null" }),
   containerName: text("container_name").notNull(),
   action: text("action", { enum: JOB_ACTIONS as [JobAction, ...JobAction[]] }).notNull(),
-  operatorUserId: text("operator_user_id"),
   expectedResourcesFingerprint: text("expected_resources_fingerprint"),
   rolloutJson: text("rollout_json"),
   requestedByUserId: text("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
@@ -741,14 +739,6 @@ export const maintenanceWindows = sqliteTable("maintenance_windows", {
   reason: text("reason").notNull(),
   startsAt: integer("starts_at").notNull(),
   expiresAt: integer("expires_at").notNull(),
-});
-
-export const resourcePermissions = sqliteTable("resource_permissions", {
-  userId: text("user_id")
-    .primaryKey()
-    .references(() => users.id, { onDelete: "cascade" }),
-  revision: integer("revision").notNull().default(0),
-  grantsJson: text("grants_json").notNull().default("[]"),
 });
 
 export { notificationEvents, notificationDeliveries, notificationRouting } from "../notifications/delivery-schema.js";

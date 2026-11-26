@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { startTestControlPlane, type TestClient, type TestControlPlane } from "../../../test/support/control-plane.js";
-import { addLegacyPeople, LEGACY_PASSWORD, withoutOnePersonRule } from "../../../test/support/legacy-people.js";
+import {
+  addLegacyPeople,
+  asBeforeOnePerson,
+  BEFORE_ONE_PERSON,
+  LEGACY_PASSWORD,
+} from "../../../test/support/legacy-people.js";
 import { fullySignedInAdmin } from "../../../test/support/second-factor.js";
 import { API_ROUTES, apiPath, type TaskDetailView } from "../../shared/api.js";
 import {
@@ -16,11 +21,9 @@ import {
 } from "../../shared/constants.js";
 import { AuditLog } from "../audit/audit-log.js";
 import { DatabaseHandle, openReadOnly } from "../database/connection.js";
-import { auditEvents, passkeys, recoveryCodes, resourcePermissions, sessions, users } from "../database/schema.js";
+import { auditEvents, passkeys, recoveryCodes, sessions, users } from "../database/schema.js";
 import { ensureFirstAdmin } from "./bootstrap.js";
 import { assertOwnerClear, keepOneOwner, ownerOf } from "./single-owner.js";
-
-const LEGACY_SCHEMA_VERSION = 78;
 
 async function setUp() {
   const handle = new DatabaseHandle(IN_MEMORY_DATABASE);
@@ -121,8 +124,7 @@ describe("a database from before Autoheal was one person's", () => {
     await ensureFirstAdmin(handle, auditLog, "admin", () => undefined);
     if (!ownerActive) handle.database.update(users).set({ status: "deactivated" }).run();
     await addLegacyPeople(handle, people);
-    withoutOnePersonRule(handle);
-    handle.sqlite.pragma(`user_version = ${LEGACY_SCHEMA_VERSION}`);
+    asBeforeOnePerson(handle);
     handle.close();
     return path;
   }
@@ -144,7 +146,7 @@ describe("a database from before Autoheal was one person's", () => {
       false,
     );
     expect(() => assertOwnerClear(path)).toThrow(SINGLE_OWNER_MESSAGES.unclear(2));
-    expect(versionOf(path)).toBe(LEGACY_SCHEMA_VERSION);
+    expect(versionOf(path)).toBe(BEFORE_ONE_PERSON);
   });
 
   it("is nobody's when empty, to be set up as a new one", () => {
@@ -222,10 +224,6 @@ describe("keeping one owner", () => {
       .insert(recoveryCodes)
       .values({ id: "r1", userId: ids.get("rowan")!, codeHash: "h" })
       .run();
-    handle.database
-      .insert(resourcePermissions)
-      .values({ userId: ids.get("rowan")!, revision: 1, grantsJson: "[]" })
-      .run();
     const open = await task("Renew the Pi-hole certificate", ids.get("cedar")!);
     const closed = await task("Move Paperless to the Mini", ids.get("cedar")!);
     await owner.request({
@@ -269,7 +267,6 @@ describe("keeping one owner", () => {
         .all(),
     ).toEqual([]);
     expect(handle.database.select().from(recoveryCodes).all().length).toBeGreaterThan(0);
-    expect(handle.database.select().from(resourcePermissions).all()).toEqual([]);
     expect(await assigneeOf(open)).toBeNull();
     expect(await assigneeOf(closed)).toMatchObject({ kind: "user", name: "cedar" });
     const kept = handle.database

@@ -36,7 +36,6 @@ import {
   ChoiceCells,
 } from "./container-cells.js";
 import { type Reach, RowActions, PanelReach, ReachPanel } from "./container-row-actions.js";
-import { OperationImpactReview } from "./dependency-map.js";
 import { useContainerSelection } from "./filters.js";
 import { BulkBar, BULK_TEXT, toggled } from "./host-bulk-bar.js";
 import { Icon } from "./icons.js";
@@ -75,8 +74,6 @@ export function HostContainers({
   // Goes up each time a person clicks the page's Containers tab, which leads back to this list.
   containersAsked?: number;
 }) {
-  // Autoheal is one person's: its owner may do everything here, and nobody else signs in.
-  const allowed = () => admin;
   const asking = useAskInPlace();
   const query = hostContainersQuery(host.id);
   const containers = useQuery(query);
@@ -120,17 +117,13 @@ export function HostContainers({
   // Once an action is asked, from a row or for the ticked ones, no tick stays behind to be acted on again by mistake.
   const clearTicks = () => setTicked(new Set());
   const bulk = useBulkAction(host.id, clearTicks);
-  const {
-    operatorReview,
-    setOperatorReview,
-    updateAsked,
-    setUpdateAsked,
-    canUpdate,
-    operatorAction,
-    ask,
-    updateConfirmed,
-    choose,
-  } = useContainerActions({ hostId: host.id, admin, allowed, bulk, asking, clearTicks, onSaved: saved.show });
+  const { updateAsked, setUpdateAsked, canUpdate, ask, updateConfirmed, choose } = useContainerActions({
+    hostId: host.id,
+    admin,
+    bulk,
+    asking,
+    onSaved: saved.show,
+  });
   const list = containers.data;
   const text = TEXT.hostContainers;
   const showingContainers = panel === HOST_PANEL.containers;
@@ -405,7 +398,7 @@ export function HostContainers({
                                       title={TEXT.hostContainers.updateBox.icon(container.name)}
                                       aria-label={TEXT.hostContainers.updateBox.icon(container.name)}
                                       aria-expanded={updateAsked?.target.name === container.name}
-                                      disabled={bulk.run.isPending || operatorAction.isPending}
+                                      disabled={bulk.run.isPending}
                                       onClick={(event) =>
                                         setUpdateAsked({ target: container, anchor: event.currentTarget })
                                       }
@@ -444,7 +437,7 @@ export function HostContainers({
                                     container={container}
                                     open={open}
                                     reaching={reachingOf(container.name)}
-                                    busy={bulk.run.isPending || operatorAction.isPending}
+                                    busy={bulk.run.isPending}
                                     ask={ask}
                                     onToggle={() => selection.toggle(container.name)}
                                     onLogs={() =>
@@ -454,7 +447,6 @@ export function HostContainers({
                                       })
                                     }
                                     onReach={(kind) => toggleReach(container.name, kind)}
-                                    allowed={allowed}
                                   />
                                 </td>
                               )}
@@ -488,7 +480,7 @@ export function HostContainers({
                                         container={container}
                                         reaching={reachingOf(container.name)}
                                         onReach={(kind) => toggleReach(container.name, kind)}
-                                        allowed={allowed}
+                                        canAct={admin}
                                         files={files}
                                       />
                                     )}
@@ -531,19 +523,7 @@ export function HostContainers({
             onConfirm={(previews) => updateConfirmed(updateAsked.target, previews)}
           />
         )}
-        {operatorReview && (
-          <OperationImpactReview
-            hostId={host.id}
-            action={operatorReview.action}
-            names={[operatorReview.target.name]}
-            onCancel={() => setOperatorReview(null)}
-            onConfirm={(previews) => {
-              operatorAction.mutate({ ...operatorReview, previewId: previews[operatorReview.target.name] });
-              setOperatorReview(null);
-            }}
-          />
-        )}
-        <ErrorNotice error={choose.error ?? operatorAction.error} />
+        <ErrorNotice error={choose.error} />
       </div>
     </section>
   );

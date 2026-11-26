@@ -2460,10 +2460,10 @@ export const JOB_OUTCOMES = {
     `Rolled ${name} back to the container it ran before the update, with its data as it was on ${at}.`,
   restoreDataFailed: (name: string, reason: string) =>
     `Put back ${name}'s old container but could not restore its data (${reason}); it is left stopped so the old version does not run on the new data.`,
-  delegationUnsupported:
-    "The polling runner no longer supports delegated authorization. Update the runner before requesting the action again.",
   reviewedScopeUnsupported:
     "The runner no longer supports the reviewed operation scope. Update the runner and review again.",
+  // Its dashboard said no when its runner asked again, just before the change began: a rollout paused, or a hold set.
+  noLongerAllowed: "Refused: by the time it could begin, this change was no longer allowed to go ahead.",
   permissionRevoked: "Requesting account no longer has permission for this action.",
   permissionRevokedBeforeDelivery: "Permission revoked before delivery.",
 } as const;
@@ -4214,6 +4214,8 @@ export const CONTAINER_ACCESS_REFUSALS = {
   missing: (name: string) => `${name} is not on this host any more.`,
   noDocker: "Refused: this host has no Docker, so it has no containers to reach inside.",
 } as const;
+// Asked for on someone's behalf, as only a dashboard from before Autoheal was one person's ever asks: nobody does that.
+export const DELEGATED_WORK_REFUSAL = "Refused: this Autoheal is one person's, and nobody acts on its hosts for them.";
 // --- a shell on the host itself: over its SSH session, or through a helper that enters the host's namespaces -----
 
 // An admin may open a shell on the host unless its own .env turns it off.
@@ -5422,7 +5424,6 @@ export const ROLLOUT_TICK_INTERVAL_MILLISECONDS = 10 * MILLISECONDS_PER_SECOND;
 // What a runner can do: the one list it names in a header on every request, and its heartbeat says field by field.
 // The dashboard hands a runner only what its list names. Older dashboards read these very names.
 export const RUNNER_CAPABILITY = {
-  resourcePermissions: "resource-permissions",
   operationPreviews: "operation-previews",
   rollouts: "rollouts",
   applicationBackups: "application-backups",
@@ -5732,6 +5733,7 @@ export const RUNNER_UPDATE_TEXT = {
   ownContainerUnknown: "This runner could not find its own container, so nothing was changed.",
   noSocket: "This runner's container has no Docker socket mounted, so it cannot be replaced from here.",
   noRelease: "Its control plane has not said which release it runs yet; ask again in a moment.",
+  notInContainer: "This runner does not run in a container of its own, so it cannot be replaced from here.",
 } as const;
 export const SELF_UPDATE_TEXT = {
   started: "Updating: the new container is being made.",

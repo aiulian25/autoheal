@@ -15,6 +15,7 @@ import { containerChoicesMigration } from "./migrations/0015-container-choices.j
 import { widgetKeyScopeMigration } from "./migrations/0035-widget-key-scope.js";
 import { healthReadMigration } from "./migrations/0077-host-health-at.js";
 import { sshKeysOnceMigration } from "./migrations/0078-ssh-keys-once.js";
+import { nobodyActsForTheOwnerMigration } from "./migrations/0080-nobody-acts-for-the-owner.js";
 import { LATEST_SCHEMA_VERSION, MIGRATIONS, migrate, schemaVersionOf } from "./migrations/index.js";
 import * as schema from "./schema.js";
 
@@ -162,6 +163,45 @@ describe("migrations", () => {
       { id: "first" },
       { id: "own" },
     ]);
+    sqlite.close();
+  });
+
+  it("lets go of grants and of the operator a job was done for, keeping the jobs and everyone's names", () => {
+    const sqlite = new Database(":memory:");
+    for (const migration of MIGRATIONS.filter(({ version }) => version < nobodyActsForTheOwnerMigration.version)) {
+      sqlite.exec(migration.sql);
+      sqlite.pragma(`user_version = ${migration.version}`);
+    }
+    sqlite
+      .prepare(
+        "insert into users (id, username, password_hash, role, created_at) values ('owner', 'alex', 'hash', 'admin', 1)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "insert into hosts (id, label, token_hash, token_hint, enrolled_at, resource_permissions) values ('alder', 'Alder', 'hash-alder', 'abcd', 1, 1)",
+      )
+      .run();
+    sqlite
+      .prepare(
+        "insert into jobs (id, host_id, container_name, action, operator_user_id, requested_by_user_id, status, created_at, expires_at) values ('restart', 'alder', 'paperless', 'restart', 'owner', 'owner', 'succeeded', 1, 2)",
+      )
+      .run();
+    sqlite.prepare("insert into resource_permissions (user_id, revision, grants_json) values ('owner', 1, '[]')").run();
+    const columnsOf = (table: string) =>
+      (sqlite.prepare(`pragma table_info(${table})`).all() as ColumnInfo[]).map(({ name }) => name);
+
+    expect(migrate(sqlite)).toBe(nobodyActsForTheOwnerMigration.version);
+
+    const grantsTable = sqlite.prepare("select name from sqlite_master where name = 'resource_permissions'").get();
+    expect(grantsTable).toBeUndefined();
+    expect(columnsOf("jobs")).not.toContain("operator_user_id");
+    expect(columnsOf("hosts")).not.toContain("resource_permissions");
+    expect(sqlite.prepare("select id, requested_by_user_id, status from jobs").all()).toEqual([
+      { id: "restart", requested_by_user_id: "owner", status: "succeeded" },
+    ]);
+    expect(sqlite.prepare("select id, label from hosts").all()).toEqual([{ id: "alder", label: "Alder" }]);
+    expect(sqlite.prepare("select username from users").all()).toEqual([{ username: "alex" }]);
     sqlite.close();
   });
 
