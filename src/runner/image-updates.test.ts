@@ -404,3 +404,71 @@ describe("a newer version than the tag a container runs", () => {
     expect(checker.resultFor(id, "ghcr.io/example/app:1.2.0")?.newerTag).toBeUndefined();
   });
 });
+
+describe("ImageUpdateChecker, for images no check has seen yet", () => {
+  it("checks only those, once the first check ran, and a check begun before keeps what they found", async () => {
+    let now = 1_000;
+    let summaries = [summary("web", "nginx", imageId("a"))];
+    let held: Promise<void> | null = null;
+    const asked: string[] = [];
+    // What each tag points to now: nginx's has moved on to a newer image.
+    const pointsTo: Record<string, string> = { "library/nginx": digest("2"), "library/redis": digest("3") };
+    const images = new Map<string, ImageDetails>([
+      [imageId("a"), { Id: imageId("a"), RepoDigests: [`nginx@${digest("1")}`] }],
+      [imageId("b"), { Id: imageId("b"), RepoDigests: [`nginx@${digest("2")}`] }],
+      [imageId("c"), { Id: imageId("c"), RepoDigests: [`redis@${digest("3")}`] }],
+    ]);
+    const checker = new ImageUpdateChecker(
+      {
+        containerSummaries: async () => {
+          const listed = summaries;
+          await held;
+          return listed;
+        },
+        inspect: async () => null,
+        inspectImage: async (reference) => images.get(reference) ?? null,
+      },
+      {
+        tags: async () => [],
+        digest: async (reference: ImageReference) => {
+          asked.push(reference.repository);
+          return reference.tag.startsWith("sha256:") ? reference.tag : pointsTo[reference.repository]!;
+        },
+        labels: async () => labelled("2.1.0"),
+      },
+      () => now,
+    );
+
+    // Before the first check every image is new: that check sees to them all.
+    expect(await checker.checkNew()).toBe(false);
+    expect(asked).toEqual([]);
+    await checker.checkAll();
+    expect(checker.resultFor(imageId("a"), "nginx")?.status).toBe("available");
+
+    // Made again on the newer image: checked at once, and only it.
+    now = 2_000;
+    summaries = [summary("web", "nginx", imageId("b"))];
+    asked.length = 0;
+    expect(await checker.checkNew()).toBe(true);
+    expect(asked).toEqual(["library/nginx"]);
+    expect(checker.resultFor(imageId("b"), "nginx")).toMatchObject({ status: "current", checkedAt: 2_000 });
+    expect(await checker.checkNew()).toBe(false);
+    expect(asked).toEqual(["library/nginx"]);
+
+    // A check that listed the containers before another one came keeps what was found for it meanwhile.
+    let release!: () => void;
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    now = 3_000;
+    const everything = checker.checkAll();
+    held = null;
+    summaries = [summary("web", "nginx", imageId("b")), summary("cache", "redis", imageId("c"))];
+    now = 4_000;
+    expect(await checker.checkNew()).toBe(true);
+    release();
+    await everything;
+    expect(checker.resultFor(imageId("c"), "redis")).toMatchObject({ status: "current", checkedAt: 4_000 });
+    expect(checker.resultFor(imageId("a"), "nginx")).toBeNull();
+  });
+});

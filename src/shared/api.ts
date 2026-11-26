@@ -20,6 +20,7 @@ import {
   UPDATE_POLICY,
   UPDATE_STATUS,
   type ActorKind,
+  type TaskAbout,
   type TaskSnooze,
   type AgentKey,
   type AllowedAction,
@@ -1696,8 +1697,8 @@ export interface TaskSummaryView {
   assistant?: TaskAssistantView | null;
   // On an update: why its last try failed, where a short line can say, until it is tried again. Null otherwise.
   heldBecause: HeldReason | null;
-  // Opened by its host's runner falling silent: where that runner is held back, its card says by what, and clears it.
-  runnerSilent: boolean;
+  // What a detector opened it about, where a page draws that kind its own way; null for the rest.
+  about: TaskAbout | null;
   // Put off by a person until then: it waits among what was noticed. Null when it is not, or no longer.
   snoozedUntil: number | null;
   // The incident that opened it, or the newest one that joined it.

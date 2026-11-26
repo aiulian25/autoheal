@@ -108,7 +108,7 @@ export const updateTask = (name: string, advice: TaskSummaryView["advice"]): Tas
   checkedOut: false,
   advice,
   heldBecause: null,
-  runnerSilent: false,
+  about: null,
   snoozedUntil: null,
   incidentId: null,
   createdAt: Date.now(),

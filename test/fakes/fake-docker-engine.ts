@@ -200,6 +200,11 @@ export class FakeDockerEngine {
     }
   }
 
+  // Docker restarting, or its stream cut: every event stream open now ends.
+  endEventStreams() {
+    for (const stream of this.streams) stream.end();
+  }
+
   async waitForEventStream() {
     while (this.streams.size === 0) {
       await new Promise((resolve) => setTimeout(resolve, 5));

@@ -31,6 +31,7 @@ import {
   HOST_SILENT_AFTER_MILLISECONDS,
   METRICS_INTERVAL_MILLISECONDS,
   NOTIFY_TEXT,
+  TASK_ABOUT,
   TASK_SNOOZE,
   TASK_TEXT,
 } from "../../shared/constants.js";
@@ -262,7 +263,7 @@ describe("detectors", () => {
     expect(silent).toMatchObject({
       title: "The runner on Alder stopped reporting",
       priority: "high",
-      runnerSilent: true,
+      about: TASK_ABOUT.runnerSilent,
     });
 
     await report([running]);

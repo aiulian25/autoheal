@@ -30,7 +30,8 @@ import type { Actor, AuditLog } from "../audit/audit-log.js";
 import type { DatabaseHandle } from "../database/connection.js";
 import { accepts, DomainError } from "../domain-error.js";
 import { isDatabaseImage } from "../host-control/host-control.js";
-import { osUpdatesKey, type HostPackagesService } from "../host-packages/host-packages-service.js";
+import type { HostPackagesService } from "../host-packages/host-packages-service.js";
+import { osUpdatesTaskKey } from "../tasks/detectors.js";
 import type { IncidentsService } from "../incidents/incidents-service.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import { newerVersionFinding, newerVersionTaskKey } from "../tasks/detectors.js";
@@ -262,7 +263,7 @@ export class DispatchService {
   // The host's OS updates task follows the upgrade: its end hands the task back, and Ollama reports on a failure.
   private handOverPackages(actor: Actor, hostId: string, names: readonly string[]) {
     const { tasks, hostPackages, auditLog } = this.dependencies;
-    const task = tasks.openFor(osUpdatesKey(hostId));
+    const task = tasks.openFor(osUpdatesTaskKey(hostId));
     if (task !== null) {
       tasks.setByAutoheal(task.id, { assignee: TO_AUTOHEAL });
       tasks.addActivity(task.id, TASK_ACTIVITY.dispatched, { kind: "user", actor }, { packages: names });

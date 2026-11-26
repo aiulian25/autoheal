@@ -10,7 +10,7 @@ import {
   type TaskChangeRequest,
   type TaskSummaryView,
 } from "../../../../src/shared/api.js";
-import { PERCENT, TASK_RESOURCE, TASK_STATUS } from "../../../../src/shared/constants.js";
+import { PERCENT, TASK_ABOUT, TASK_RESOURCE, TASK_STATUS } from "../../../../src/shared/constants.js";
 import { api } from "../../api-client.js";
 import { hostLink, taskPlaceLink } from "../../host-links.js";
 import { HeldBack } from "../../components/held-back.js";
@@ -80,7 +80,7 @@ export function FixCard({
           admin={admin}
         />
       )}
-      {task.runnerSilent && host !== undefined && <HeldBack host={host} admin={admin} />}
+      {task.about === TASK_ABOUT.runnerSilent && host !== undefined && <HeldBack host={host} admin={admin} />}
       <div className="card-actions">
         {task.hostId !== null && task.hostLabel !== null ? (
           <Link className="button" to={taskPlaceLink(task) ?? hostLink(task.hostId)}>

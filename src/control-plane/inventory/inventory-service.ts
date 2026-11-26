@@ -37,7 +37,7 @@ import type { HomeAssistantConnection } from "../home-assistant/home-assistant-i
 import type { SavedControl } from "../host-control/host-control.js";
 import type { HostRow } from "../hosts/hosts-service.js";
 import { jobViews } from "../jobs/job-views.js";
-import { changesBetween } from "./host-changes.js";
+import { changedForDetectors, changesBetween } from "./host-changes.js";
 import { containerViewsOf, isCounted, toHostView } from "./host-views.js";
 import type { MetricsStore } from "./metrics-store.js";
 
@@ -122,13 +122,14 @@ export class InventoryService {
 
   /**
    * Every report replaces the previous one: a full picture each time, so nothing drifts. What changed since
-   * the last one goes into the host's journal, which keeps two weeks.
+   * the last one goes into the host's journal, which keeps two weeks. Says whether the report changed anything the
+   * detectors read.
    */
-  recordHeartbeat(host: HostRow, received: Heartbeat) {
+  recordHeartbeat(host: HostRow, received: Heartbeat): boolean {
     // An SSH host's runner lives in the control plane and beats on while its host is down: without its session the
     // beat says nothing of the host, which goes quiet as any other would.
     const unreachable = host.kind === HOST_KIND.ssh && this.sshConnectionOf(host.id)?.state !== SSH_STATE.connected;
-    if (unreachable) return;
+    if (unreachable) return false;
     const at = this.clock();
     // Docker could not list them this time: the containers kept are the truest there is, dated from when they came,
     // and nothing in them changed.
@@ -185,7 +186,19 @@ export class InventoryService {
         : { runnerUpdateJson: heartbeat.runnerUpdate && JSON.stringify(heartbeat.runnerUpdate) };
     const volumes = heartbeat.volumes === undefined ? {} : { volumesJson: JSON.stringify(heartbeat.volumes) };
     // A host's first report has nothing to compare with.
-    const changes = host.lastHeartbeatAt === null ? [] : changesBetween(previousReportOf(host), heartbeat);
+    const previous = previousReportOf(host);
+    const changes = host.lastHeartbeatAt === null ? [] : changesBetween(previous, heartbeat);
+    const changed =
+      host.lastHeartbeatAt === null ||
+      changedForDetectors(
+        { ...previous, docker: host.docker ?? true, eventStreamConnected: host.eventStreamConnected },
+        {
+          containers: heartbeat.containers,
+          health: heartbeat.host ?? previous.health,
+          docker: hasDocker,
+          eventStreamConnected: heartbeat.eventStreamConnected,
+        },
+      );
     this.databaseHandle.database.transaction((transaction) => {
       transaction
         .update(hosts)
@@ -207,6 +220,7 @@ export class InventoryService {
         .where(and(eq(hostChanges.hostId, host.id), lt(hostChanges.at, at - HOST_CHANGE_RETENTION_MILLISECONDS)))
         .run();
     });
+    return changed;
   }
 
   /** What changed on the host, newest first; one container's changes only when it is named. */

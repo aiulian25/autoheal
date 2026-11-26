@@ -25,11 +25,13 @@ import {
   COMMAND_MESSAGES,
   DETECTOR_FIRST_RUN_MILLISECONDS,
   DETECTOR_INTERVAL_MILLISECONDS,
+  DETECTOR_SOON_MILLISECONDS,
   HEALTH_LISTEN_ADDRESS,
   HEALTH_PORT,
   HEALTH_URL,
   LISTEN_ALL_ADDRESSES,
   LISTENER_NAMES,
+  LIVE_EVENT,
   NETWORK_REPORT_CHECK_MILLISECONDS,
   NETWORK_WATCH_INTERVAL_MILLISECONDS,
   OLLAMA_STATUS_INTERVAL_MILLISECONDS,
@@ -53,6 +55,7 @@ import { SelfUpdateOutcomeFile } from "./self-update/self-update-outcome.js";
 import { settleSelfUpdateRollback } from "./self-update/self-update-settlement.js";
 import { builtWebAssets } from "./http/web-assets.js";
 import { buildHealthServer, buildUserInterfaceServer, type StaticSettingsView } from "./server.js";
+import type { LiveEvents } from "./live/live-events.js";
 import { createControlPlaneServices, type ControlPlaneServices } from "./services.js";
 import {
   ownCertificate,
@@ -146,6 +149,26 @@ export function eachApart(parts: readonly (() => unknown)[], failed: (error: unk
       failed(error);
     }
   }
+}
+
+/**
+ * Between the detectors' passes, a host's report or a job that changed something has `look` run within seconds; what
+ * comes together is looked at once. The function it gives stops it.
+ */
+export function lookSoonAfterChanges(live: Pick<LiveEvents, "subscribe">, look: () => void): () => void {
+  let soonTimer: NodeJS.Timeout | undefined;
+  const stopListening = live.subscribe((event) => {
+    const changed = event.kind === LIVE_EVENT.job || (event.kind === LIVE_EVENT.inventory && event.changed);
+    if (!changed) return;
+    soonTimer ??= setTimeout(() => {
+      soonTimer = undefined;
+      look();
+    }, DETECTOR_SOON_MILLISECONDS);
+  });
+  return () => {
+    stopListening();
+    clearTimeout(soonTimer);
+  };
 }
 
 /** Whatever the previous process left half-done has no process behind it any more. */
@@ -269,10 +292,18 @@ export async function runControlPlane(): Promise<number> {
       logFailure,
     );
   };
+  // Between passes, tasks follow what changed within seconds: the detectors alone, which are quick, so that a slow
+  // answer from Ollama in a pass never holds them back.
+  const lookAgain = async () => {
+    services.jobsService.expireStale();
+    await services.detectorService.run();
+  };
   let detectorTimer: NodeJS.Timeout | null = null;
+  let stopLooking: (() => void) | null = null;
   const detectorStart = setTimeout(() => {
     scheduled(detectAndWork);
     detectorTimer = setInterval(() => scheduled(detectAndWork), DETECTOR_INTERVAL_MILLISECONDS);
+    stopLooking = lookSoonAfterChanges(services.live, () => scheduled(lookAgain));
   }, DETECTOR_FIRST_RUN_MILLISECONDS);
   scheduled(() => services.ollamaPool.checkAll());
   const ollamaTimer = setInterval(
@@ -342,6 +373,7 @@ export async function runControlPlane(): Promise<number> {
   return untilShutdown(async () => {
     clearTimeout(detectorStart);
     clearInterval(detectorTimer ?? undefined);
+    stopLooking?.();
     clearInterval(ollamaTimer);
     clearInterval(networkTimer);
     clearInterval(probeTimer);

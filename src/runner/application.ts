@@ -36,6 +36,7 @@ import {
   EDIT_OUTCOMES,
   EVENT_STREAM_CHECK_MILLISECONDS,
   EVENT_STREAM_RETRY_MILLISECONDS,
+  EVENT_START,
   EXEC_EVENT_PREFIX,
   HEARTBEAT_INTERVAL_MILLISECONDS,
   RUNNER_BODY_LIMIT_BYTES,
@@ -47,6 +48,7 @@ import {
   SETTLE_SECONDS,
   UPDATE_CHECK_INTERVAL_MILLISECONDS,
   UPDATE_FIRST_CHECK_MILLISECONDS,
+  UPDATE_NEW_IMAGE_CHECK_MILLISECONDS,
   WORK_POLL_INTERVAL_MILLISECONDS,
   RUNNER_CAPABILITY,
   type RunnerCapability,
@@ -79,7 +81,7 @@ import { allGpus, NvidiaGpus, runLocally, type HostCommand } from "./gpu-metrics
 import { answerHostProfile } from "./host-profile.js";
 import { SysfsGpus } from "./sysfs-gpus.js";
 import { LOCAL_HOST_FILES, type HostFiles } from "./host-files.js";
-import { imageStoreOf, readHostHealth } from "./host-health.js";
+import { HostFactsWatch, imageStoreOf, readHostHealth } from "./host-health.js";
 import { HostMetricsSampler } from "./host-metrics.js";
 import { ImageUpdateChecker } from "./image-updates.js";
 import { EMPTY_TRUST_POLICY, type ImageTrustPolicy } from "../shared/image-provenance.js";
@@ -213,6 +215,10 @@ interface RunnerRuntime {
   reportTimer: NodeJS.Timeout | null;
   // When the first change not reported yet came.
   firstUnreportedAt: number | null;
+  // A look at images no check has seen yet, due shortly after a container started.
+  newImagesTimer: NodeJS.Timeout | null;
+  // The host facts reported the moment they change, read again with the metrics.
+  hostFacts: HostFactsWatch;
   maintenance: MaintenanceGate | null;
   heartbeatRunning: boolean;
   heartbeatAgain: boolean;
@@ -438,6 +444,8 @@ export async function createRuntime(
     containersStale: false,
     reportTimer: null,
     firstUnreportedAt: null,
+    newImagesTimer: null,
+    hostFacts: new HostFactsWatch(config.hostRoot, ports.hostFiles),
     maintenance,
     heartbeatRunning: false,
     heartbeatAgain: false,
@@ -567,6 +575,26 @@ async function checkUpdates(runtime: RunnerRuntime) {
   }
 }
 
+/**
+ * A container started, perhaps made again on a newer image: an image no check has seen is checked within seconds,
+ * and reported, rather than within the hour. Only a runner that reports somewhere has anyone to tell.
+ */
+function checkNewImagesSoon(runtime: RunnerRuntime) {
+  if (runtime.config.controlPlane === null) return;
+  runtime.newImagesTimer ??= setTimeout(() => {
+    runtime.newImagesTimer = null;
+    void runtime.lifecycle.run(() => checkNewImages(runtime));
+  }, UPDATE_NEW_IMAGE_CHECK_MILLISECONDS);
+}
+
+async function checkNewImages(runtime: RunnerRuntime) {
+  try {
+    if (await runtime.updates.checkNew()) await heartbeat(runtime, { containersOnly: true });
+  } catch (error) {
+    log(RUNNER_MESSAGES.updateCheckFailed(describeError(error)));
+  }
+}
+
 function touchAlive(runtime: RunnerRuntime) {
   if (runtime.aliveFile !== null) touchAliveFile(runtime.aliveFile, Date.now());
 }
@@ -624,6 +652,7 @@ export async function watchEvents(
     try {
       const events = await runtime.docker.events(AbortSignal.any([signal, silent.signal]));
       runtime.eventStreamConnected = true;
+      reportSoon(runtime);
       heardAt = Date.now();
       touchAlive(runtime);
       void runtime.lifecycle.run(() => catchUp(runtime, streamLostAt));
@@ -634,6 +663,7 @@ export async function watchEvents(
         check.note(event);
         await runtime.watcher.handleEvent(event);
         noteContainerChange(runtime, event);
+        if (event.Action === EVENT_START) checkNewImagesSoon(runtime);
       }
     } catch (error) {
       if (!signal.aborted && !silent.signal.aborted) {
@@ -647,7 +677,9 @@ export async function watchEvents(
     if (runtime.eventStreamConnected) {
       streamLostAt = heardAt;
     }
+    const lost = runtime.eventStreamConnected && !signal.aborted;
     runtime.eventStreamConnected = false;
+    if (lost) reportSoon(runtime);
     // A silent stream is replaced at once; one that failed is tried again in a moment.
     if (!silent.signal.aborted) {
       await sleep(EVENT_STREAM_RETRY_MILLISECONDS, undefined, { signal }).catch(() => undefined);
@@ -669,6 +701,11 @@ function noteContainerChange(runtime: RunnerRuntime, event: DockerEvent) {
     return;
   }
   runtime.inventory.invalidate(name);
+  reportSoon(runtime);
+}
+
+/** The containers, and whether Docker's events reach the runner, reported in seconds rather than at the next heartbeat. */
+function reportSoon(runtime: RunnerRuntime) {
   const now = Date.now();
   runtime.firstUnreportedAt ??= now;
   clearTimeout(runtime.reportTimer ?? undefined);
@@ -823,6 +860,7 @@ async function heartbeat(runtime: RunnerRuntime, { containersOnly = false }: { c
       full ? runtime.ports.hostFiles.clockOffset() : null,
       full && isSidecar(runtime) ? lastUpdateOf(runtime.docker).catch(() => undefined) : undefined,
     ]);
+    if (host !== null) runtime.hostFacts.reported(host);
     const driftReport = full ? runtime.stacks.currentDrift() : null;
     const clockOffSeconds = runtime.maintenance?.clockOffSeconds ?? null;
     // The dashboard keeps these fields, and checks the same names on each request.
@@ -929,7 +967,13 @@ async function reportMetrics(runtime: RunnerRuntime) {
     log(RUNNER_MESSAGES.metricsFailed(problem));
   }
   runtime.metricsProblem = problem;
+  await watchHostFacts(runtime);
   runtime.metricsRunning = false;
+}
+
+/** Between full reports, with the metrics: a reboot now needed, or packages changed, is reported at once. */
+async function watchHostFacts(runtime: RunnerRuntime) {
+  if (await runtime.hostFacts.changed().catch(() => false)) void runtime.lifecycle.run(() => heartbeat(runtime));
 }
 
 async function runApprovedWork(runtime: RunnerRuntime) {
@@ -1097,6 +1141,7 @@ export async function startRunner(runtime: RunnerRuntime): Promise<() => Promise
     clearTimeout(updatesFirst ?? undefined);
     clearInterval(updatesTimer ?? undefined);
     clearTimeout(runtime.reportTimer ?? undefined);
+    clearTimeout(runtime.newImagesTimer ?? undefined);
     stopping.abort();
     await Promise.all([
       watching,

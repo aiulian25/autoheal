@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -168,6 +168,23 @@ describe("what a host's own files say about its packages", () => {
     ]);
   });
 
+  it("says when the installed packages last changed: dpkg's status, or rpm's database where it is kept now", async () => {
+    const changed = (path: string, at: number) => {
+      write(path);
+      utimesSync(join(hostRoot, path), new Date(at), new Date(at));
+    };
+    supportedHost();
+    changed("var/lib/dpkg/status", NOW - 5_000);
+    expect((await facts()).databaseChangedAt).toBe(NOW - 5_000);
+
+    rmSync(join(hostRoot, "usr/bin/apt-get"));
+    write("usr/bin/dnf");
+    changed("var/lib/rpm/Packages", NOW - 90_000);
+    expect((await facts()).databaseChangedAt).toBe(NOW - 90_000);
+    changed("usr/lib/sysimage/rpm/rpmdb.sqlite", NOW - 1_000);
+    expect((await facts()).databaseChangedAt).toBe(NOW - 1_000);
+  });
+
   it("says nothing it cannot know on a bare host", async () => {
     expect(await facts()).toEqual({
       setting: "apply",
@@ -180,6 +197,7 @@ describe("what a host's own files say about its packages", () => {
       kernelWaiting: null,
       timeZone: null,
       recentChanges: [],
+      databaseChangedAt: null,
     });
   });
 });

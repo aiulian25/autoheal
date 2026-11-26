@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { machine, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { imageStoreOf, readHostHealth } from "./host-health.js";
+import { HostFactsWatch, imageStoreOf, readHostHealth } from "./host-health.js";
 
 const KIBIBYTE = 1024;
 const BOOT_ID = "8c2f3c1e-5b7a-4d36-9e0f-1a2b3c4d5e6f";
@@ -56,6 +56,32 @@ describe("readHostHealth", () => {
     expect(disk).toMatchObject({ path: "/" });
     expect(disk!.totalBytes).toBeGreaterThan(0);
     expect(disk!.usedBytes + disk!.availableBytes).toBeLessThanOrEqual(disk!.totalBytes);
+  });
+
+  it("watches between reports what a full report reads, telling each real change once", async () => {
+    write(hostRoot, "usr/bin/apt-get", "");
+    write(hostRoot, "var/lib/dpkg/status", "Package: openssl\n");
+    const settings = { hostRoot, filesystems: ["/"], procRoot, packages: "check" } as const;
+    const watch = new HostFactsWatch(hostRoot);
+    expect(await watch.changed()).toBe(false);
+    const health = await readHostHealth(settings);
+    expect(health).toMatchObject({ rebootRequired: false, packages: { databaseChangedAt: expect.any(Number) } });
+    watch.reported(health);
+    expect(await watch.changed()).toBe(false);
+
+    write(hostRoot, "run/reboot-required", "*** System restart required ***\n");
+    expect(await watch.changed()).toBe(true);
+    expect(await watch.changed()).toBe(false);
+    const upgraded = new Date(health.packages!.databaseChangedAt! + 60_000);
+    utimesSync(join(hostRoot, "var/lib/dpkg/status"), upgraded, upgraded);
+    expect(await watch.changed()).toBe(true);
+    expect(await watch.changed()).toBe(false);
+
+    // Without the host's filesystem there is nothing to watch, as there is nothing in a full report.
+    const missing = join(hostRoot, "missing");
+    const bare = new HostFactsWatch(missing);
+    bare.reported(await readHostHealth({ ...settings, hostRoot: missing }));
+    expect(await bare.changed()).toBe(false);
   });
 
   it("says nothing it cannot know: no reboot flag file, no update-notifier, a filesystem that is not there", async () => {

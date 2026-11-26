@@ -1016,6 +1016,11 @@ export const HOST_FILES = {
   kernelModules: ["usr/lib/modules", "lib/modules"],
   // A Proxmox VE node, whose os-release says Debian.
   proxmox: "usr/bin/pveversion",
+  // Written again whenever installed packages change: dpkg's status, or rpm's database, in its newer place first.
+  packageDatabase: {
+    apt: ["var/lib/dpkg/status"],
+    dnf: ["usr/lib/sysimage/rpm/rpmdb.sqlite", "var/lib/rpm/rpmdb.sqlite", "var/lib/rpm/Packages"],
+  },
   // The routes and own addresses of the host's init, which lives in the host's network: the runner's
   // own /proc/net is its container's.
   routes: "proc/1/net/route",
@@ -1681,6 +1686,8 @@ export const TASK_NUMBER_PREFIX = "#";
 export const DETECTOR_INTERVAL_MILLISECONDS = 30 * 1000;
 // After a restart, runners need a heartbeat to show they are alive before silence means anything.
 export const DETECTOR_FIRST_RUN_MILLISECONDS = 60 * 1000;
+// A report or a job that changed something has the detectors look again this soon: what comes together is looked at once.
+export const DETECTOR_SOON_MILLISECONDS = 2 * 1000;
 export const BYTES_PER_GIBIBYTE = 1024 ** 3;
 // A clock's difference from the control plane's, in the largest whole unit it reaches: -754 s is "12 minutes behind".
 export function clockDifference(seconds: number): string {
@@ -1786,6 +1793,14 @@ export const DETECTOR_KEYS = {
   oomLoop: "oom-loop",
 } as const;
 export const DETECTOR_KEY_SEPARATOR = ":";
+// What a detector opened a task about, where a page draws that kind of task its own way.
+export const TASK_ABOUT = {
+  runnerSilent: "runner_silent",
+  reboot: "reboot",
+  osUpdates: "os_updates",
+  lifecycle: "lifecycle",
+} as const;
+export type TaskAbout = (typeof TASK_ABOUT)[keyof typeof TASK_ABOUT];
 // Readings come every few seconds; a window counts as covered when its start is this close.
 export const METRICS_WINDOW_TOLERANCE_MILLISECONDS = 2 * METRICS_INTERVAL_MILLISECONDS;
 const CONTAINER_PROBLEM_PHRASES: Record<string, string> = {
@@ -2691,6 +2706,8 @@ export const UPDATE_CHECK_INTERVAL_MILLISECONDS = 60 * 60 * 1000;
 export const IMAGE_TAG_PATTERN = /^\w[\w.-]{0,127}$/;
 // The first check waits for the host to settle after the runner starts.
 export const UPDATE_FIRST_CHECK_MILLISECONDS = 2 * 60 * 1000;
+// A container started on an image no check has seen is checked this soon after: a stack coming up is checked once.
+export const UPDATE_NEW_IMAGE_CHECK_MILLISECONDS = 15 * 1000;
 export const REGISTRY = {
   dockerHubHost: "registry-1.docker.io",
   dockerHubName: "Docker Hub",
@@ -5102,6 +5119,9 @@ export const HOST_PACKAGE_RECENT_JOBS = 5;
 // A host whose .env allows checks is checked at once rather than at night; while that keeps failing,
 // again this much later.
 export const HOST_PACKAGE_FIRST_CHECK_RETRY_MILLISECONDS = 60 * MILLISECONDS_PER_MINUTE;
+// Packages changed on the host since its last check are checked again once its package database has been left alone
+// this long: an upgrade writes it many times on its way.
+export const HOST_PACKAGE_QUIET_MILLISECONDS = MILLISECONDS_PER_MINUTE;
 // Asked about at most this many package names at a time.
 export const PACKAGE_KINDS_BATCH = 100;
 export const HOST_PACKAGE_TASK_TEXT = {

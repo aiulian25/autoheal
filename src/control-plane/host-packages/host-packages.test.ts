@@ -18,8 +18,12 @@ import {
   type TaskSummaryView,
 } from "../../shared/api.js";
 import type { PackageCheck, PackageFacts, WorkResponse } from "../../shared/protocol.js";
-import { HOST_PACKAGE_FIRST_CHECK_RETRY_MILLISECONDS } from "../../shared/constants.js";
-import { osUpdatesKey } from "./host-packages-service.js";
+import {
+  HOST_PACKAGE_FIRST_CHECK_RETRY_MILLISECONDS,
+  HOST_PACKAGE_QUIET_MILLISECONDS,
+  TASK_ABOUT,
+} from "../../shared/constants.js";
+import { osUpdatesTaskKey } from "../tasks/detectors.js";
 import { RUNNER_ROUTES } from "../../shared/protocol.js";
 
 const BOOT = "8c2f3c1e-5b7a-4d36-9e0f-1a2b3c4d5e6f";
@@ -101,7 +105,7 @@ describe("a host's own packages", () => {
   const detect = () => controlPlane.services.detectorService.run();
   // A night later the admin's session has long expired: read what the dashboard would show directly.
   const nightlyComments = () => {
-    const task = controlPlane.services.tasksService.openFor(osUpdatesKey(hostId));
+    const task = controlPlane.services.tasksService.openFor(osUpdatesTaskKey(hostId));
     return JSON.stringify(controlPlane.services.tasksService.detail(task!.id));
   };
 
@@ -161,7 +165,11 @@ describe("a host's own packages", () => {
     await detect();
 
     const [task] = await openTasks();
-    expect(task).toMatchObject({ title: "OS updates on Alder: 5, 2 security", priority: "low" });
+    expect(task).toMatchObject({
+      title: "OS updates on Alder: 5, 2 security",
+      priority: "low",
+      about: TASK_ABOUT.osUpdates,
+    });
     const { description } = (await admin.get(apiPath(API_ROUTES.task, { taskId: task!.id }))).json<TaskDetailView>();
     expect(description).toContain(
       "Autoheal installs these security fixes in tonight's window: openssl, linux-image-amd64.",
@@ -313,7 +321,10 @@ describe("a host's own packages", () => {
     await checked({ ...CHECK, rebootRequired: true });
     expect((await view()).rebootRequired).toBe(true);
     await detect();
-    expect((await openTasks()).map(({ title }) => title)).toContain("Alder needs a reboot");
+    expect((await openTasks()).map(({ title, about }) => ({ title, about }))).toContainEqual({
+      title: "Alder needs a reboot",
+      about: TASK_ABOUT.reboot,
+    });
 
     controlPlane.clock.now += 10 * 60_000;
     await report({ manager: "dnf" }, NEXT_BOOT, 60);
@@ -335,7 +346,7 @@ describe("a host's own packages", () => {
     const lifecycle = (await view()).lifecycle;
     expect(lifecycle?.status).toBe(task === null ? "supported" : "unsupported");
     const titles = (await openTasks()).filter(({ title }) => title.includes("security fixes"));
-    expect(titles).toEqual(task === null ? [] : [expect.objectContaining(task)]);
+    expect(titles).toEqual(task === null ? [] : [expect.objectContaining({ ...task, about: TASK_ABOUT.lifecycle })]);
   });
 
   it("in the host's window checks first, then takes the security fixes it may, once a night", async () => {
@@ -412,6 +423,43 @@ describe("a host's own packages", () => {
     // Checked once: the nightly check does the rest.
     controlPlane.clock.now += HOST_PACKAGE_FIRST_CHECK_RETRY_MILLISECONDS + 60_000;
     await report();
+    controlPlane.services.hostPackages.tick();
+    expect(await takeWork()).toEqual([]);
+  });
+
+  it("checks again by itself once packages changed on the host, after its package database is left alone", async () => {
+    await checked();
+    controlPlane.clock.now += 10 * 60_000;
+    const byHand = controlPlane.clock.now;
+    // An upgrade in a terminal, on its way: the lists wait for it.
+    await report({ databaseChangedAt: byHand });
+    controlPlane.services.hostPackages.tick();
+    expect(await takeWork()).toEqual([]);
+
+    // Left alone a while: one check, and one only for that change, whatever came of it.
+    controlPlane.clock.now = byHand + HOST_PACKAGE_QUIET_MILLISECONDS;
+    await report({ databaseChangedAt: byHand });
+    controlPlane.services.hostPackages.tick();
+    const [check] = await takeWork();
+    expect(check).toMatchObject({ action: "check_packages", requestedBy: "Autoheal" });
+    await answer(check!.id, { succeeded: false, outcome: "It failed: E: Temporary failure resolving", output: null });
+    controlPlane.services.hostPackages.tick();
+    expect(await takeWork()).toEqual([]);
+
+    // Never while a package job is on its way; the check after Autoheal's own upgrade covers what it changed.
+    controlPlane.clock.now += 60_000;
+    expect((await ask({ action: "upgrade_packages", packages: ["openssl"] })).statusCode).toBe(200);
+    const [upgrade] = await takeWork();
+    const upgraded = controlPlane.clock.now;
+    controlPlane.clock.now += HOST_PACKAGE_QUIET_MILLISECONDS;
+    await report({ databaseChangedAt: upgraded });
+    controlPlane.services.hostPackages.tick();
+    expect(await takeWork()).toEqual([]);
+    await answer(upgrade!.id, { succeeded: true, outcome: "Upgraded openssl.", output: null });
+    const [after] = await takeWork();
+    await answer(after!.id, { succeeded: true, outcome: "Checked.", output: null, packages: NOTHING });
+    controlPlane.clock.now += HOST_PACKAGE_QUIET_MILLISECONDS;
+    await report({ databaseChangedAt: upgraded });
     controlPlane.services.hostPackages.tick();
     expect(await takeWork()).toEqual([]);
   });

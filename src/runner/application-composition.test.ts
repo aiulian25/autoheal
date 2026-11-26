@@ -14,6 +14,7 @@ import {
   HOST_TERMINAL_HELPER,
   HTTP_HEADERS,
   JOB_ACTION,
+  METRICS_INTERVAL_MILLISECONDS,
   RUNNER_UPDATE_REPORT,
   SELF_UPDATE,
   SELF_UPDATE_TEXT,
@@ -216,6 +217,42 @@ describe("what a runner says it can do", () => {
     const url = `https://127.0.0.1:${(server!.address() as AddressInfo).port}`;
     return { connection: { url, token: "fixture", pin: material.pin }, heartbeats };
   }
+
+  it("reports a reboot the host now needs within seconds, not at its next full report", async () => {
+    const { connection, heartbeats } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    const stop = await startRunner(runtime);
+    await vi.waitFor(() => expect(heartbeats.some(({ heartbeat }) => heartbeat.host !== null)).toBe(true), {
+      timeout: 5_000,
+    });
+    const reportedBefore = heartbeats.length;
+    mkdirSync(join(root, "run"), { recursive: true });
+    writeFileSync(join(root, "run/reboot-required"), "*** System restart required ***\n");
+
+    await vi.waitFor(
+      () => expect(heartbeats.slice(reportedBefore).some(({ heartbeat }) => heartbeat.host?.rebootRequired)).toBe(true),
+      { timeout: METRICS_INTERVAL_MILLISECONDS * 2 },
+    );
+    await stop();
+  });
+
+  it("says at once when Docker's events reach it and when they stop, not at its next full report", async () => {
+    const { connection, heartbeats } = await dashboard();
+    const runtime = await createRuntime({ ...configuration(), controlPlane: connection });
+    const stop = await startRunner(runtime);
+    // Its first report, and the one that says the stream connected.
+    await vi.waitFor(() => expect(heartbeats.length).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+    expect(heartbeats.at(-1)?.heartbeat.eventStreamConnected).toBe(true);
+    const reportedBefore = heartbeats.length;
+    engine.endEventStreams();
+
+    await vi.waitFor(
+      () =>
+        expect(heartbeats.slice(reportedBefore).some(({ heartbeat }) => !heartbeat.eventStreamConnected)).toBe(true),
+      { timeout: 3_000 },
+    );
+    await stop();
+  });
 
   it("takes up the host's runs an earlier runner left going before it settles what was cut short", async () => {
     const { connection } = await dashboard();

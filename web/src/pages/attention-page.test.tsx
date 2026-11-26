@@ -8,7 +8,7 @@ import {
   type JobView,
   type TaskSummaryView,
 } from "../../../src/shared/api.js";
-import { TASK_TEXT } from "../../../src/shared/constants.js";
+import { TASK_ABOUT, TASK_TEXT, type TaskAbout } from "../../../src/shared/constants.js";
 import { TEXT } from "../constants.js";
 import {
   alder,
@@ -18,6 +18,7 @@ import {
   board,
   RUNS,
   handedOver,
+  heldPackages,
   needsYou,
   serve,
   renderAttention,
@@ -280,7 +281,7 @@ describe("a host whose runner is held back, on the attention page", () => {
     ...diskNearlyFull,
     id: "task-silent",
     title: TASK_TEXT.runnerHeldBack("Alder"),
-    runnerSilent: true,
+    about: TASK_ABOUT.runnerSilent,
     resource: { kind: "host", id: "h1", label: "Alder" },
   };
   // Another problem on the same host: what holds its runner back is told once, on the card its silence opened.
@@ -315,6 +316,58 @@ describe("a host whose runner is held back, on the attention page", () => {
     const card = (await screen.findByText(TASK_TEXT.runnerHeldBack("Alder"))).closest("article")!;
     expect(within(card).getByText("change_tag on gitea (step 7, 2026-10-04 06:20)")).toBeTruthy();
     expect(within(card).queryByRole("button", { name: TEXT.heldBack.clear })).toBeNull();
+  });
+});
+
+describe("what a host's packages ask of a person, on the attention page", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const packageTask = (id: string, title: string, about: TaskAbout | null): TaskSummaryView => ({
+    ...diskNearlyFull,
+    id: `task-${id}`,
+    title,
+    labels: ["packages"],
+    priority: "low",
+    about,
+  });
+  const reboot = packageTask("reboot", "Alder needs a reboot", TASK_ABOUT.reboot);
+  const release = packageTask("release", "Ubuntu 20.04 on Alder gets no security fixes any more", TASK_ABOUT.lifecycle);
+  const upgrades = packageTask("upgrades", "OS updates on Alder: 2", TASK_ABOUT.osUpdates);
+  const stray = packageTask("stray", "Something else about Alder's packages", null);
+  const needing = (...tasks: TaskSummaryView[]) => ({
+    ...board,
+    noticed: [],
+    needsYou: tasks.map((task) => ({ kind: "task" as const, task })),
+  });
+
+  it("shows a reboot and a release's end with their host's updates, so all that is counted is there to see", async () => {
+    serve("admin", needing(reboot, release));
+    renderAttention("admin");
+    expect(await screen.findByText(reboot.title)).toBeTruthy();
+    expect(screen.getByText(release.title)).toBeTruthy();
+    expect(screen.getByText(TEXT.attention.lede(2))).toBeTruthy();
+  });
+
+  it("lets a host's package list stand for its updates task, and shows that task itself while the list is empty", async () => {
+    serve("admin", needing(upgrades), undefined, heldPackages);
+    renderAttention("admin");
+    expect(await screen.findByText("netdata-dashboard")).toBeTruthy();
+    expect(screen.queryByText(upgrades.title)).toBeNull();
+    cleanup();
+
+    serve("admin", needing(upgrades));
+    renderAttention("admin");
+    expect(await screen.findByText(upgrades.title)).toBeTruthy();
+  });
+
+  it("puts a package task no group draws among the problems to fix", async () => {
+    serve("admin", needing(stray));
+    renderAttention("admin");
+    const card = (await screen.findByText(stray.title)).closest("article")!;
+    expect(card.closest(".fix-grid")).toBeTruthy();
   });
 });
 

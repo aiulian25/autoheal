@@ -6,7 +6,8 @@ import type { UpdateProgress } from "../../shared/protocol.js";
  * board's tasks and incidents.
  */
 export type LiveEvent =
-  | { kind: typeof LIVE_EVENT.inventory; hostId: string }
+  // A host reported; changed when the report moved anything tasks are opened from.
+  | { kind: typeof LIVE_EVENT.inventory; hostId: string; changed: boolean }
   | { kind: typeof LIVE_EVENT.job; hostId: string; jobId: string }
   | { kind: typeof LIVE_EVENT.progress; hostId: string; jobId: string; progress: UpdateProgress }
   | { kind: typeof LIVE_EVENT.board };

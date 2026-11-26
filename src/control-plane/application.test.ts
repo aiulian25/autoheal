@@ -5,8 +5,9 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { loadControlPlaneConfig } from "../config/control-plane-config.js";
 import type { ControlPlaneConfig } from "../config/control-plane-config.js";
-import { TLS_MESSAGES } from "../shared/constants.js";
-import { eachApart, renewWhenDue } from "./application.js";
+import { DETECTOR_SOON_MILLISECONDS, LIVE_EVENT, TLS_MESSAGES } from "../shared/constants.js";
+import { eachApart, lookSoonAfterChanges, renewWhenDue } from "./application.js";
+import { LiveEvents } from "./live/live-events.js";
 import { providedCertificate, tlsOptionsOf } from "./tls/certificate.js";
 
 const FIXTURES = join(import.meta.dirname, "../../test/fixtures/tls");
@@ -120,5 +121,40 @@ describe("the parts of one scheduled round", () => {
     );
     expect(ran).toEqual(["packages", "power", "jarvis"]);
     expect(failures).toEqual([broken]);
+  });
+});
+
+describe("tasks following what changed, between the detectors' passes", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("looks again soon after a report that changed something or a job, once for what comes together", () => {
+    vi.useFakeTimers();
+    const live = new LiveEvents();
+    const look = vi.fn();
+    const stop = lookSoonAfterChanges(live, look);
+
+    live.publish({ kind: LIVE_EVENT.inventory, hostId: "alder", changed: false });
+    live.publish({ kind: LIVE_EVENT.board });
+    vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
+    expect(look).not.toHaveBeenCalled();
+
+    live.publish({ kind: LIVE_EVENT.inventory, hostId: "alder", changed: true });
+    live.publish({ kind: LIVE_EVENT.inventory, hostId: "cedar", changed: true });
+    vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS - 1);
+    expect(look).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(look).toHaveBeenCalledTimes(1);
+
+    live.publish({ kind: LIVE_EVENT.job, hostId: "alder", jobId: "check" });
+    vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
+    expect(look).toHaveBeenCalledTimes(2);
+
+    live.publish({ kind: LIVE_EVENT.job, hostId: "alder", jobId: "check" });
+    stop();
+    live.publish({ kind: LIVE_EVENT.inventory, hostId: "alder", changed: true });
+    vi.advanceTimersByTime(DETECTOR_SOON_MILLISECONDS);
+    expect(look).toHaveBeenCalledTimes(2);
   });
 });

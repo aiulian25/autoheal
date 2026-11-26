@@ -25,7 +25,7 @@ import {
   type WorkResponse,
 } from "../../shared/protocol.js";
 import { hosts } from "../database/schema.js";
-import { osUpdatesKey } from "../host-packages/host-packages-service.js";
+import { osUpdatesTaskKey } from "../tasks/detectors.js";
 
 const update = { status: "available" as const, checkedAt: 1, remoteDigest: `sha256:${"c".repeat(64)}` };
 const packageFacts: PackageFacts = {
@@ -238,7 +238,7 @@ describe("work handed to the Ollama agent", () => {
     const [check] = await takeWork();
     await answerJob(check!.id, { succeeded: true, outcome: "Checked.", output: null, packages: CHECK });
     await controlPlane.services.detectorService.run();
-    const task = controlPlane.services.tasksService.openFor(osUpdatesKey(hostId))!;
+    const task = controlPlane.services.tasksService.openFor(osUpdatesTaskKey(hostId))!;
 
     const response = await dispatch({ packages: [{ hostId, names: ["netdata", "postgresql-17"] }] });
     expect(response.json()).toEqual({ updates: 0, packages: 2, incidents: 0, tags: 0 });

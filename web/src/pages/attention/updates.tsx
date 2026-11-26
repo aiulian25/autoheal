@@ -9,7 +9,7 @@ import {
   type HostView,
   type TaskSummaryView,
 } from "../../../../src/shared/api.js";
-import { TASK_LABEL, HOST_SECTIONS } from "../../../../src/shared/constants.js";
+import { TASK_ABOUT, TASK_LABEL, HOST_SECTIONS } from "../../../../src/shared/constants.js";
 import { updateHandable, updateItem, type Selection } from "../../agent-dispatch.js";
 import { hostLink, hostSectionLink, taskPlaceLink } from "../../host-links.js";
 import { ErrorNotice } from "../../components/common.js";
@@ -36,6 +36,29 @@ import {
 } from "./update-rows.js";
 import { type HandOver, SectionLabel } from "./attention-parts.js";
 
+/** What a host's packages ask besides its list: each such task in its own words, and the way to it. */
+function HostTaskRows({ group, admin, selection }: { group: UpdateGroupFacts; admin: boolean; selection: Selection }) {
+  return group.hostTasks.map((task) => (
+    <HandableRow
+      key={task.id}
+      item={updateItem(task.id)}
+      admin={admin}
+      handable={false}
+      label={task.title}
+      selection={selection}
+      className="update-row"
+    >
+      <UpdateTile icon="alert" />
+      <span className="update-what">
+        <span>{task.title}</span>
+      </span>
+      <Link className="small update-review" to={taskPlaceLink(task) ?? hostLink(group.host.id)}>
+        {TEXT.attention.review}
+      </Link>
+    </HandableRow>
+  ));
+}
+
 function UpdateGroup({
   group,
   open,
@@ -54,7 +77,8 @@ function UpdateGroup({
     .filter((task) => selection.selected.has(updateItem(task.id)))
     .map(containerOf)
     .filter((name): name is string => name !== null);
-  const count = group.tasks.length + (group.packages?.packages.length ?? 0) + group.newer.length;
+  const count =
+    group.tasks.length + (group.packages?.packages.length ?? 0) + group.newer.length + group.hostTasks.length;
   // Open as the page opens it, or as a person did: its head says which, whoever opened it.
   const [expanded, setExpanded] = useState(open);
   return (
@@ -112,6 +136,7 @@ function UpdateGroup({
         {group.packages !== undefined && (
           <PackageRows view={group.packages} host={group.host} admin={admin} selection={selection} />
         )}
+        <HostTaskRows group={group} admin={admin} selection={selection} />
       </ul>
       {admin && runnable.length > 0 && (
         <div className="update-group-foot">
@@ -184,6 +209,7 @@ function DragTip() {
 
 export function Updates({
   tasks,
+  hostTasks,
   hosts,
   containers,
   homeAssistantUpdates,
@@ -193,6 +219,8 @@ export function Updates({
   handing,
 }: {
   tasks: readonly TaskSummaryView[];
+  // What hosts' packages ask of a person besides their lists.
+  hostTasks: readonly TaskSummaryView[];
   hosts: readonly HostView[];
   containers: readonly ContainerView[];
   homeAssistantUpdates: readonly HomeAssistantUpdateView[];
@@ -205,17 +233,24 @@ export function Updates({
   const groups = hosts
     .map((host, index): UpdateGroupFacts => {
       const view = packages[index]?.data;
+      const listed = view !== undefined && view.packages.length > 0 ? view : undefined;
       return {
         host,
         tasks: tasks.filter(
           (task) => task.hostId === host.id && task.labels.includes(TASK_LABEL.update) && stillWaits(task, containers),
         ),
         containers: containers.filter((container) => container.hostId === host.id),
-        packages: view !== undefined && view.packages.length > 0 ? view : undefined,
+        packages: listed,
         newer: containers.filter((container) => container.hostId === host.id && hasNewerVersion(container)),
+        hostTasks: hostTasks.filter(
+          (task) => task.hostId === host.id && (task.about !== TASK_ABOUT.osUpdates || listed === undefined),
+        ),
       };
     })
-    .filter((group) => group.tasks.length > 0 || group.packages !== undefined || group.newer.length > 0);
+    .filter(
+      (group) =>
+        group.tasks.length > 0 || group.packages !== undefined || group.newer.length > 0 || group.hostTasks.length > 0,
+    );
   if (groups.length === 0 && homeAssistantUpdates.length === 0) {
     return null;
   }

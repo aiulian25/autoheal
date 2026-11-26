@@ -10,7 +10,7 @@ import {
   useSelection,
   hostsOfItems,
 } from "../agent-dispatch.js";
-import { isIncident, isTask, isUpdateTask, whatNeedsYou } from "../board.js";
+import { isHostPackageTask, isIncident, isTask, isUpdateTask, whatNeedsYou } from "../board.js";
 import { ArrangeLine, CardGroup, usePageArrangement, type ArrangedCard } from "../components/arranged-cards.js";
 import { ErrorNotice, Loading, PageHeader } from "../components/common.js";
 import { ATTENTION_CARDS, CARD_PAGES, PATHS, TEXT } from "../constants.js";
@@ -70,6 +70,10 @@ export function AttentionPage() {
     .filter(isTask)
     .map((card) => card.task)
     .filter(isUpdateTask);
+  const hostTasks = needsYou
+    .filter(isTask)
+    .map((card) => card.task)
+    .filter(isHostPackageTask);
   const healed = done.filter((card) => isIncident(card) && card.incident.verdict === VERDICT_FIXED);
   // Null until Home Assistant is set up in Settings.
   const home = overview.data?.homeAssistant ?? null;
@@ -82,6 +86,7 @@ export function AttentionPage() {
       node: (
         <Updates
           tasks={updateTasks}
+          hostTasks={hostTasks}
           hosts={hosts.data}
           containers={containers.data ?? []}
           homeAssistantUpdates={home?.connected === true ? home.system.updates : []}

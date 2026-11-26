@@ -31,6 +31,7 @@ import {
   OPEN_TASK_STATUSES,
   ROLE_ADMIN,
   TARGET_TASK,
+  TASK_ABOUT,
   TASK_ACTIVITY,
   TASK_CHECKOUT_MILLISECONDS,
   TASK_LIMITS,
@@ -47,6 +48,7 @@ import {
   heldReasonOf,
   type AgentKey,
   type HeldReason,
+  type TaskAbout,
   type TaskActivityKind,
   type TaskPriority,
   type TaskResourceKind,
@@ -60,7 +62,7 @@ import { hosts, jobs, taskActivity, taskBlockers, taskComments, tasks, users } f
 import { DomainError } from "../domain-error.js";
 import type { InventoryService } from "../inventory/inventory-service.js";
 import { jobViews } from "../jobs/job-views.js";
-import { hostSilentTaskKey } from "./detectors.js";
+import { hostSilentTaskKey, lifecycleTaskKey, osUpdatesTaskKey, rebootTaskKey } from "./detectors.js";
 
 export type TaskRow = typeof tasks.$inferSelect;
 
@@ -886,7 +888,7 @@ export class TasksService {
       advice: advice.get(task.id) ?? null,
       assistant: assistant.get(task.id) ?? null,
       heldBecause: heldBecause.get(task.id) ?? null,
-      runnerSilent: task.hostId !== null && task.detectorKey === hostSilentTaskKey(task.hostId),
+      about: aboutOf(task),
       snoozedUntil: task.snoozedUntil !== null && task.snoozedUntil > now ? task.snoozedUntil : null,
       incidentId: task.incidentId,
       createdAt: task.createdAt,
@@ -1019,6 +1021,22 @@ export class TasksService {
       .find((container) => container.name === task.resourceId);
     return found ?? null;
   }
+}
+
+// The detector keys whose tasks a page draws its own way, each with what it says the task is about.
+const ABOUT_KEYS: readonly [(hostId: string) => string, TaskAbout][] = [
+  [hostSilentTaskKey, TASK_ABOUT.runnerSilent],
+  [rebootTaskKey, TASK_ABOUT.reboot],
+  [osUpdatesTaskKey, TASK_ABOUT.osUpdates],
+  [lifecycleTaskKey, TASK_ABOUT.lifecycle],
+];
+
+function aboutOf(task: TaskRow): TaskAbout | null {
+  const { hostId, detectorKey } = task;
+  if (hostId === null || detectorKey === null) {
+    return null;
+  }
+  return ABOUT_KEYS.find(([keyOf]) => keyOf(hostId) === detectorKey)?.[1] ?? null;
 }
 
 function assigneeOf(task: TaskRow, username: string | null): AssigneeView | null {

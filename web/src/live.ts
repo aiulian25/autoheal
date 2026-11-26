@@ -54,10 +54,13 @@ export function useLiveUpdates(): number | null {
       const changed = new Set(inventoryHosts);
       inventoryHosts.clear();
       if (changed.size === 0) return;
+      // A host's package list carries what its report says too: a reboot needed, packages changed by hand.
       void queryClient.invalidateQueries(
         {
           predicate: ({ queryKey }) =>
-            containerQueryMatchesHosts(queryKey, changed) || (queryKey.length === 1 && queryKey[0] === "hosts"),
+            containerQueryMatchesHosts(queryKey, changed) ||
+            (queryKey.length === 1 && queryKey[0] === "hosts") ||
+            (queryKey[0] === "host-packages" && changed.has(String(queryKey[1]))),
         },
         { cancelRefetch: false },
       );
@@ -89,6 +92,7 @@ export function useLiveUpdates(): number | null {
         const { hostId } = read<HostEvent>(message);
         void queryClient.invalidateQueries({ queryKey: ["jobs", hostId] });
         void queryClient.invalidateQueries({ queryKey: ["update-run", hostId] });
+        void queryClient.invalidateQueries({ queryKey: ["host-packages", hostId] });
         void queryClient.invalidateQueries({ queryKey: ["board"] });
       });
       // A task or an incident changed: the board, and every list of either, read again.

@@ -169,9 +169,9 @@ export function registerRunnerRoutes(app: FastifyInstance, services: ControlPlan
   app.post(RUNNER_ROUTES.heartbeat, async (request): Promise<HeartbeatResponse> => {
     const heartbeat = parseBody(heartbeatSchema, request.body);
     services.hostsService.adoptReportedLabel(request.runnerHost!, heartbeat.hostLabel);
-    services.inventoryService.recordHeartbeat(request.runnerHost!, heartbeat);
+    const changed = services.inventoryService.recordHeartbeat(request.runnerHost!, heartbeat);
     if (heartbeat.stackDrift !== undefined) services.stackDrift.record(request.runnerHost!.id, heartbeat.stackDrift);
-    services.live.publish({ kind: LIVE_EVENT.inventory, hostId: request.runnerHost!.id });
+    services.live.publish({ kind: LIVE_EVENT.inventory, hostId: request.runnerHost!.id, changed });
     services.jobsService.noteBoot(request.runnerHost!, heartbeat.host?.bootId);
     if (heartbeat.probeResults !== undefined) {
       services.probes.recordReports(request.runnerHost!.id, heartbeat.probeResults);

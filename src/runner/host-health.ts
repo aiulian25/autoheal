@@ -17,6 +17,7 @@ import {
   SYS_ROOT,
   TIME_SERVICE_UNITS,
   UPDATES_AVAILABLE_PATTERN,
+  type HostPackageManager,
   type HostPackagesSetting,
 } from "../shared/constants.js";
 import type { HostHealth } from "../shared/protocol.js";
@@ -25,7 +26,7 @@ import { hostAddress } from "./host-address.js";
 import { localFilesystems, readDrives } from "./host-drives.js";
 import { LOCAL_HOST_FILES, osReleaseValue, requiredText, type HostFiles } from "./host-files.js";
 import { cpuTemperatures } from "./host-sensors.js";
-import { readPackageFacts } from "./package-facts.js";
+import { packagesChangedAt, readPackageFacts } from "./package-facts.js";
 
 interface HostHealthSettings {
   // The host's own filesystem, mounted read-only into the runner's container.
@@ -188,4 +189,51 @@ export async function readHostHealth(settings: HostHealthSettings): Promise<Host
     cpuTemperatures: await cpuTemperatures(sysRoot, files),
     ntpActive: hostMounted ? await ntpActiveOf(host, files) : null,
   };
+}
+
+// What is reported the moment it changes rather than at the next full report: cheap enough to read every few seconds.
+interface WatchedFacts {
+  rebootRequired: boolean | null;
+  packagesChangedAt: number | null;
+}
+
+/**
+ * The host facts reported the moment they change: a reboot needed, packages changed. Each full report says what they
+ * were; read again between reports, they say whether they changed since, once for each change.
+ */
+export class HostFactsWatch {
+  private last: { facts: WatchedFacts; manager: HostPackageManager | null } | null = null;
+
+  constructor(
+    private readonly hostRoot: string,
+    private readonly files: HostFiles = LOCAL_HOST_FILES,
+  ) {}
+
+  reported(health: HostHealth) {
+    const facts = {
+      rebootRequired: health.rebootRequired,
+      packagesChangedAt: health.packages?.databaseChangedAt ?? null,
+    };
+    this.last = { facts, manager: health.packages?.manager ?? null };
+  }
+
+  async changed(): Promise<boolean> {
+    const last = this.last;
+    if (last === null) return false;
+    const facts = await this.read(last.manager);
+    const same =
+      facts.rebootRequired === last.facts.rebootRequired && facts.packagesChangedAt === last.facts.packagesChangedAt;
+    this.last = { ...last, facts };
+    return !same;
+  }
+
+  // As a full report reads them, so that only a real change is told.
+  private async read(manager: HostPackageManager | null): Promise<WatchedFacts> {
+    if (!(await this.files.exists(this.hostRoot))) return { rebootRequired: null, packagesChangedAt: null };
+    const host = (file: string) => join(this.hostRoot, file);
+    return {
+      rebootRequired: await this.files.exists(host(HOST_FILES.rebootRequired)),
+      packagesChangedAt: await packagesChangedAt(host, manager, this.files),
+    };
+  }
 }

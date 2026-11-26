@@ -17,7 +17,7 @@ import { ControlPlaneClient, refusedForGood } from "./control-plane-client.js";
 import { RemedyGuard } from "./remedy-guard.js";
 import { allGpus, NvidiaGpus } from "./gpu-metrics.js";
 import { SysfsGpus } from "./sysfs-gpus.js";
-import { readHostHealth } from "./host-health.js";
+import { HostFactsWatch, readHostHealth } from "./host-health.js";
 import { HostMetricsSampler } from "./host-metrics.js";
 import { followContainerAccess } from "./container-access.js";
 import { TerminalSessions } from "./terminal-sessions.js";
@@ -41,6 +41,7 @@ export function startSystemOnlyRunner(
     readGpus: () => allGpus(gpus, kernelGpus),
     files: ports.hostFiles,
   });
+  const hostFacts = new HostFactsWatch(config.hostRoot, ports.hostFiles);
   const running = new Set<Promise<void>>();
   let problem: string | null = null;
   const noted = (error: unknown) => {
@@ -66,6 +67,7 @@ export function startSystemOnlyRunner(
       }),
       ports.hostFiles.clockOffset(),
     ]);
+    if (host !== null) hostFacts.reported(host);
     const payload: Heartbeat = {
       runnerVersion: RUNNING_VERSION,
       hostLabel: config.hostLabel,
@@ -85,6 +87,10 @@ export function startSystemOnlyRunner(
   const report = async () => {
     const host = await metrics.sample();
     if (host !== null) await controlPlane.reportMetrics({ host, containers: [] });
+  };
+  // Between full reports, with the usage: a reboot now needed, or packages changed, is reported at once.
+  const watch = async () => {
+    if (await hostFacts.changed()) await heartbeat();
   };
   const hostJobs = hostPackageJobsOf(
     { localHost: null, packageUnits: ports.packageUnits, hostFiles: ports.hostFiles },
@@ -154,7 +160,10 @@ export function startSystemOnlyRunner(
     stopping.signal,
   );
   const heartbeats = setInterval(() => tracked(heartbeat), HEARTBEAT_INTERVAL_MILLISECONDS);
-  const reports = setInterval(() => tracked(report), METRICS_INTERVAL_MILLISECONDS);
+  const reports = setInterval(() => {
+    tracked(report);
+    tracked(watch);
+  }, METRICS_INTERVAL_MILLISECONDS);
   const work = setInterval(() => tracked(takeWork), WORK_POLL_INTERVAL_MILLISECONDS);
   return async () => {
     clearInterval(heartbeats);

@@ -103,8 +103,11 @@ const AUTOHEAL_ASSIGNEE: AssigneeChoice = { kind: "agent", id: AGENT_AUTOHEAL };
 /** The key of the task a container's new image opens: the one an update closes. */
 export const updateTaskKey = (hostId: string, containerName: string) =>
   keyOf(DETECTOR_KEYS.update, hostId, containerName);
-/** The key of the task a host's runner opens by falling silent. */
+/** The keys of the tasks a host opens by its runner falling silent, and by what its packages need. */
 export const hostSilentTaskKey = (hostId: string) => keyOf(DETECTOR_KEYS.hostSilent, hostId);
+export const rebootTaskKey = (hostId: string) => keyOf(DETECTOR_KEYS.reboot, hostId);
+export const osUpdatesTaskKey = (hostId: string) => keyOf(DETECTOR_KEYS.osUpdates, hostId);
+export const lifecycleTaskKey = (hostId: string) => keyOf(DETECTOR_KEYS.lifecycle, hostId);
 /** The key of the task a newer version opens; its last part is that version's tag. */
 export const newerVersionTaskKey = (hostId: string, containerName: string, tag: string) =>
   keyOf(DETECTOR_KEYS.newerVersion, hostId, containerName, tag);
@@ -375,7 +378,7 @@ function hosts(inputs: DetectorInputs): Detection {
     }
     const plan = inputs.packagePlan(online);
     if (health?.rebootRequired !== null && health?.rebootRequired !== undefined) {
-      const key = keyOf(DETECTOR_KEYS.reboot, online.id);
+      const key = rebootTaskKey(online.id);
       judged.add(key);
       // A newer kernel installed waits for a reboot even where no package said so, and dnf says so itself.
       const kernelWaiting = health.packages?.kernelWaiting ?? null;
@@ -419,7 +422,7 @@ function osUpdates(
   if (plan === null) {
     return [];
   }
-  const key = keyOf(DETECTOR_KEYS.osUpdates, online.id);
+  const key = osUpdatesTaskKey(online.id);
   judged.add(key);
   const pending = [...plan.forPerson, ...plan.automatic];
   if (pending.length === 0) {
@@ -455,7 +458,7 @@ function lifecycle(inputs: DetectorInputs, online: HostView, judged: Set<string>
   if (release === null) {
     return [];
   }
-  const key = keyOf(DETECTOR_KEYS.lifecycle, online.id);
+  const key = lifecycleTaskKey(online.id);
   judged.add(key);
   if (release.status === LIFECYCLE_STATUS.supported) {
     return [];

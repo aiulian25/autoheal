@@ -151,6 +151,19 @@ async function kernelWaitingOf(
   return null;
 }
 
+/** When the host's installed packages last changed, by its own clock; null without a package database to read. */
+export async function packagesChangedAt(
+  host: (file: string) => string,
+  manager: HostPackageManager | null,
+  files: HostFiles,
+): Promise<number | null> {
+  for (const path of manager === null ? [] : HOST_FILES.packageDatabase[manager]) {
+    const changedAt = await files.modifiedAt(host(path));
+    if (changedAt !== null) return Math.trunc(changedAt);
+  }
+  return null;
+}
+
 /**
  * What the host's own files say about its packages, read-only: nothing runs on the host.
  * ponytail: what changed lately comes from apt's history only; dnf hosts show none, read dnf's history
@@ -176,5 +189,6 @@ export async function readPackageFacts(settings: PackageFactsSettings, now = Dat
     kernelWaiting: await kernelWaitingOf(host, settings.runningKernel, files),
     timeZone,
     recentChanges: recentPackageChanges(history ?? "", timeZone ?? FALLBACK_TIME_ZONE, now),
+    databaseChangedAt: await packagesChangedAt(host, manager, files),
   };
 }

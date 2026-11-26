@@ -46,6 +46,12 @@ interface LabelBudget {
   tagLists: Map<string, Promise<string[]>>;
 }
 
+// An image a container runs, by the name it was given.
+interface ImageInUse {
+  imageId: string;
+  reference: ImageReference;
+}
+
 export interface UpdateSummary {
   images: number;
   available: number;
@@ -72,6 +78,7 @@ export class ImageUpdateChecker {
   // A newer image's labels, by its digest: read once, whichever containers wait for it.
   private readonly labels = new Map<string, RemoteImage>();
   private checking: Promise<UpdateSummary> | null = null;
+  private checkedOnce = false;
 
   constructor(
     private readonly docker: Pick<DockerClient, "containerSummaries" | "inspect" | "inspectImage">,
@@ -106,16 +113,54 @@ export class ImageUpdateChecker {
     return this.checking;
   }
 
+  /**
+   * Only the images no check has looked at yet, such as the newer one a container was just made again on: checked at
+   * once rather than within the hour. Whether there were any; none before the first check, which sees to them all.
+   */
+  async checkNew(): Promise<boolean> {
+    if (!this.checkedOnce) return false;
+    const unchecked = [...(await this.imagesInUse())].filter(([key]) => !this.results.has(key));
+    await this.checkEach(unchecked);
+    return unchecked.length > 0;
+  }
+
   private async checkEveryImage(): Promise<UpdateSummary> {
-    // Repeated containers/aliases share one reference check; distinct tags on an image remain independent.
-    const images = new Map<string, { imageId: string; reference: ImageReference }>();
+    const startedAt = this.clock();
+    const images = await this.imagesInUse();
+    await this.checkEach([...images]);
+    // What no container runs any more goes, but not what a check of new images found since this one began.
+    for (const [key, result] of this.results) {
+      if (!images.has(key) && result.checkedAt <= startedAt) this.results.delete(key);
+    }
+    const awaited = new Set(
+      [...images].flatMap(([key, { reference }]) => {
+        const digest = this.results.get(key)?.remoteDigest;
+        return digest == null ? [] : [labelKey(reference, digest)];
+      }),
+    );
+    for (const key of this.labels.keys()) if (!awaited.has(key)) this.labels.delete(key);
+    this.checkedOnce = true;
+    const checked = [...this.results.values()];
+    return {
+      images: checked.length,
+      available: checked.filter((result) => result.status === UPDATE_STATUS.available).length,
+      unknown: checked.filter((result) => result.status === UPDATE_STATUS.unknown).length,
+    };
+  }
+
+  // Repeated containers/aliases share one reference check; distinct tags on an image remain independent.
+  private async imagesInUse(): Promise<Map<string, ImageInUse>> {
+    const images = new Map<string, ImageInUse>();
     for (const summary of await this.docker.containerSummaries()) {
       if (summary.ImageID === undefined || summary.Labels?.[UPDATE_LABEL] === UPDATE_POLICY.off) continue;
       const reference = await this.referenceOf(summary);
       if (reference !== null)
         images.set(resultKey(summary.ImageID, reference), { imageId: summary.ImageID, reference });
     }
-    const entries = [...images];
+    return images;
+  }
+
+  private async checkEach(entries: readonly (readonly [string, ImageInUse])[]) {
     const budget: LabelBudget = {
       dockerHub: REGISTRY.dockerHubLabelReads,
       reads: new Map(),
@@ -135,20 +180,6 @@ export class ImageUpdateChecker {
         }),
       );
     }
-    for (const key of this.results.keys()) if (!images.has(key)) this.results.delete(key);
-    const awaited = new Set(
-      [...images].flatMap(([key, { reference }]) => {
-        const digest = this.results.get(key)?.remoteDigest;
-        return digest == null ? [] : [labelKey(reference, digest)];
-      }),
-    );
-    for (const key of this.labels.keys()) if (!awaited.has(key)) this.labels.delete(key);
-    const checked = [...this.results.values()];
-    return {
-      images: checked.length,
-      available: checked.filter((result) => result.status === UPDATE_STATUS.available).length,
-      unknown: checked.filter((result) => result.status === UPDATE_STATUS.unknown).length,
-    };
   }
 
   // Docker lists a container by its image id once its tag points to a newer image; the name it

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_ROUTES, type JobView } from "../../src/shared/api.js";
 import type { UpdateProgress } from "../../src/shared/protocol.js";
-import { containersQuery, hostContainersQuery, hostsQuery, localHostQuery } from "./queries.js";
+import { containersQuery, hostContainersQuery, hostPackagesQuery, hostsQuery, localHostQuery } from "./queries.js";
 import {
   LIVE_INVENTORY_BATCH_MILLISECONDS,
   LIVE_LOST_NOTICE_AFTER_MILLISECONDS,
@@ -94,6 +94,22 @@ describe("the dashboard's live stream", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(stale(["containers", "hostId=a"])).toBe(false);
     expect(stale(["containers", "hostId=b"])).toBe(true);
+    hook.unmount();
+  });
+
+  it("reads a host's package list again after its report or one of its jobs, and no other host's", async () => {
+    const alder = hostPackagesQuery("a").queryKey;
+    const cedar = hostPackagesQuery("b").queryKey;
+    queryClient.setQueryData(alder, {});
+    queryClient.setQueryData(cedar, {});
+    const hook = listen();
+    const source = FakeEventSource.opened[0]!;
+    act(() => source.send("inventory", { hostId: "b", changed: false }));
+    await new Promise((resolve) => setTimeout(resolve, LIVE_INVENTORY_BATCH_MILLISECONDS + 50));
+    expect(stale(alder)).toBe(false);
+    expect(stale(cedar)).toBe(true);
+    act(() => source.send("job", { hostId: "a", jobId: "check" }));
+    expect(stale(alder)).toBe(true);
     hook.unmount();
   });
 

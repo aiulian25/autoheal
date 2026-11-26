@@ -49,6 +49,8 @@ export interface UpdateGroupFacts {
   packages: HostPackagesView | undefined;
   // Its containers with a newer version of their pinned tag out, which the agent can move them to.
   newer: ContainerView[];
+  // What its packages ask of a person besides the list: a reboot, a release's end, its updates while none are listed.
+  hostTasks: TaskSummaryView[];
 }
 
 // What the update brings when its images say; else what updating does.

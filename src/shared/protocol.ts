@@ -263,6 +263,9 @@ export const packageFactsSchema = z.object({
   kernelWaiting: z.string().max(HOST_TEXT_LIMIT).nullable(),
   timeZone: z.string().max(TIME_ZONE_CHARACTERS).nullable(),
   recentChanges: z.array(packageChangeSchema).max(APT_HISTORY.entries),
+  // When the package database last changed, by the host's clock: a change by hand brings a fresh check. Null where it
+  // cannot be read; absent from runners from before it.
+  databaseChangedAt: z.number().int().min(0).nullable().optional(),
 });
 
 export type PackageFacts = z.infer<typeof packageFactsSchema>;

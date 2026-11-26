@@ -16,11 +16,10 @@ import {
   CONTAINER_RUNTIME_PACKAGES,
   CORE_SYSTEM_PACKAGES,
   DATA_PACKAGE_PREFIXES,
-  DETECTOR_KEY_SEPARATOR,
-  DETECTOR_KEYS,
   FALLBACK_TIME_ZONE,
   HOST_PACKAGE_ACTIONS,
   HOST_PACKAGE_FIRST_CHECK_RETRY_MILLISECONDS,
+  HOST_PACKAGE_QUIET_MILLISECONDS,
   HOST_PACKAGE_RECENT_JOBS,
   HOST_PACKAGE_TASK_TEXT,
   HOST_PACKAGES,
@@ -56,6 +55,7 @@ import type { InventoryService } from "../inventory/inventory-service.js";
 import { jobViews, packagesOf } from "../jobs/job-views.js";
 import type { JobsService } from "../jobs/jobs-service.js";
 import type { SettingsStore } from "../settings/settings-store.js";
+import { osUpdatesTaskKey } from "../tasks/detectors.js";
 import type { TaskAuthor, TasksService } from "../tasks/tasks-service.js";
 import { lifecycleOf } from "./lifecycle.js";
 import type { PackageKinds } from "./package-kinds.js";
@@ -111,8 +111,6 @@ const worthAsking = (name: string) =>
   !CORE_SYSTEM_PACKAGES.has(name) &&
   ![...DATA_PACKAGE_PREFIXES, ...KERNEL_PACKAGE_PREFIXES].some((prefix) => name.startsWith(prefix));
 
-export const osUpdatesKey = (hostId: string) => [DETECTOR_KEYS.osUpdates, hostId].join(DETECTOR_KEY_SEPARATOR);
-
 type LatestCheck = { checkedAt: number; check: PackageCheck };
 
 // When the host last booted, by its own uptime at its last report.
@@ -150,7 +148,7 @@ export class HostPackagesService {
     }
     const autohealsNightly =
       job.action === JOB_ACTION.upgradePackages && job.requestedByAgent === AGENT_AUTOHEAL && job.taskId === null;
-    const task = autohealsNightly ? this.dependencies.tasks.openFor(osUpdatesKey(host.id)) : null;
+    const task = autohealsNightly ? this.dependencies.tasks.openFor(osUpdatesTaskKey(host.id)) : null;
     if (task !== null) {
       this.dependencies.tasks.comment(AUTOHEAL, task.id, HOST_PACKAGE_TASK_TEXT.nightly(result.outcome));
     }
@@ -359,6 +357,7 @@ export class HostPackagesService {
     for (const host of this.dependencies.inventory.hosts()) {
       try {
         this.firstCheck(host);
+        this.afterChange(host);
         this.nightly(host, settings);
       } catch (error) {
         log(describeError(error));
@@ -382,6 +381,23 @@ export class HostPackagesService {
       this.openJob(host.id) === null &&
       !this.askedByAutohealSince(host.id, JOB_ACTION.checkPackages, retryAfter);
     if (due) {
+      this.dependencies.jobs.request(AUTOHEAL, host.id, "", JOB_ACTION.checkPackages, null);
+    }
+  }
+
+  // Packages changed on the host since Autoheal last asked for a check, by hand or by another tool: one check, once
+  // its package database has been left alone a while, so the lists follow within minutes rather than at night.
+  // ponytail: a long upgrade that pauses between its steps longer than that is checked half done; its last step
+  // changes the database again, and the check after it has the last word.
+  private afterChange(host: HostView) {
+    const reported = host.health?.packages?.databaseChangedAt ?? null;
+    if (reported === null || !this.checkable(host) || this.openJob(host.id) !== null) {
+      return;
+    }
+    // The host's clock, put on this one's.
+    const changedAt = reported - (host.clockOffsetSeconds ?? 0) * MILLISECONDS_PER_SECOND;
+    const quiet = this.clock() - changedAt >= HOST_PACKAGE_QUIET_MILLISECONDS;
+    if (quiet && !this.askedByAutohealSince(host.id, JOB_ACTION.checkPackages, changedAt)) {
       this.dependencies.jobs.request(AUTOHEAL, host.id, "", JOB_ACTION.checkPackages, null);
     }
   }

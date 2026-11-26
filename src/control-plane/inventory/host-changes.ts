@@ -60,6 +60,47 @@ function hostChanges(before: HostHealth | null, after: HostHealth | null): HostC
   return changes;
 }
 
+/** A report as the detectors read it. */
+export interface DetectorReport {
+  containers: readonly ContainerSnapshot[];
+  health: HostHealth | null;
+  docker: boolean;
+  eventStreamConnected: boolean;
+}
+
+// What the detectors read of a report that can differ from one report to the next. Figures that move every time
+// (load, memory, disk bytes) are left to their regular look.
+function detectorFacts(report: DetectorReport): string {
+  const containers = [...report.containers]
+    .sort((first, second) => first.name.localeCompare(second.name))
+    .map((container) => [
+      container.name,
+      container.state,
+      container.health,
+      container.exitCode,
+      container.oomKilled,
+      container.restartCount,
+      container.update?.status ?? null,
+      container.update?.newerTag ?? null,
+    ]);
+  const health = report.health;
+  const facts =
+    health === null
+      ? null
+      : [
+          health.rebootRequired,
+          health.pendingUpdates,
+          health.bootId ?? null,
+          health.packages?.databaseChangedAt ?? null,
+          health.packages?.kernelWaiting ?? null,
+        ];
+  return JSON.stringify([containers, facts, report.docker, report.eventStreamConnected]);
+}
+
+/** Whether a report changed anything the detectors read since the one before: then they look again at once. */
+export const changedForDetectors = (previous: DetectorReport, next: DetectorReport) =>
+  detectorFacts(previous) !== detectorFacts(next);
+
 /** What changed on a host between its last report and this one: the host first, then its containers. */
 export function changesBetween(
   previous: { containers: readonly ContainerSnapshot[]; health: HostHealth | null },

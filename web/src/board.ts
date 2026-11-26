@@ -1,5 +1,5 @@
 import type { BoardCardView, TaskSummaryView } from "../../src/shared/api.js";
-import { BOARD_CARD, TASK_LABEL } from "../../src/shared/constants.js";
+import { BOARD_CARD, TASK_ABOUT, TASK_LABEL } from "../../src/shared/constants.js";
 
 export type IncidentCard = Extract<BoardCardView, { kind: typeof BOARD_CARD.incident }>;
 export type TaskCard = Extract<BoardCardView, { kind: typeof BOARD_CARD.task }>;
@@ -10,10 +10,23 @@ export const isTask = (card: BoardCardView): card is TaskCard => card.kind === B
 export const isUpdateTask = (task: TaskSummaryView) =>
   task.labels.includes(TASK_LABEL.update) || task.labels.includes(TASK_LABEL.packages);
 
-/** What needs a person, sorted the way the Attention page shows it: decisions to take, and problems to fix. */
+// A host's package tasks its group under Updates draws; the one about its updates stands behind its package list.
+const HOST_PACKAGE_TASKS: ReadonlySet<string | null> = new Set([
+  TASK_ABOUT.osUpdates,
+  TASK_ABOUT.reboot,
+  TASK_ABOUT.lifecycle,
+]);
+export const isHostPackageTask = (task: TaskSummaryView) =>
+  task.labels.includes(TASK_LABEL.packages) && HOST_PACKAGE_TASKS.has(task.about);
+const drawnUnderUpdates = (task: TaskSummaryView) => task.labels.includes(TASK_LABEL.update) || isHostPackageTask(task);
+
+/**
+ * What needs a person, sorted the way the Attention page shows it: decisions to take, and problems to fix, which are
+ * every task the Updates card does not draw, so all that is counted is somewhere to see.
+ */
 export function whatNeedsYou(needsYou: readonly BoardCardView[]) {
   return {
     decisions: needsYou.filter(isIncident),
-    problems: needsYou.filter(isTask).filter((card) => !isUpdateTask(card.task)),
+    problems: needsYou.filter(isTask).filter((card) => !drawnUnderUpdates(card.task)),
   };
 }

@@ -36,7 +36,7 @@ const summary = (overrides: Partial<TaskSummaryView>): TaskSummaryView => ({
   checkedOut: false,
   advice: null,
   heldBecause: null,
-  runnerSilent: false,
+  about: null,
   snoozedUntil: null,
   incidentId: null,
   createdAt: Date.now() - 60_000,
